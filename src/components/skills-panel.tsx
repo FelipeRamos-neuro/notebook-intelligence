@@ -17,6 +17,23 @@ import {
   SkillScope
 } from '../api';
 
+// Closes the enclosing modal on document-level Escape, regardless of which
+// element inside the dialog has focus. The previous per-input handler only
+// fired while the URL field was focused, leaving keyboard users stuck once
+// they tabbed onto a button.
+function useEscapeKey(onEscape: () => void): void {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onEscape();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onEscape]);
+}
+
 // Must match SKILL_NAME_PATTERN in notebook_intelligence/skillset.py
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SKILL_NAME_REQUIREMENT =
@@ -397,6 +414,8 @@ function GitHubImportDialog(props: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEscapeKey(props.onCancel);
+
   const effectiveName = (nameOverride.trim() || preview?.name || '').trim();
   const nameValid = SKILL_NAME_PATTERN.test(effectiveName);
   const collides =
@@ -451,9 +470,16 @@ function GitHubImportDialog(props: {
   };
 
   return (
-    <div className="nbi-modal-backdrop" onClick={props.onCancel}>
+    <div
+      className="nbi-modal-backdrop"
+      onClick={props.onCancel}
+      role="presentation"
+    >
       <form
         className="nbi-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Import skill from GitHub"
         onClick={e => e.stopPropagation()}
         onSubmit={step === 'url' ? handleFetchPreview : handleInstall}
       >
@@ -793,6 +819,8 @@ function SkillPromptDialog(props: {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  useEscapeKey(props.onCancel);
+
   const trimmed = name.trim();
   const nameValid = SKILL_NAME_PATTERN.test(trimmed);
   const isUnchangedRename = isRename && trimmed === prompt.skill.name;
@@ -824,9 +852,16 @@ function SkillPromptDialog(props: {
   };
 
   return (
-    <div className="nbi-modal-backdrop" onClick={props.onCancel}>
+    <div
+      className="nbi-modal-backdrop"
+      onClick={props.onCancel}
+      role="presentation"
+    >
       <form
         className="nbi-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         onClick={e => e.stopPropagation()}
         onSubmit={handleSubmit}
       >
