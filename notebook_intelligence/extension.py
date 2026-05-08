@@ -37,6 +37,7 @@ from notebook_intelligence.feature_flags import (
     VALID_POLICIES,
     apply_claude_policies,
     apply_string_overrides,
+    is_force_off,
     is_locked,
     resolve_feature_flag,
 )
@@ -232,6 +233,11 @@ FEATURE_POLICY_SPEC = (
         "NBI_STORE_GITHUB_ACCESS_TOKEN_POLICY",
         "store_github_access_token_policy",
     ),
+    (
+        "skills_management",
+        "NBI_SKILLS_MANAGEMENT_POLICY",
+        "skills_management_policy",
+    ),
 )
 FEATURE_POLICY_NAMES = tuple(name for name, _, _ in FEATURE_POLICY_SPEC)
 
@@ -275,6 +281,9 @@ def _build_feature_policies_response(policies: dict, nbi_config) -> dict:
         "claude_setting_source_user": "user" in sources,
         "claude_setting_source_project": "project" in sources,
         "store_github_access_token": bool(nbi_config.store_github_access_token),
+        # Admin-only gate; user has no toggle, so user_value is always True.
+        # The policy resolver still applies force-off / force-on correctly.
+        "skills_management": True,
     }
 
     response = {}
@@ -698,6 +707,19 @@ class SkillsBaseHandler(APIHandler):
     """Shared helpers for skills endpoints."""
 
     allow_github_skill_import = True
+    skills_management_enabled = True
+
+    async def prepare(self):
+        # APIHandler.prepare is async (xsrf/auth), so we must await it before
+        # applying the skills_management policy gate.
+        await super().prepare()
+        if self._finished:
+            return
+        if not self.skills_management_enabled:
+            self.set_status(403)
+            self.finish(
+                json.dumps({"error": "Skills management is disabled by your administrator"})
+            )
 
     @property
     def skill_manager(self):
@@ -1850,6 +1872,23 @@ class NotebookIntelligence(ExtensionApp):
         config=True,
     )
 
+    skills_management_policy = TraitletEnum(
+        list(VALID_POLICIES),
+        default_value=POLICY_USER_CHOICE,
+        help="""
+        Org-wide policy for the Skills management UI. "user-choice" (default)
+        and "force-on" both leave the Skills tab visible — there is no user
+        toggle to override, so the two are behaviorally identical today; the
+        three-value shape is preserved for symmetry with the other
+        feature_policies. "force-off" hides the tab, returns 403 from
+        /skills handlers, and **also disables the managed-skills reconciler**
+        — orgs that ship curated skills via NBI_SKILLS_MANIFEST should leave
+        this on user-choice and rely on filesystem permissions instead.
+        Overridden by the NBI_SKILLS_MANAGEMENT_POLICY env var.
+        """,
+        config=True,
+    )
+
     skills_manifest = Unicode(
         default_value="",
         help="""
@@ -1926,6 +1965,11 @@ class NotebookIntelligence(ExtensionApp):
     ):
         global ai_service_manager
         manifest_source = os.environ.get("NBI_SKILLS_MANIFEST", "").strip() or self.skills_manifest.strip()
+        # When skills management is force-off, suppress the manifest so the
+        # reconciler isn't constructed at all (org-curated skills wouldn't
+        # have a UI surface anyway, and stopping reconcile is the contract).
+        if is_force_off(feature_policies, "skills_management"):
+            manifest_source = ""
         managed_token = (
             os.environ.get("NBI_MANAGED_SKILLS_TOKEN", "").strip()
             or self.managed_skills_token.strip()
@@ -2001,6 +2045,9 @@ class NotebookIntelligence(ExtensionApp):
                 "NBI_ADDITIONAL_SKIPPED_WORKSPACE_DIRECTORIES",
                 self.additional_skipped_workspace_directories,
             )
+        )
+        SkillsBaseHandler.skills_management_enabled = not is_force_off(
+            feature_policies, "skills_management"
         )
         self._publish_policies(feature_policies, string_overrides)
         NotebookIntelligence.handlers = [

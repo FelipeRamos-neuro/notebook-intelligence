@@ -45,6 +45,16 @@ def is_locked(policy: str) -> bool:
     return policy in (POLICY_FORCE_ON, POLICY_FORCE_OFF)
 
 
+def is_force_off(policies: dict, name: str) -> bool:
+    """True iff ``policies[name]`` is force-off (missing == user-choice).
+
+    The canonical predicate for backend kill-switches: a handler-level prepare
+    gate, a reconciler-init guard, etc. all want the same "is this admin-
+    disabled" answer.
+    """
+    return policies.get(name, POLICY_USER_CHOICE) == POLICY_FORCE_OFF
+
+
 def apply_string_overrides(target: dict, overrides: dict, mapping: tuple) -> dict:
     """Apply value-presence-locks per ``mapping`` to a copy of ``target``.
 

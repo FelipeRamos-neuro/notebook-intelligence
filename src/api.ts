@@ -164,7 +164,8 @@ export type FeaturePolicyName =
   | 'claude_jupyter_ui_tools'
   | 'claude_setting_source_user'
   | 'claude_setting_source_project'
-  | 'store_github_access_token';
+  | 'store_github_access_token'
+  | 'skills_management';
 
 export type IFeaturePolicies = Record<
   FeaturePolicyName,
@@ -325,7 +326,8 @@ export class NBIConfig {
       'claude_jupyter_ui_tools',
       'claude_setting_source_user',
       'claude_setting_source_project',
-      'store_github_access_token'
+      'store_github_access_token',
+      'skills_management'
     ];
     const result = {} as IFeaturePolicies;
     for (const name of names) {

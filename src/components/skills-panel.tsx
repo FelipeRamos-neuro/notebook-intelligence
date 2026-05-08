@@ -348,7 +348,7 @@ export function SettingsPanelComponentSkills(_props: any): JSX.Element {
   return (
     <div className="config-dialog-body nbi-skills-panel">
       <div className="nbi-skills-header">
-        <div className="nbi-skills-title">Claude Skills</div>
+        <div className="nbi-skills-title">Skills</div>
         <div className="nbi-skills-header-actions">
           {hasManagedSkills && (
             <button
@@ -383,6 +383,12 @@ export function SettingsPanelComponentSkills(_props: any): JSX.Element {
           </button>
         </div>
       </div>
+      {!NBIAPI.config.isInClaudeCodeMode && (
+        <div className="nbi-skills-info-banner" role="note">
+          Skills are consumed by Claude Code. Enable Claude mode in the Claude
+          settings tab to use skills you author here.
+        </div>
+      )}
       {syncMessage && (
         <div className="nbi-skills-sync-message" role="status">
           {syncMessage}

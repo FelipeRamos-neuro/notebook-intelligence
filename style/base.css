@@ -1536,7 +1536,8 @@ svg.access-token-warning {
   font-size: var(--jp-ui-font-size1);
 }
 
-.nbi-skills-sync-message {
+.nbi-skills-sync-message,
+.nbi-skills-info-banner {
   padding: 6px 12px;
   border-radius: 4px;
   background-color: var(--jp-layout-color2);
