@@ -390,6 +390,8 @@ The Claude-mode tab is **independent** of the existing non-Claude **MCP Servers*
 
 Reads come from Claude's JSON config files directly (fast, no health checks). Writes (add / remove) shell out to `claude mcp add` / `claude mcp remove` so Claude remains the source of truth for any side effects (project-trust prompts, OAuth bookkeeping).
 
+> **Trust model.** MCP servers run as subprocesses (stdio transport) or accept arbitrary URLs (sse/http transport) inside Claude Code sessions; NBI does not validate or sandbox the command, environment, or network endpoint beyond rejecting CLI flag-smuggling. For multi-tenant or regulated deployments, default to `claude_mcp_management_policy = force-off` and ship a curated set of servers via `~/.claude/settings.json` instead.
+
 ### Disabling the Plugins tab
 
 ```python

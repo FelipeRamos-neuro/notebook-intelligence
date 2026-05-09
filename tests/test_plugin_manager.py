@@ -15,6 +15,7 @@ from notebook_intelligence.extension import (
 from notebook_intelligence.plugin_manager import (
     PluginManager,
     is_github_marketplace_source,
+    is_acceptable_marketplace_source,
     _redact_argv_for_log,
 )
 
@@ -27,25 +28,7 @@ def fake_cli(monkeypatch):
     )
 
 
-def _stub_subprocess(
-    monkeypatch, *, captured: dict, stdout: bytes = b"[]", returncode: int = 0
-):
-    out_bytes = stdout
-    rc = returncode
-
-    async def fake_subprocess(*argv, **kwargs):
-        captured["argv"] = list(argv)
-        captured["kwargs"] = kwargs
-        proc = MagicMock()
-
-        async def communicate():
-            return (out_bytes, b"")
-
-        proc.communicate = communicate
-        proc.returncode = rc
-        return proc
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+from tests.conftest import stub_claude_subprocess as _stub_subprocess  # noqa: E402
 
 
 class TestIsGithubMarketplaceSource:
@@ -62,6 +45,9 @@ class TestIsGithubMarketplaceSource:
             "owner/repo.git",  # .git suffix on shorthand
             "https://github.com:443/owner/repo",  # explicit port
             "HTTPS://GitHub.com/owner/repo",  # case variation
+            "https://www.github.com/owner/repo",  # www subdomain
+            "git://github.com/owner/repo",  # deprecated git protocol
+            "ssh://git@github.com/owner/repo",  # ssh protocol
         ],
     )
     def test_recognizes_github(self, source):
@@ -75,11 +61,49 @@ class TestIsGithubMarketplaceSource:
             "~/home/path",
             "https://example.com/marketplace",
             "owner/repo/extra",  # too many slashes — not bare shorthand
+            "https://github.org/owner/repo",  # similar but not GitHub
+            "https://gitfake.com/owner/repo",
             "",
         ],
     )
     def test_rejects_non_github(self, source):
         assert is_github_marketplace_source(source) is False
+
+
+class TestIsAcceptableMarketplaceSource:
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "https://example.com/manifest",
+            "https://github.com/owner/repo",
+            "github:owner/repo",
+            "ssh://git@github.com/owner/repo",
+            "git://github.com/owner/repo",
+            "git@github.com:owner/repo",
+            "owner/repo",
+            "/abs/path/to/marketplace",
+            "./relative/path",
+            "~/home/path",
+        ],
+    )
+    def test_accepts(self, source):
+        assert is_acceptable_marketplace_source(source) is True
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "http://internal.attacker/manifest",  # plain http blocked (SSRF)
+            "http://169.254.169.254/latest/",  # IMDS-style probe
+            "file:///etc/passwd",
+            "ftp://example.com/manifest",
+            "gopher://example.com",
+            "git://example.com/repo",  # non-github git://
+            "ssh://git@gitlab.com/owner/repo",  # non-github ssh://
+            "",
+        ],
+    )
+    def test_rejects(self, source):
+        assert is_acceptable_marketplace_source(source) is False
 
 
 class TestPluginManagerReads:
@@ -303,6 +327,49 @@ class TestPluginManagerWrites:
                 asyncio.run(manager.add_marketplace(source=value, scope="user"))
             else:
                 asyncio.run(manager.remove_marketplace(name=value))
+
+
+class TestLockSerialization:
+    """Two concurrent writes against the (process-shared) lock must not
+    interleave at the subprocess layer. Catches a regression where the
+    asyncio.Lock gets demoted back to instance-level."""
+
+    def test_concurrent_install_calls_are_serialized(self, fake_cli, monkeypatch):
+        events: list[str] = []
+
+        async def fake_subprocess(*argv, **kwargs):
+            proc = MagicMock()
+            tag = argv[-1]
+
+            async def communicate():
+                events.append(f"start:{tag}")
+                await asyncio.sleep(0.01)
+                events.append(f"end:{tag}")
+                return (b"", b"")
+
+            proc.communicate = communicate
+            proc.returncode = 0
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+
+        async def driver():
+            m1 = PluginManager()
+            m2 = PluginManager()
+            await asyncio.gather(
+                m1.install_plugin(plugin="A", scope="user"),
+                m2.install_plugin(plugin="B", scope="user"),
+            )
+
+        asyncio.run(driver())
+        # No interleaving: each start is followed by its own end before the
+        # next start. We don't assert which won the race, just that they
+        # didn't overlap.
+        assert len(events) == 4
+        assert events[0].startswith("start:")
+        assert events[1] == events[0].replace("start:", "end:")
+        assert events[2].startswith("start:")
+        assert events[3] == events[2].replace("start:", "end:")
 
 
 class TestRedactArgvForLog:

@@ -45,7 +45,10 @@ def _reject_flag_smuggling(*, name: str, command_or_url: str) -> None:
 
 
 def _redact_argv_for_log(argv: list[str]) -> list[str]:
-    """Drop secret-bearing values (-e KEY=value, -H NAME: value) for logs."""
+    """Drop secret-bearing values (-e/--env/-H/--header/--client-secret/...)
+    for logs. Mirrors the helper in plugin_manager — kept local instead of
+    factored out only because the broader `_run_cli` consolidation between
+    these two managers is a tracked follow-up."""
     redacted: list[str] = []
     skip_next = False
     for token in argv:
@@ -54,7 +57,18 @@ def _redact_argv_for_log(argv: list[str]) -> list[str]:
             skip_next = False
             continue
         redacted.append(token)
-        if token in ("-e", "--env", "-H", "--header"):
+        if token in (
+            "-e",
+            "--env",
+            "-H",
+            "--header",
+            "--client-secret",
+            "--client-id",
+            "--token",
+            "--password",
+            "--auth",
+            "--bearer",
+        ):
             skip_next = True
     return redacted
 

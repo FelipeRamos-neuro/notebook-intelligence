@@ -46,9 +46,28 @@ def _reject_flag_smuggling(label: str, value: str) -> None:
         raise ValueError(f"Invalid {label} {value!r}: leading '-' is not permitted")
 
 
+# Flags whose value should never appear in logs. Includes the documented
+# secret-bearing flags from `claude mcp add --help` even though plugin
+# CLIs don't currently use all of them — the cost of a forward-compat
+# entry is negligible vs an accidental leak.
+_SECRET_BEARING_FLAGS = frozenset(
+    [
+        "-e",
+        "--env",
+        "-H",
+        "--header",
+        "--client-secret",
+        "--client-id",
+        "--token",
+        "--password",
+        "--auth",
+        "--bearer",
+    ]
+)
+
+
 def _redact_argv_for_log(argv: list[str]) -> list[str]:
-    """Plugins don't pass secrets via argv today, but use the same redaction
-    shape as `claude_mcp_manager` so future flags additions are safe."""
+    """Drop secret-bearing values for logs. Used by both managers."""
     redacted: list[str] = []
     skip_next = False
     for token in argv:
@@ -57,38 +76,72 @@ def _redact_argv_for_log(argv: list[str]) -> list[str]:
             skip_next = False
             continue
         redacted.append(token)
-        if token in ("-e", "--env", "-H", "--header"):
+        if token in _SECRET_BEARING_FLAGS:
             skip_next = True
     return redacted
+
+
+_GITHUB_URL_SCHEMES = ("http://", "https://", "git://", "ssh://")
+_GITHUB_PREFIX_SCHEMES = ("github:", "git@github.com:")
+_ALLOWED_NON_GITHUB_SCHEMES = ("https://",)
+_LOCAL_PREFIXES = (".", "/", "~")
 
 
 def is_github_marketplace_source(source: str) -> bool:
     """Best-effort detector for sources that resolve via GitHub.
 
-    Matches `github:owner/repo`, `https://github.com/...`, `git@github.com:...`,
-    and `owner/repo[.git][/]` shorthand. Used to gate marketplace-add when
-    an admin sets `allow_github_plugin_import = False`. Lean toward
-    detection (false positives are merely a UX gate; false negatives let
-    GitHub through despite the policy).
+    Matches ``github:owner/repo``, ``https://github.com/...``,
+    ``http://github.com/...``, ``git://github.com/...``,
+    ``ssh://git@github.com/...``, ``git@github.com:owner/repo``, and bare
+    ``owner/repo[.git][/]`` shorthand. Used to gate marketplace-add when
+    an admin sets ``allow_github_plugin_import = False``. Leans toward
+    detection — false positives are a benign UX gate; false negatives
+    bypass the policy.
     """
     s = source.strip()
     if not s:
         return False
     lower = s.lower()
-    if lower.startswith(("github:", "git@github.com:")):
+    if lower.startswith(_GITHUB_PREFIX_SCHEMES):
         return True
-    if lower.startswith(("http://", "https://")):
-        # `hostname` strips port and lowercases, unlike `netloc`.
+    # ssh://git@github.com/owner/repo — `hostname` returns "github.com".
+    if lower.startswith(_GITHUB_URL_SCHEMES):
         host = (urllib.parse.urlparse(s).hostname or "").lower()
         return host == "github.com" or host.endswith(".github.com")
-    # owner/repo shorthand — Claude treats `owner/repo` as a GitHub
-    # reference. Tolerate trailing slash and `.git` suffix; reject anything
-    # path-like or whitespace-bearing.
-    if "/" in s and not s.startswith((".", "/", "~")) and not any(c.isspace() for c in s):
+    # owner/repo shorthand. Tolerate trailing slash and `.git` suffix;
+    # reject anything path-like or whitespace-bearing.
+    if "/" in s and not s.startswith(_LOCAL_PREFIXES) and not any(c.isspace() for c in s):
         stripped = s.rstrip("/")
         if stripped.endswith(".git"):
             stripped = stripped[: -len(".git")]
         return stripped.count("/") == 1
+    return False
+
+
+def is_acceptable_marketplace_source(source: str) -> bool:
+    """Reject ``http://`` URLs and exotic schemes (file://, ftp://, etc.) so
+    marketplace-add can't be aimed at internal-network HTTP endpoints or
+    used for SSRF-style probes. Accepts: ``https://`` URLs, ``github:``,
+    ``git@github.com:``, ``git://github.com/...``, ``ssh://git@github.com/...``,
+    bare ``owner/repo`` shorthand, and local filesystem paths.
+    """
+    s = source.strip()
+    if not s:
+        return False
+    lower = s.lower()
+    if lower.startswith(_GITHUB_PREFIX_SCHEMES):
+        return True
+    if lower.startswith(_LOCAL_PREFIXES):
+        return True
+    if lower.startswith(_ALLOWED_NON_GITHUB_SCHEMES):
+        return True
+    # git:// and ssh:// are accepted only when the host is GitHub; the
+    # detector above already short-circuits the policy gate for these.
+    if lower.startswith(("git://", "ssh://")):
+        return is_github_marketplace_source(s)
+    # Bare scheme-less form (`owner/repo` or `./local/path`).
+    if "://" not in s and ":" not in s.split("/", 1)[0]:
+        return True
     return False
 
 
@@ -172,6 +225,13 @@ class PluginManager:
         if not source:
             raise ValueError("Missing marketplace source")
         _reject_flag_smuggling("source", source)
+        if not is_acceptable_marketplace_source(source):
+            raise ValueError(
+                f"Invalid marketplace source {source!r}: only https://, "
+                "git@github.com:, github:, ssh://git@github.com, "
+                "git://github.com, owner/repo shorthand, and local paths "
+                "are accepted"
+            )
         if not allow_github and is_github_marketplace_source(source):
             raise PermissionError(
                 "Adding marketplaces from GitHub is disabled by your administrator"

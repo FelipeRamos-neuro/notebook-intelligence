@@ -85,7 +85,7 @@ export function SettingsPanelComponentClaudeMCP(_props: any): JSX.Element {
   return (
     <div className="config-dialog-body nbi-skills-panel">
       <div className="nbi-skills-header">
-        <div className="nbi-skills-title">MCP Servers</div>
+        <div className="nbi-skills-title">Claude MCP</div>
         <div className="nbi-skills-header-actions">
           <button
             className="jp-Dialog-button jp-mod-reject jp-mod-styled"
@@ -278,6 +278,12 @@ function ClaudeMCPAddDialog(props: {
         role="dialog"
         aria-modal="true"
         onClick={e => e.stopPropagation()}
+        onKeyDown={e => {
+          if (e.key === 'Escape' && !submitting) {
+            props.onCancel();
+          }
+        }}
+        tabIndex={-1}
       >
         <div className="nbi-modal-title">Add MCP server</div>
         <div className="nbi-modal-body">

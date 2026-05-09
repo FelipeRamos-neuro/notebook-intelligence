@@ -742,6 +742,11 @@ class PolicyGatedHandler(APIHandler):
             self.set_status(403)
             self.finish(json.dumps({"error": self.policy_disabled_message}))
 
+    # Subclasses extend this to map domain-specific exception types to HTTP
+    # statuses. Anything not covered (or in the parent's empty default)
+    # falls through to 400.
+    exception_status_map: dict[type[Exception], int] = {}
+
     def _parse_json_body(self):
         try:
             return json.loads(self.request.body)
@@ -750,6 +755,16 @@ class PolicyGatedHandler(APIHandler):
             self.finish(json.dumps({"error": f"Invalid JSON: {e}"}))
             return None
 
+    def _error(self, exc: Exception):
+        # Walk MRO so a subclass exception inherits its parent's status.
+        for cls, status in self.exception_status_map.items():
+            if isinstance(exc, cls):
+                self.set_status(status)
+                self.finish(json.dumps({"error": str(exc)}))
+                return
+        self.set_status(400)
+        self.finish(json.dumps({"error": str(exc)}))
+
 
 class ClaudeMCPBaseHandler(PolicyGatedHandler):
     """Shared helpers + policy gate for Claude-MCP endpoints."""
@@ -757,19 +772,14 @@ class ClaudeMCPBaseHandler(PolicyGatedHandler):
     claude_mcp_management_enabled = True
     policy_enabled_attr = "claude_mcp_management_enabled"
     policy_disabled_message = "Claude MCP management is disabled by your administrator"
+    exception_status_map = {
+        FileNotFoundError: 404,
+        TimeoutError: 504,
+    }
 
     @property
     def manager(self) -> "ClaudeMCPManager":
         return ClaudeMCPManager(working_dir=get_jupyter_root_dir() or None)
-
-    def _error(self, exc: Exception):
-        if isinstance(exc, FileNotFoundError):
-            self.set_status(404)
-        elif isinstance(exc, TimeoutError):
-            self.set_status(504)
-        else:
-            self.set_status(400)
-        self.finish(json.dumps({"error": str(exc)}))
 
 
 class ClaudeMCPListHandler(ClaudeMCPBaseHandler):
@@ -829,21 +839,15 @@ class PluginsBaseHandler(PolicyGatedHandler):
     plugins_management_enabled = True
     policy_enabled_attr = "plugins_management_enabled"
     policy_disabled_message = "Plugins management is disabled by your administrator"
+    exception_status_map = {
+        FileNotFoundError: 404,
+        PermissionError: 403,
+        TimeoutError: 504,
+    }
 
     @property
     def manager(self) -> "PluginManager":
         return PluginManager()
-
-    def _error(self, exc: Exception):
-        if isinstance(exc, FileNotFoundError):
-            self.set_status(404)
-        elif isinstance(exc, PermissionError):
-            self.set_status(403)
-        elif isinstance(exc, TimeoutError):
-            self.set_status(504)
-        else:
-            self.set_status(400)
-        self.finish(json.dumps({"error": str(exc)}))
 
 
 class PluginsListHandler(PluginsBaseHandler):
@@ -952,6 +956,10 @@ class SkillsBaseHandler(PolicyGatedHandler):
     skills_management_enabled = True
     policy_enabled_attr = "skills_management_enabled"
     policy_disabled_message = "Skills management is disabled by your administrator"
+    exception_status_map = {
+        FileExistsError: 409,
+        FileNotFoundError: 404,
+    }
 
     @property
     def skill_manager(self):
@@ -964,14 +972,6 @@ class SkillsBaseHandler(PolicyGatedHandler):
         self.finish(json.dumps({"error": "GitHub Skill import is disabled by configuration"}))
         return True
 
-    def _error(self, exc):
-        if isinstance(exc, FileExistsError):
-            self.set_status(409)
-        elif isinstance(exc, FileNotFoundError):
-            self.set_status(404)
-        else:
-            self.set_status(400)
-        self.finish(json.dumps({"error": str(exc)}))
 
     def _bundle_rel_path(self):
         rel_path = self.get_query_argument("path", default=None)
@@ -980,14 +980,6 @@ class SkillsBaseHandler(PolicyGatedHandler):
             self.finish(json.dumps({"error": "Missing required 'path' query parameter"}))
             return None
         return rel_path
-
-    def _parse_json_body(self):
-        try:
-            return json.loads(self.request.body)
-        except json.JSONDecodeError as e:
-            self.set_status(400)
-            self.finish(json.dumps({"error": f"Invalid JSON: {e}"}))
-            return None
 
 
 class SkillsListHandler(SkillsBaseHandler):
@@ -2109,14 +2101,15 @@ class NotebookIntelligence(ExtensionApp):
         default_value=POLICY_USER_CHOICE,
         help="""
         Org-wide policy for the Skills management UI. "user-choice" (default)
-        and "force-on" both leave the Skills tab visible — there is no user
-        toggle to override, so the two are behaviorally identical today; the
-        three-value shape is preserved for symmetry with the other
-        feature_policies. "force-off" hides the tab, returns 403 from
-        /skills handlers, and **also disables the managed-skills reconciler**
-        — orgs that ship curated skills via NBI_SKILLS_MANIFEST should leave
-        this on user-choice and rely on filesystem permissions instead.
-        Overridden by the NBI_SKILLS_MANAGEMENT_POLICY env var.
+        and "force-on" both leave the Skills tab visible. There is no user
+        toggle to override, so neither value flips a user-visible setting on
+        its own — the three-value shape is preserved for symmetry with the
+        other feature_policies. "force-off" is the materially different
+        case: hides the tab, returns 403 from /skills handlers, and *also*
+        disables the managed-skills reconciler. Orgs that ship curated
+        skills via NBI_SKILLS_MANIFEST should leave this on user-choice and
+        rely on filesystem permissions instead. Overridden by the
+        NBI_SKILLS_MANAGEMENT_POLICY env var.
         """,
         config=True,
     )

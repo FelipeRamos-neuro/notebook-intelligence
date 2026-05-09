@@ -172,9 +172,8 @@ export function SettingsPanelComponentPlugins(_props: any): JSX.Element {
       </div>
 
       <div className="nbi-info-banner" role="note">
-        Plugins are managed by the <code>claude</code> CLI; this panel is a thin
-        wrapper. Install / uninstall / enable / disable shell out to{' '}
-        <code>claude plugin</code>.
+        Add a marketplace to discover plugins, then install one to extend Claude
+        Code with new commands, agents, and tool integrations.
       </div>
 
       {error && (
@@ -396,6 +395,12 @@ function PluginInstallDialog(props: {
         role="dialog"
         aria-modal="true"
         onClick={e => e.stopPropagation()}
+        onKeyDown={e => {
+          if (e.key === 'Escape' && !submitting) {
+            props.onCancel();
+          }
+        }}
+        tabIndex={-1}
       >
         <div className="nbi-modal-title">Install plugin</div>
         <div className="nbi-modal-body">
@@ -491,6 +496,12 @@ function MarketplaceAddDialog(props: {
         role="dialog"
         aria-modal="true"
         onClick={e => e.stopPropagation()}
+        onKeyDown={e => {
+          if (e.key === 'Escape' && !submitting) {
+            props.onCancel();
+          }
+        }}
+        tabIndex={-1}
       >
         <div className="nbi-modal-title">Add plugin marketplace</div>
         <div className="nbi-modal-body">

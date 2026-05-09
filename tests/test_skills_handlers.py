@@ -56,6 +56,8 @@ def _make_handler(handler_cls, body: bytes = b"", query_args: dict | None = None
         lambda: SkillsBaseHandler._reject_if_github_import_disabled(handler)
     )
     handler.allow_github_skill_import = SkillsBaseHandler.allow_github_skill_import
+    # `_error` reads the real dict, not the spec'd mock proxy.
+    handler.exception_status_map = SkillsBaseHandler.exception_status_map
     return handler
 
 

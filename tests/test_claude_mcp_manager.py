@@ -341,6 +341,52 @@ class TestRedactArgvForLog:
         assert _redact_argv_for_log(argv) == argv
 
 
+class TestLockSerialization:
+    """Two concurrent writes against the (process-shared) lock must not
+    interleave at the subprocess layer."""
+
+    def test_concurrent_add_server_calls_are_serialized(
+        self, claude_home, working_dir, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "notebook_intelligence.claude_mcp_manager.resolve_claude_cli_path",
+            lambda: "/usr/local/bin/claude",
+        )
+        events: list[str] = []
+
+        async def fake_subprocess(*argv, **kwargs):
+            proc = MagicMock()
+            # `claude mcp add ... <name> <commandOrUrl>` — name is second-to-last.
+            tag = argv[-2]
+
+            async def communicate():
+                events.append(f"start:{tag}")
+                await asyncio.sleep(0.01)
+                events.append(f"end:{tag}")
+                return (b"", b"")
+
+            proc.communicate = communicate
+            proc.returncode = 0
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+
+        async def driver():
+            m1 = ClaudeMCPManager(working_dir=str(working_dir))
+            m2 = ClaudeMCPManager(working_dir=str(working_dir))
+            await asyncio.gather(
+                m1.add_server(name="A", scope="user", transport="stdio", command_or_url="x"),
+                m2.add_server(name="B", scope="user", transport="stdio", command_or_url="y"),
+            )
+
+        asyncio.run(driver())
+        assert len(events) == 4
+        assert events[0].startswith("start:")
+        assert events[1] == events[0].replace("start:", "end:")
+        assert events[2].startswith("start:")
+        assert events[3] == events[2].replace("start:", "end:")
+
+
 class TestClaudeMCPManagementPolicyGate:
     """Mirror of TestSkillsManagementPolicyGate — ensures the prepare()
     chokepoint short-circuits with 403 when force-off."""
