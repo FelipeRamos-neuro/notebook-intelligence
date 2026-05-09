@@ -38,7 +38,7 @@ NBI reads configuration from three layers, listed in order of precedence (later 
 2. **User config** — `~/.jupyter/nbi/config.json` and `~/.jupyter/nbi/mcp.json`. The user mutates these via the Settings dialog. Lives on the per-user PVC.
 3. **Environment variables** — `NBI_*` and certain provider variables (see the [reference table](#environment-variables-and-traitlets)). Override at pod startup time.
 
-Traitlets configured via JupyterLab CLI flags or `jupyter_server_config.py` (e.g., `c.NotebookIntelligence.disabled_providers = [...]`) are evaluated at server startup. Where a traitlet has a corresponding env var (e.g., `NBI_ENABLED_PROVIDERS` for `disabled_providers` and `allow_enabling_providers_with_env`), NBI reads the env var at request time.
+Traitlets configured via JupyterLab CLI flags or `jupyter_server_config.py` (e.g., `c.NotebookIntelligence.disabled_providers = [...]`) are evaluated at server startup. Most env-var overrides (`NBI_*_POLICY`, `NBI_ALLOW_GITHUB_*`, `NBI_*_MANAGEMENT_POLICY`, etc.) are also resolved once at startup and cached on the handler classes — flipping them requires a JupyterLab restart. The `NBI_ENABLED_PROVIDERS` and `NBI_ENABLED_BUILTIN_TOOLS` re-enable env vars (gated by `allow_enabling_*_with_env`) are the exception: those are read on every request.
 
 Manual edits to `config.json` while JupyterLab is running require a JupyterLab restart to take effect. Edits via the Settings dialog are picked up live.
 
@@ -369,7 +369,7 @@ Force-off does three things at once:
 
 - Hides the **Skills** tab in the Settings panel.
 - Returns HTTP 403 from every `/notebook-intelligence/skills/*` route, so a stale frontend or a direct API caller can't read or write skills.
-- Suppresses the [managed-skills reconciler](#managed-claude-skills-token) — the manifest is treated as empty, no `SkillReconciler` is constructed, and no scheduled reconcile runs. Org-curated skills still on disk are not touched, but new manifests aren't pulled.
+- Suppresses the [managed-skills reconciler](#managed-claude-skills-token) — the manifest is treated as empty, no `SkillReconciler` is constructed, and no scheduled reconcile runs. Org-curated skills still on disk are not touched, but new manifests aren't pulled. **Takes effect on JupyterLab server restart.** Live config-reload won't stop a reconciler that's already running.
 
 Use this when an org wants to disable user-authored Claude skills entirely.
 
@@ -401,6 +401,8 @@ c.NotebookIntelligence.plugins_management_policy = "force-off"
 Or via env: `NBI_PLUGINS_MANAGEMENT_POLICY=force-off`.
 
 Force-off hides the **Plugins** tab and returns 403 from every `/notebook-intelligence/plugins/*` route. The tab is otherwise visible only when Claude mode is on and the `claude` CLI is available. Both reads (`claude plugin list --json`) and writes (`claude plugin install` / `uninstall` / `enable` / `disable` / `marketplace add` / `marketplace remove`) shell out to the Claude CLI; Claude owns the plugin state under `~/.claude/plugins/`.
+
+> **Blast radius.** Force-off only kills the _management UI_ — already-installed plugins keep loading inside Claude Code sessions because Claude's plugin loader doesn't consult NBI's policy. To stop existing plugins from loading, you'd need to remove them on disk or disable them via the `claude plugin disable` CLI before flipping the policy. Force-off prevents user-driven add/remove/enable/disable through NBI; that's the contract.
 
 To allow user-driven plugin management but block GitHub-sourced marketplaces:
 

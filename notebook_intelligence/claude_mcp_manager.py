@@ -25,15 +25,15 @@ from pathlib import Path
 from typing import Iterable, Literal, Optional
 
 from notebook_intelligence._claude_cli import (
-    redact_argv_for_log as _redact_argv_for_log,
+    CLAUDE_SCOPES,
     reject_flag_smuggling,
     run_claude_cli,
+    validate_scope,
 )
 
 log = logging.getLogger(__name__)
 
 ClaudeMCPScope = Literal["user", "project", "local"]
-VALID_SCOPES: tuple[ClaudeMCPScope, ...] = ("user", "project", "local")
 VALID_TRANSPORTS: tuple[str, ...] = ("stdio", "sse", "http")
 
 CLI_TIMEOUT_SECONDS = 30.0
@@ -168,8 +168,7 @@ class ClaudeMCPManager:
         headers: Optional[dict[str, str]] = None,
     ) -> ClaudeMCPServer:
         """Run ``claude mcp add`` and return the persisted record."""
-        if scope not in VALID_SCOPES:
-            raise ValueError(f"Invalid scope {scope!r}; expected one of {VALID_SCOPES}")
+        validate_scope(scope)
         if transport not in VALID_TRANSPORTS:
             raise ValueError(
                 f"Invalid transport {transport!r}; expected one of {VALID_TRANSPORTS}"
@@ -222,8 +221,7 @@ class ClaudeMCPManager:
         return srv
 
     async def remove_server(self, name: str, scope: ClaudeMCPScope) -> None:
-        if scope not in VALID_SCOPES:
-            raise ValueError(f"Invalid scope {scope!r}; expected one of {VALID_SCOPES}")
+        validate_scope(scope)
         if not name:
             raise ValueError("Missing server name")
         reject_flag_smuggling("name", name)

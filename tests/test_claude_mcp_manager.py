@@ -160,6 +160,57 @@ class TestClaudeMCPManagerListServers:
 
 
 class TestClaudeMCPManagerWrites:
+    def test_add_returns_canonical_record_when_post_read_succeeds(
+        self, claude_home, working_dir, monkeypatch
+    ):
+        """When the post-add re-read finds the freshly-written server, the
+        canonical record (parsed from disk) is returned — *not* the
+        synthesized fallback. This pins the preference: a regression that
+        always synthesized would silently lose any field-level rewriting
+        Claude does (e.g. inferring transport from the URL)."""
+        monkeypatch.setattr(
+            "notebook_intelligence._claude_cli.resolve_claude_cli_path",
+            lambda: "/usr/local/bin/claude",
+        )
+
+        async def fake_subprocess(*argv, **kwargs):
+            # Simulate Claude actually writing the server to ~/.claude.json.
+            doc = {
+                "mcpServers": {
+                    "my-srv": {
+                        "type": "stdio",
+                        "command": "claude-rewrote-this",
+                        "args": ["--from", "claude"],
+                        "env": {"CLAUDE": "added"},
+                    }
+                }
+            }
+            (claude_home / ".claude.json").write_text(json.dumps(doc))
+            proc = MagicMock()
+
+            async def communicate():
+                return (b"", b"")
+
+            proc.communicate = communicate
+            proc.returncode = 0
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+        manager = ClaudeMCPManager(working_dir=str(working_dir))
+        result = asyncio.run(
+            manager.add_server(
+                name="my-srv",
+                scope="user",
+                transport="stdio",
+                command_or_url="user-supplied-cmd",
+                args=["--user-arg"],
+            )
+        )
+        # Canonical fields from disk, not synthesized from inputs.
+        assert result.command == "claude-rewrote-this"
+        assert result.args == ["--from", "claude"]
+        assert result.env == {"CLAUDE": "added"}
+
     @pytest.mark.parametrize("scope", ["user", "project", "local"])
     def test_add_invokes_cli_with_correct_args(
         self, claude_home, working_dir, scope, monkeypatch
@@ -315,7 +366,7 @@ class TestClaudeMCPManagerWrites:
 
 class TestRedactArgvForLog:
     def test_redacts_env_values(self):
-        from notebook_intelligence.claude_mcp_manager import _redact_argv_for_log
+        from notebook_intelligence._claude_cli import redact_argv_for_log as _redact_argv_for_log
 
         argv = ["claude", "mcp", "add", "-e", "API_KEY=sk-secret", "name", "cmd"]
         assert _redact_argv_for_log(argv) == [
@@ -329,13 +380,13 @@ class TestRedactArgvForLog:
         ]
 
     def test_redacts_header_values(self):
-        from notebook_intelligence.claude_mcp_manager import _redact_argv_for_log
+        from notebook_intelligence._claude_cli import redact_argv_for_log as _redact_argv_for_log
 
         argv = ["claude", "mcp", "add", "-H", "Authorization: Bearer abc"]
         assert _redact_argv_for_log(argv)[-2:] == ["-H", "<redacted>"]
 
     def test_passes_through_non_secrets(self):
-        from notebook_intelligence.claude_mcp_manager import _redact_argv_for_log
+        from notebook_intelligence._claude_cli import redact_argv_for_log as _redact_argv_for_log
 
         argv = ["claude", "mcp", "add", "--scope", "user", "name", "npx"]
         assert _redact_argv_for_log(argv) == argv

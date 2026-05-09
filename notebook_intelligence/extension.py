@@ -200,6 +200,21 @@ def _resolve_bool_with_env(env_var_name: str, fallback: bool | None) -> bool:
 # Single source of truth for the boolean policies. Each entry is
 # ``(policy_name, env_var, traitlet_attr)``. Drives env-var resolution, the
 # capabilities response, and the lock-rejection set in ConfigHandler.
+#
+# Adding a new policy requires updates in *seven* places — keep them all in
+# sync or the policy will silently no-op:
+#   1. A new tuple entry below.
+#   2. A ``TraitletEnum`` declaration on ``NotebookIntelligence`` further
+#      down in this file.
+#   3. A ``user_values`` entry in ``_build_feature_policies_response``
+#      (admin-only gates use ``True``).
+#   4. (For backend gates) An ``is_force_off`` call in ``_setup_handlers``
+#      that sets the resolved bool on the handler class.
+#   5. A row in the Admin policies table in ``README.md``.
+#   6. A section in ``docs/admin-guide.md``.
+#   7. ``FeaturePolicyName`` union + the ``names`` array in
+#      ``src/api.ts`` ``featurePolicies``. Admin-only gates also need an
+#      entry in the ``defaultOpen`` set if they should default visible.
 FEATURE_POLICY_SPEC = (
     ("explain_error", "NBI_EXPLAIN_ERROR_POLICY", "explain_error_policy"),
     ("output_followup", "NBI_OUTPUT_FOLLOWUP_POLICY", "output_followup_policy"),
@@ -720,12 +735,27 @@ class RulesReloadHandler(APIHandler):
 
 
 class PolicyGatedHandler(APIHandler):
-    """APIHandler that short-circuits with 403 in `prepare()` when the
-    associated admin policy is force-off.
+    """APIHandler base used by all NBI management surfaces (Skills,
+    Claude-MCP, Plugins). Owns three concerns:
 
-    Subclasses set ``policy_enabled_attr`` to the class-attribute name that
-    holds the resolved bool (set in ``_setup_handlers``), and
-    ``policy_disabled_message`` for the user-facing error string.
+    1. **Admin policy gate** in ``prepare()``. Short-circuits with 403
+       when the associated ``*_management_policy`` resolves to
+       ``force-off``. Subclasses set ``policy_enabled_attr`` to the
+       class-attribute name holding the resolved bool (mutated in
+       ``_setup_handlers``), and ``policy_disabled_message`` for the
+       user-facing error string.
+
+    2. **JSON request parsing** via ``_parse_json_body``. Returns the
+       decoded body or ``None`` after writing a 400; callers must ``if
+       data is None: return``.
+
+    3. **Domain-aware error mapping** via ``_error`` + the
+       ``exception_status_map`` class attribute (exception class → HTTP
+       status). Most-specific class wins via MRO depth ordering.
+
+    Subclasses also typically expose a ``manager`` property that returns
+    the per-domain CLI/file-backed manager — convention rather than
+    contract since not every handler needs one.
     """
 
     policy_enabled_attr: str = ""
@@ -743,8 +773,10 @@ class PolicyGatedHandler(APIHandler):
             self.finish(json.dumps({"error": self.policy_disabled_message}))
 
     # Subclasses extend this to map domain-specific exception types to HTTP
-    # statuses. Anything not covered (or in the parent's empty default)
-    # falls through to 400.
+    # statuses. Most-specific class wins (we sort by MRO depth at lookup
+    # time), so a subclass that adds ``OSError: 500`` next to an
+    # inherited ``FileNotFoundError: 404`` still routes the latter to 404.
+    # Anything not covered falls through to 400.
     exception_status_map: dict[type[Exception], int] = {}
 
     def _parse_json_body(self):
@@ -756,12 +788,16 @@ class PolicyGatedHandler(APIHandler):
             return None
 
     def _error(self, exc: Exception):
-        # Walk MRO so a subclass exception inherits its parent's status.
-        for cls, status in self.exception_status_map.items():
-            if isinstance(exc, cls):
-                self.set_status(status)
-                self.finish(json.dumps({"error": str(exc)}))
-                return
+        # Sort candidates by MRO depth (deepest = most specific) so
+        # narrower exception classes always win over their bases.
+        candidates = sorted(
+            (cls for cls in self.exception_status_map if isinstance(exc, cls)),
+            key=lambda c: -len(c.__mro__),
+        )
+        if candidates:
+            self.set_status(self.exception_status_map[candidates[0]])
+            self.finish(json.dumps({"error": str(exc)}))
+            return
         self.set_status(400)
         self.finish(json.dumps({"error": str(exc)}))
 

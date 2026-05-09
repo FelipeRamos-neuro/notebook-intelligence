@@ -12,11 +12,11 @@ from notebook_intelligence.extension import (
     PluginsBaseHandler,
     PluginsListHandler,
 )
+from notebook_intelligence._claude_cli import redact_argv_for_log
 from notebook_intelligence.plugin_manager import (
     PluginManager,
-    is_github_marketplace_source,
     is_acceptable_marketplace_source,
-    _redact_argv_for_log,
+    is_github_marketplace_source,
 )
 
 
@@ -161,7 +161,6 @@ class TestPluginManagerReads:
             b'{"installed":[{"name":"a"}]}',
             b'{"plugins":[{"name":"a"}]}',
             b'{"items":[{"name":"a"}]}',
-            b'{"data":[{"name":"a"}]}',
         ],
     )
     def test_list_plugins_handles_wrapper_shapes(
@@ -170,6 +169,18 @@ class TestPluginManagerReads:
         _stub_subprocess(monkeypatch, captured={}, stdout=wrapper)
         manager = PluginManager()
         assert asyncio.run(manager.list_plugins()) == [{"name": "a"}]
+
+    def test_list_plugins_rejects_generic_data_wrapper(
+        self, fake_cli, monkeypatch
+    ):
+        # `data` is generic enough to mean a metadata envelope rather than
+        # a plugin list, so the parser does not walk into it.
+        _stub_subprocess(
+            monkeypatch, captured={}, stdout=b'{"data":[{"name":"a"}]}'
+        )
+        manager = PluginManager()
+        with pytest.raises(ValueError, match="Unrecognized JSON shape"):
+            asyncio.run(manager.list_plugins())
 
     def test_list_plugins_unknown_shape_raises(self, fake_cli, monkeypatch):
         # Surface CLI version skew explicitly rather than masquerading as
@@ -256,6 +267,46 @@ class TestPluginManagerWrites:
                     source="acme/repo", scope="user", allow_github=False
                 )
             )
+
+    def test_github_gate_independent_of_policy_gate(
+        self, fake_cli, monkeypatch
+    ):
+        """The two gates compose: ``allow_github=False`` rejects a GitHub
+        source with ``PermissionError`` regardless of policy state, and a
+        non-GitHub source with ``allow_github=False`` still proceeds. The
+        policy gate (force-off → 403 in the handler's ``prepare()``)
+        sits *above* the manager and is independent — exercised by
+        ``test_policy_gate.py``. This test pins the manager-layer
+        contract: ``allow_github`` is the only thing that affects the
+        manager's permission decision."""
+        captured: dict = {}
+        _stub_subprocess(monkeypatch, captured=captured)
+        manager = PluginManager()
+
+        # GitHub source + allow_github=False → PermissionError, no CLI call.
+        captured.clear()
+        with pytest.raises(PermissionError):
+            asyncio.run(
+                manager.add_marketplace(
+                    source="acme/repo", scope="user", allow_github=False
+                )
+            )
+        assert captured.get("argv") is None
+
+        # Non-GitHub source + allow_github=False → CLI call proceeds.
+        asyncio.run(
+            manager.add_marketplace(
+                source="https://example.com/manifest",
+                scope="user",
+                allow_github=False,
+            )
+        )
+        assert captured["argv"][1:5] == [
+            "plugin",
+            "marketplace",
+            "add",
+            "--scope",
+        ]
 
     def test_add_marketplace_allows_non_github_when_disabled(
         self, fake_cli, monkeypatch
@@ -375,7 +426,7 @@ class TestLockSerialization:
 class TestRedactArgvForLog:
     def test_redacts_env_and_header_values(self):
         argv = ["claude", "plugin", "install", "-e", "K=v", "-H", "Auth: token"]
-        assert _redact_argv_for_log(argv) == [
+        assert redact_argv_for_log(argv) == [
             "claude",
             "plugin",
             "install",
@@ -384,6 +435,32 @@ class TestRedactArgvForLog:
             "-H",
             "<redacted>",
         ]
+
+    @pytest.mark.parametrize(
+        "flag",
+        [
+            "--client-secret",
+            "--client-id",
+            "--token",
+            "--password",
+            "--auth",
+            "--bearer",
+        ],
+    )
+    def test_redacts_forward_compat_secret_flags(self, flag):
+        argv = ["claude", "plugin", "install", flag, "supersecret", "name"]
+        assert redact_argv_for_log(argv) == [
+            "claude",
+            "plugin",
+            "install",
+            flag,
+            "<redacted>",
+            "name",
+        ]
+
+    def test_passes_through_non_secret_flags(self):
+        argv = ["claude", "plugin", "install", "--scope", "user", "name"]
+        assert redact_argv_for_log(argv) == argv
 
 
 # Per-family policy-gate coverage lives in `tests/test_policy_gate.py`,

@@ -410,11 +410,25 @@ export class NBIConfig {
       'claude_mcp_management',
       'plugins_management'
     ];
+    // Admin-only management gates (no per-user toggle) default *open* when
+    // missing — a new frontend hitting an older backend without these
+    // capability fields must keep the tab visible. The other policies pair
+    // with a user-toggle and default closed (a missing field means "no
+    // user pref recorded yet, treat as off"), matching prior semantics.
+    const defaultOpen: ReadonlySet<FeaturePolicyName> = new Set([
+      'skills_management',
+      'claude_mcp_management',
+      'plugins_management'
+    ]);
     const result = {} as IFeaturePolicies;
     for (const name of names) {
+      const entry = v[name];
+      const enabled = defaultOpen.has(name)
+        ? entry?.enabled !== false
+        : entry?.enabled === true;
       result[name] = {
-        enabled: v[name]?.enabled === true,
-        locked: v[name]?.locked === true
+        enabled,
+        locked: entry?.locked === true
       };
     }
     return result;

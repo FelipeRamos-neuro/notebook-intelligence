@@ -106,109 +106,93 @@ class TestPolicyGate:
 
 
 class TestPolicyGateIntegration(AsyncHTTPTestCase):
-    """End-to-end dispatch test for the gate's contract. Doesn't go
-    through APIHandler — we synthesize a minimal subclass that exposes
-    the same `prepare()` shape as `PolicyGatedHandler` over a plain
-    `RequestHandler`, then drive real Tornado dispatch to assert:
+    """End-to-end dispatch test that uses the *real* PolicyGatedHandler.
 
-      * gate runs after super().prepare() and respects an already-finished
-        request (no double-finish, no overwriting an earlier status)
+    Earlier versions of this test re-implemented the gate body in the test
+    itself, so a regression in production would not have been caught. We
+    now subclass ``PolicyGatedHandler`` directly and patch only the
+    auth-bearing ``APIHandler.prepare`` to a no-op coroutine — that lets us
+    drive the real prepare() chokepoint without setting up cookie_secret
+    and identity_provider for every test.
+
+    Asserts:
+      * gate runs *after* ``await super().prepare()``
+      * gate respects an already-finished request (the ``_finished`` guard)
       * gate short-circuits with 403 + JSON error on force-off
       * gate is a no-op when enabled (handler method runs)
-
-    Catches a regression where someone reorders prepare() so the gate
-    runs *before* `await super().prepare()`, or removes the `_finished`
-    guard.
     """
 
     DISABLED_MESSAGE = "the gate is force-off"
 
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from jupyter_server.base.handlers import APIHandler
+
+        async def _noop(_self):
+            return None
+
+        cls._api_handler_patcher = patch.object(APIHandler, "prepare", _noop)
+        cls._api_handler_patcher.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._api_handler_patcher.stop()
+        super().tearDownClass()
+
     def get_app(self):
-        from tornado.web import Application, RequestHandler
+        from notebook_intelligence.extension import PolicyGatedHandler
+        from tornado.web import Application
 
-        class _ParentEarlyFinish(RequestHandler):
-            """Stand-in for an APIHandler whose `prepare` finishes early
-            (e.g. auth rejection). The gate must not overwrite this."""
-
-            async def prepare(self):
-                self.set_status(401)
-                self.finish(json.dumps({"error": "from parent"}))
-
-        class _ParentPassThrough(RequestHandler):
-            async def prepare(self):
-                return
-
-        # Mirror the PolicyGatedHandler contract verbatim so any future
-        # change there must be reflected here — keeping the test honest.
-        async def _gate_prepare(self):
-            await super(self.__class__.__mro__[0], self).prepare()
-            if self._finished:
-                return
-            attr = self.policy_enabled_attr
-            if attr and not getattr(self, attr, True):
-                self.set_status(403)
-                self.finish(json.dumps({"error": self.policy_disabled_message}))
-
-        class _GateOverPassThrough(_ParentPassThrough):
+        class _PassthroughGate(PolicyGatedHandler):  # type: ignore[misc]
             policy_enabled_attr = "gate_enabled"
             policy_disabled_message = TestPolicyGateIntegration.DISABLED_MESSAGE
             gate_enabled = True
-
-            async def prepare(self):
-                await _ParentPassThrough.prepare(self)
-                if self._finished:
-                    return
-                if not getattr(self, self.policy_enabled_attr, True):
-                    self.set_status(403)
-                    self.finish(
-                        json.dumps({"error": self.policy_disabled_message})
-                    )
 
             async def get(self):
                 self.set_status(200)
                 self.finish(json.dumps({"ok": True}))
 
-        class _GateOverEarlyFinish(_ParentEarlyFinish):
+        class _ParentFinishesEarly(PolicyGatedHandler):  # type: ignore[misc]
+            """Override prepare to finish before the gate body runs via
+            super, simulating an APIHandler that rejected auth. The gate
+            must not overwrite the early finish."""
+
             policy_enabled_attr = "gate_enabled"
             policy_disabled_message = TestPolicyGateIntegration.DISABLED_MESSAGE
-            gate_enabled = False  # Force-off, but parent finishes first.
+            gate_enabled = False  # force-off — but parent finishes first
 
             async def prepare(self):
-                await _ParentEarlyFinish.prepare(self)
-                if self._finished:
-                    return  # The guard under test.
-                if not getattr(self, self.policy_enabled_attr, True):
-                    self.set_status(403)
-                    self.finish(
-                        json.dumps({"error": self.policy_disabled_message})
-                    )
+                self.set_status(401)
+                self.finish(json.dumps({"error": "from parent"}))
+                # Now invoke the real chokepoint via super — it must respect
+                # ``_finished`` and not overwrite the 401 with 403.
+                await super().prepare()
 
             async def get(self):
                 self.set_status(200)
 
-        self._enabled_cls = _GateOverPassThrough
+        self._passthrough_cls = _PassthroughGate
         return Application(
             [
-                (r"/gate-pass", _GateOverPassThrough),
-                (r"/gate-parent-finished", _GateOverEarlyFinish),
+                (r"/gate-pass", _PassthroughGate),
+                (r"/gate-parent-finished", _ParentFinishesEarly),
             ]
         )
 
     def test_passes_through_when_enabled(self):
-        self._enabled_cls.gate_enabled = True
+        self._passthrough_cls.gate_enabled = True
         response = self.fetch("/gate-pass")
         assert response.code == 200
         assert json.loads(response.body) == {"ok": True}
 
     def test_short_circuits_when_disabled(self):
-        self._enabled_cls.gate_enabled = False
+        self._passthrough_cls.gate_enabled = False
         response = self.fetch("/gate-pass")
         assert response.code == 403
         assert json.loads(response.body) == {"error": self.DISABLED_MESSAGE}
 
     def test_respects_parent_early_finish(self):
-        # Even with the gate force-off, the parent's earlier 401 must win
-        # — no double-finish, no overwrite.
         response = self.fetch("/gate-parent-finished")
         assert response.code == 401
         assert json.loads(response.body) == {"error": "from parent"}

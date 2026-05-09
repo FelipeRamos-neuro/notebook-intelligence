@@ -22,15 +22,10 @@ export function FormDialog(props: {
   canSubmit: boolean;
   submitting: boolean;
   error?: string | null;
-  primary?: 'accept' | 'reject';
   onCancel: () => void;
   onSubmit: () => void;
   children: ReactNode;
 }): JSX.Element {
-  const primaryClass =
-    props.primary === 'reject'
-      ? 'jp-Dialog-button jp-mod-reject jp-mod-styled'
-      : 'jp-Dialog-button jp-mod-accept jp-mod-styled';
   return (
     <div className="nbi-modal-backdrop" onClick={props.onCancel}>
       <div
@@ -63,7 +58,7 @@ export function FormDialog(props: {
             <div className="jp-Dialog-buttonLabel">Cancel</div>
           </button>
           <button
-            className={primaryClass}
+            className="jp-Dialog-button jp-mod-accept jp-mod-styled"
             onClick={props.onSubmit}
             disabled={!props.canSubmit}
           >

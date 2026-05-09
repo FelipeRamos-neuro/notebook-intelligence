@@ -28,15 +28,14 @@ import urllib.parse
 from typing import Any, Literal, Optional
 
 from notebook_intelligence._claude_cli import (
-    redact_argv_for_log as _redact_argv_for_log,
     reject_flag_smuggling,
     run_claude_cli,
+    validate_scope,
 )
 
 log = logging.getLogger(__name__)
 
 PluginScope = Literal["user", "project", "local"]
-VALID_SCOPES: tuple[PluginScope, ...] = ("user", "project", "local")
 
 CLI_TIMEOUT_SECONDS = 60.0
 # Marketplace-add fetches the source over the network (git clone, HTTPS
@@ -132,8 +131,7 @@ class PluginManager:
     async def install_plugin(
         self, *, plugin: str, scope: PluginScope = "user"
     ) -> None:
-        if scope not in VALID_SCOPES:
-            raise ValueError(f"Invalid scope {scope!r}; expected one of {VALID_SCOPES}")
+        validate_scope(scope)
         if not plugin:
             raise ValueError("Missing plugin reference")
         reject_flag_smuggling("plugin", plugin)
@@ -143,8 +141,7 @@ class PluginManager:
     async def uninstall_plugin(
         self, *, plugin: str, scope: PluginScope = "user"
     ) -> None:
-        if scope not in VALID_SCOPES:
-            raise ValueError(f"Invalid scope {scope!r}; expected one of {VALID_SCOPES}")
+        validate_scope(scope)
         if not plugin:
             raise ValueError("Missing plugin reference")
         reject_flag_smuggling("plugin", plugin)
@@ -160,8 +157,7 @@ class PluginManager:
     ) -> None:
         if not plugin:
             raise ValueError("Missing plugin reference")
-        if scope is not None and scope not in VALID_SCOPES:
-            raise ValueError(f"Invalid scope {scope!r}; expected one of {VALID_SCOPES}")
+        validate_scope(scope, allow_none=True)
         reject_flag_smuggling("plugin", plugin)
         tail = ["plugin", "enable" if enabled else "disable"]
         if scope is not None:
@@ -177,8 +173,7 @@ class PluginManager:
         scope: PluginScope = "user",
         allow_github: bool = True,
     ) -> None:
-        if scope not in VALID_SCOPES:
-            raise ValueError(f"Invalid scope {scope!r}; expected one of {VALID_SCOPES}")
+        validate_scope(scope)
         if not source:
             raise ValueError("Missing marketplace source")
         reject_flag_smuggling("source", source)
@@ -210,8 +205,10 @@ class PluginManager:
 
     # Keys we'll walk to find an array of objects when the CLI returns a
     # wrapper shape. Tolerates the documented `{"installed": [...]}` form
-    # and the obvious near-future variants without hard-coding.
-    _LIST_WRAPPER_KEYS = ("installed", "plugins", "marketplaces", "items", "data")
+    # and the obvious near-future variants without being too greedy —
+    # `data` was deliberately excluded because it's generic enough to
+    # match wrong shapes (e.g. metadata envelopes).
+    _LIST_WRAPPER_KEYS = ("installed", "plugins", "marketplaces", "items")
 
     @staticmethod
     def _parse_json_array(out: str, what: str) -> list[dict[str, Any]]:

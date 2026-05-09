@@ -124,6 +124,87 @@ export class SettingsPanel extends ReactWidget {
   private _onEditMCPConfigClicked: () => void;
 }
 
+// Tab declaration. Adding a new tab is one entry here plus an icon
+// (optional). The `visible` predicate runs against {featurePolicies,
+// isInClaudeCodeMode, isClaudeCliAvailable} so policy / mode changes
+// propagate through the registry without wiring extra props.
+type TabSpec = {
+  id: string;
+  label: string;
+  icon?: () => JSX.Element;
+  visible: (ctx: TabVisibilityContext) => boolean;
+  render: (props: any) => JSX.Element;
+};
+type TabVisibilityContext = {
+  featurePolicies: import('../api').IFeaturePolicies;
+  isInClaudeCodeMode: boolean;
+  isClaudeCliAvailable: boolean;
+};
+
+const TABS: TabSpec[] = [
+  {
+    id: 'general',
+    label: 'General',
+    visible: () => true,
+    render: props => (
+      <SettingsPanelComponentGeneral
+        onSave={props.onSave}
+        onEditMCPConfigClicked={props.onEditMCPConfigClicked}
+      />
+    )
+  },
+  {
+    id: 'claude',
+    label: 'Claude',
+    icon: () => (
+      <span
+        className="claude-icon"
+        dangerouslySetInnerHTML={{ __html: claudeSvgStr }}
+      ></span>
+    ),
+    visible: () => true,
+    render: props => (
+      <SettingsPanelComponentClaude
+        onEditMCPConfigClicked={props.onEditMCPConfigClicked}
+      />
+    )
+  },
+  {
+    id: 'mcp-servers',
+    label: 'MCP Servers',
+    visible: ctx => !ctx.isInClaudeCodeMode,
+    render: props => (
+      <SettingsPanelComponentMCPServers
+        onEditMCPConfigClicked={props.onEditMCPConfigClicked}
+      />
+    )
+  },
+  {
+    id: 'claude-mcp',
+    label: 'Claude MCP',
+    visible: ctx =>
+      ctx.featurePolicies.claude_mcp_management.enabled &&
+      ctx.isInClaudeCodeMode &&
+      ctx.isClaudeCliAvailable,
+    render: () => <SettingsPanelComponentClaudeMCP />
+  },
+  {
+    id: 'plugins',
+    label: 'Plugins',
+    visible: ctx =>
+      ctx.featurePolicies.plugins_management.enabled &&
+      ctx.isInClaudeCodeMode &&
+      ctx.isClaudeCliAvailable,
+    render: () => <SettingsPanelComponentPlugins />
+  },
+  {
+    id: 'skills',
+    label: 'Skills',
+    visible: ctx => ctx.featurePolicies.skills_management.enabled,
+    render: () => <SettingsPanelComponentSkills />
+  }
+];
+
 function SettingsPanelComponent(props: any) {
   const [activeTab, setActiveTab] = useState('general');
   const { featurePolicies } = useNbiPolicies();
@@ -145,42 +226,27 @@ function SettingsPanelComponent(props: any) {
     };
   }, []);
 
-  const skillsTabVisible = featurePolicies.skills_management.enabled;
-  const claudeMcpTabVisible =
-    featurePolicies.claude_mcp_management.enabled &&
-    isInClaudeCodeMode &&
-    isClaudeCliAvailable;
-  const pluginsTabVisible =
-    featurePolicies.plugins_management.enabled &&
-    isInClaudeCodeMode &&
-    isClaudeCliAvailable;
-
-  // Bounce the user off a tab that has just been hidden by an admin policy
-  // change so they don't see a blank pane.
-  useEffect(() => {
-    if (!skillsTabVisible && activeTab === 'skills') {
-      setActiveTab('general');
-    }
-    if (!claudeMcpTabVisible && activeTab === 'claude-mcp') {
-      setActiveTab('general');
-    }
-    if (!pluginsTabVisible && activeTab === 'plugins') {
-      setActiveTab('general');
-    }
-  }, [skillsTabVisible, claudeMcpTabVisible, pluginsTabVisible, activeTab]);
-
-  const onTabSelected = (tab: string) => {
-    setActiveTab(tab);
+  const ctx: TabVisibilityContext = {
+    featurePolicies,
+    isInClaudeCodeMode,
+    isClaudeCliAvailable
   };
+  const visibleTabs = TABS.filter(t => t.visible(ctx));
+  const activeTabSpec = visibleTabs.find(t => t.id === activeTab);
+
+  // Bounce off a tab that just disappeared (admin policy flip, mode toggle).
+  useEffect(() => {
+    if (!activeTabSpec) {
+      setActiveTab('general');
+    }
+  }, [activeTabSpec]);
 
   return (
     <div className="nbi-settings-panel">
       <SettingsPanelTabsComponent
-        onTabSelected={onTabSelected}
+        tabs={visibleTabs}
         activeTab={activeTab}
-        skillsTabVisible={skillsTabVisible}
-        claudeMcpTabVisible={claudeMcpTabVisible}
-        pluginsTabVisible={pluginsTabVisible}
+        onTabSelected={setActiveTab}
       />
       <div
         className="nbi-settings-panel-tab-content"
@@ -188,93 +254,21 @@ function SettingsPanelComponent(props: any) {
         id={tabId('nbi-settings-tabpanel', activeTab)}
         aria-labelledby={tabId('nbi-settings-tab', activeTab)}
       >
-        {activeTab === 'general' && (
-          <SettingsPanelComponentGeneral
-            onSave={props.onSave}
-            onEditMCPConfigClicked={props.onEditMCPConfigClicked}
-          />
-        )}
-        {activeTab === 'mcp-servers' && (
-          <SettingsPanelComponentMCPServers
-            onEditMCPConfigClicked={props.onEditMCPConfigClicked}
-          />
-        )}
-        {activeTab === 'claude' && (
-          <SettingsPanelComponentClaude
-            onEditMCPConfigClicked={props.onEditMCPConfigClicked}
-          />
-        )}
-        {activeTab === 'skills' && skillsTabVisible && (
-          <SettingsPanelComponentSkills />
-        )}
-        {activeTab === 'claude-mcp' && claudeMcpTabVisible && (
-          <SettingsPanelComponentClaudeMCP />
-        )}
-        {activeTab === 'plugins' && pluginsTabVisible && (
-          <SettingsPanelComponentPlugins />
-        )}
+        {activeTabSpec && activeTabSpec.render(props)}
       </div>
     </div>
   );
 }
 
-function SettingsPanelTabsComponent(props: any) {
-  // Fully controlled: parent owns `activeTab`. Reading directly from props
-  // (instead of a local mirror) prevents drift when the parent flips the
-  // tab — e.g. when an admin policy hides the active tab and the parent
-  // bounces the user to `general`.
-  const activeTab = props.activeTab;
-  const [isInClaudeCodeMode, setIsInClaudeCodeMode] = useState(
-    NBIAPI.config.isInClaudeCodeMode
-  );
-
-  useEffect(() => {
-    const handler = () => {
-      setIsInClaudeCodeMode(NBIAPI.config.isInClaudeCodeMode);
-    };
-    NBIAPI.configChanged.connect(handler);
-    return () => {
-      NBIAPI.configChanged.disconnect(handler);
-    };
-  }, []);
-
-  const tabs: { id: string; label: React.ReactNode }[] = [
-    { id: 'general', label: 'General' },
-    {
-      id: 'claude',
-      label: (
-        <>
-          <span
-            className="claude-icon"
-            aria-hidden="true"
-            dangerouslySetInnerHTML={{ __html: claudeSvgStr }}
-          ></span>
-          Claude
-        </>
-      )
-    }
-  ];
-  if (!isInClaudeCodeMode) {
-    tabs.push({ id: 'mcp-servers', label: 'MCP Servers' });
-  }
-  if (props.claudeMcpTabVisible) {
-    tabs.push({ id: 'claude-mcp', label: 'Claude MCP' });
-  }
-  if (props.pluginsTabVisible) {
-    tabs.push({ id: 'plugins', label: 'Plugins' });
-  }
-  if (props.skillsTabVisible) {
-    tabs.push({ id: 'skills', label: 'Skills' });
-  }
-
-  const selectTab = (id: string): void => {
-    props.onTabSelected(id);
-  };
-
+function SettingsPanelTabsComponent(props: {
+  tabs: TabSpec[];
+  activeTab: string;
+  onTabSelected: (tab: string) => void;
+}) {
   const onKeyDown = useTablistArrowKeys(
-    tabs,
-    activeTab,
-    selectTab,
+    props.tabs,
+    props.activeTab,
+    props.onTabSelected,
     'vertical',
     id => tabId('nbi-settings-tab', id)
   );
@@ -287,8 +281,8 @@ function SettingsPanelTabsComponent(props: any) {
       aria-label="Settings sections"
       onKeyDown={onKeyDown}
     >
-      {tabs.map(tab => {
-        const selected = activeTab === tab.id;
+      {props.tabs.map(tab => {
+        const selected = tab.id === props.activeTab;
         return (
           <button
             type="button"
@@ -299,8 +293,9 @@ function SettingsPanelTabsComponent(props: any) {
             aria-selected={selected}
             aria-controls={tabId('nbi-settings-tabpanel', tab.id)}
             tabIndex={selected ? 0 : -1}
-            onClick={() => selectTab(tab.id)}
+            onClick={() => props.onTabSelected(tab.id)}
           >
+            {tab.icon && tab.icon()}
             {tab.label}
           </button>
         );

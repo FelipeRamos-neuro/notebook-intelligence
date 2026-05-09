@@ -24,6 +24,24 @@ log = logging.getLogger(__name__)
 
 CLI_TIMEOUT_DEFAULT_SECONDS = 60.0
 
+# Both managers store config under the same three Claude scopes — kept
+# here so a fourth surface (ACP, hooks, etc.) doesn't redefine the tuple.
+CLAUDE_SCOPES: tuple[str, ...] = ("user", "project", "local")
+
+
+def validate_scope(scope: str, *, allow_none: bool = False) -> None:
+    """Raise ``ValueError`` unless ``scope`` is a recognized Claude scope.
+
+    With ``allow_none=True`` the value ``None`` is accepted (callers that
+    want to omit the ``--scope`` flag entirely).
+    """
+    if scope is None and allow_none:
+        return
+    if scope not in CLAUDE_SCOPES:
+        raise ValueError(
+            f"Invalid scope {scope!r}; expected one of {CLAUDE_SCOPES}"
+        )
+
 # Flags whose value should never appear in logs. Includes the documented
 # secret-bearing flags from the claude CLI's `--help` output even where the
 # managers don't currently pass them — the cost of a forward-compat entry
@@ -91,7 +109,11 @@ async def run_claude_cli(
         ValueError: on non-zero exit (carrying the CLI's stderr/stdout).
     """
     argv = claude_cli_argv(tail)
-    log.info("%s invocation: %s", label, " ".join(redact_argv_for_log(argv[1:])))
+    # Per-invocation log goes to DEBUG: list-style endpoints (`plugin list`,
+    # `mcp list`) fire on every panel mount, and operators rarely care about
+    # individual successful invocations. Failures still raise a `ValueError`
+    # carrying the CLI's own stderr, which callers surface to the user.
+    log.debug("%s invocation: %s", label, " ".join(redact_argv_for_log(argv[1:])))
     proc = await asyncio.create_subprocess_exec(
         *argv,
         cwd=cwd,

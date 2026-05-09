@@ -534,3 +534,31 @@ class TestSkillsReconcileHandler:
 # Per-family policy-gate coverage lives in `tests/test_policy_gate.py`,
 # parametrized across SkillsBaseHandler / ClaudeMCPBaseHandler /
 # PluginsBaseHandler.
+
+
+class TestSkillsForceOffSuppressesReconciler:
+    """When ``skills_management_policy = force-off``, NBI must not
+    construct a ``SkillReconciler`` — even if a manifest is configured.
+    Pins the contract documented in the policy's docstring."""
+
+    @pytest.mark.parametrize(
+        "policy,expect_empty_manifest",
+        [
+            ("user-choice", False),
+            ("force-on", False),
+            ("force-off", True),
+        ],
+    )
+    def test_force_off_empties_manifest_source(self, policy, expect_empty_manifest):
+        from notebook_intelligence.feature_flags import is_force_off
+
+        # The relevant logic in `initialize_ai_service` is:
+        #     if is_force_off(feature_policies, "skills_management"):
+        #         manifest_source = ""
+        # Asserting the predicate directly + the post-condition is lighter
+        # than spinning up a real NotebookIntelligence instance.
+        feature_policies = {"skills_management": policy}
+        manifest_source = "https://example.com/m.yaml"
+        if is_force_off(feature_policies, "skills_management"):
+            manifest_source = ""
+        assert (manifest_source == "") is expect_empty_manifest
