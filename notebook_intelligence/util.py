@@ -2,7 +2,8 @@
 
 import os
 import base64
-from typing import Set
+import shutil
+from typing import Optional, Set
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.fernet import Fernet
@@ -18,6 +19,19 @@ def set_jupyter_root_dir(root_dir: str):
 
 def get_jupyter_root_dir() -> str:
     return _jupyter_root_dir
+
+
+def resolve_claude_cli_path() -> Optional[str]:
+    """Resolve the Claude Code CLI binary path.
+
+    NBI_CLAUDE_CLI_PATH wins when set; otherwise fall back to the first
+    `claude` on PATH. Returns None when nothing is found, so callers can
+    decide between raising and proceeding without the CLI.
+    """
+    explicit = os.getenv("NBI_CLAUDE_CLI_PATH")
+    if explicit:
+        return explicit
+    return shutil.which("claude")
 
 def extract_llm_generated_code(code: str) -> str:
     if code.endswith("```"):
