@@ -60,7 +60,7 @@ import {
   VscThumbsdownFilled,
   VscCloudUpload,
   VscAttach
-} from 'react-icons/vsc';
+} from './icons';
 
 import {
   extractLLMGeneratedCode,

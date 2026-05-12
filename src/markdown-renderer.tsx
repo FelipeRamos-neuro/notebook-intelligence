@@ -10,13 +10,7 @@ import {
   oneLight,
   oneDark
 } from 'react-syntax-highlighter/dist/cjs/styles/prism';
-import {
-  VscNewFile,
-  VscInsert,
-  VscCopy,
-  VscNotebook,
-  VscAdd
-} from 'react-icons/vsc';
+import { VscNewFile, VscInsert, VscCopy, VscNotebook, VscAdd } from './icons';
 import { JupyterFrontEnd } from '@jupyterlab/application';
 import { isDarkTheme, writeTextToClipboard } from './utils';
 import { IActiveDocumentInfo } from './tokens';

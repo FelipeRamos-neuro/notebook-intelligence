@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { ReactWidget } from '@jupyterlab/apputils';
-import { VscWarning } from 'react-icons/vsc';
+import { VscWarning } from '../icons';
 import * as path from 'path';
 
 import copySvgstr from '../../style/icons/copy.svg';

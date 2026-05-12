@@ -7,7 +7,7 @@ import React, {
   useRef,
   useState
 } from 'react';
-import { VscClose, VscSend, VscSparkle } from 'react-icons/vsc';
+import { VscClose, VscSend, VscSparkle } from '../icons';
 
 import { CheckBoxItem } from './checkbox';
 

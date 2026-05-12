@@ -2,7 +2,7 @@
 
 import React from 'react';
 
-import { MdOutlineCheckBoxOutlineBlank, MdCheckBox } from 'react-icons/md';
+import { MdOutlineCheckBoxOutlineBlank, MdCheckBox } from '../icons';
 
 export function CheckBoxItem(props: any) {
   const indent = props.indent || 0;

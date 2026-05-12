@@ -7,7 +7,7 @@ import React, {
   useRef,
   useState
 } from 'react';
-import { VscCheck, VscClose, VscCopy, VscHistory } from 'react-icons/vsc';
+import { VscCheck, VscClose, VscCopy, VscHistory } from '../icons';
 
 import { IClaudeSessionInfo, IClaudeSessionList, NBIAPI } from '../api';
 import { buildResumeCommand, writeTextToClipboard } from '../utils';
