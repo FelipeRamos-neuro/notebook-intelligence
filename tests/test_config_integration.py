@@ -168,6 +168,97 @@ class TestAdditionalSkippedWorkspaceDirectories:
         assert config.additional_skipped_workspace_directories == []
 
 
+class TestAdditionalSkippedWorkspaceDirectoriesFourLayerMerge:
+    """End-to-end merge across all four layers — traitlet, NBI_* env
+    var, env-prefix config.json, user config.json — exercising the
+    expression in `extension._setup_handlers` that publishes the final
+    list onto `GetCapabilitiesHandler`. Reproduces the merge in
+    isolation so a regression in the merge order or dedupe doesn't slip
+    past the two single-layer test suites that already exist."""
+
+    @staticmethod
+    def _merge(traitlet, env_var_value, env_config_layer, user_config_layer,
+               mock_nbi_config, monkeypatch):
+        from notebook_intelligence import extension as ext_module
+
+        if env_var_value is None:
+            monkeypatch.delenv(
+                'NBI_ADDITIONAL_SKIPPED_WORKSPACE_DIRECTORIES', raising=False
+            )
+        else:
+            monkeypatch.setenv(
+                'NBI_ADDITIONAL_SKIPPED_WORKSPACE_DIRECTORIES', env_var_value
+            )
+        mock_nbi_config.env_config = (
+            {'additional_skipped_workspace_directories': env_config_layer}
+            if env_config_layer is not None else {}
+        )
+        mock_nbi_config.user_config = (
+            {'additional_skipped_workspace_directories': user_config_layer}
+            if user_config_layer is not None else {}
+        )
+        merged_traitlet_env = ext_module._resolve_csv_appended(
+            'NBI_ADDITIONAL_SKIPPED_WORKSPACE_DIRECTORIES', traitlet
+        )
+        config_layers = mock_nbi_config.additional_skipped_workspace_directories
+        # Same expression as extension._setup_handlers.
+        return list(dict.fromkeys(merged_traitlet_env + config_layers))
+
+    def test_all_four_layers_union_in_traversal_order(
+        self, mock_nbi_config, monkeypatch
+    ):
+        result = self._merge(
+            traitlet=['from_traitlet'],
+            env_var_value='from_env_var',
+            env_config_layer=['from_env_config'],
+            user_config_layer=['from_user_config'],
+            mock_nbi_config=mock_nbi_config,
+            monkeypatch=monkeypatch,
+        )
+        assert result == [
+            'from_traitlet',
+            'from_env_var',
+            'from_env_config',
+            'from_user_config',
+        ]
+
+    def test_collision_across_layers_keeps_first_seen(
+        self, mock_nbi_config, monkeypatch
+    ):
+        result = self._merge(
+            traitlet=['build'],
+            env_var_value='dist',
+            env_config_layer=['build', 'out'],  # 'build' already from traitlet
+            user_config_layer=['dist', 'venv'],  # 'dist' already from env var
+            mock_nbi_config=mock_nbi_config,
+            monkeypatch=monkeypatch,
+        )
+        # First-seen order from traitlet → env var → env config → user config.
+        assert result == ['build', 'dist', 'out', 'venv']
+
+    def test_only_user_config_set(self, mock_nbi_config, monkeypatch):
+        result = self._merge(
+            traitlet=None,
+            env_var_value=None,
+            env_config_layer=None,
+            user_config_layer=['venv'],
+            mock_nbi_config=mock_nbi_config,
+            monkeypatch=monkeypatch,
+        )
+        assert result == ['venv']
+
+    def test_no_layers_set_yields_empty(self, mock_nbi_config, monkeypatch):
+        result = self._merge(
+            traitlet=None,
+            env_var_value=None,
+            env_config_layer=None,
+            user_config_layer=None,
+            mock_nbi_config=mock_nbi_config,
+            monkeypatch=monkeypatch,
+        )
+        assert result == []
+
+
 class TestNBIConfigPolicyResolution:
     """The boolean policies and string overrides feed through NBIConfig getters
     so SDK consumers (claude.py, ai_service_manager) see resolved values."""
