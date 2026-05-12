@@ -3651,6 +3651,15 @@ export function InlinePopoverComponent(props: any) {
     inflightMessageIdRef.current = null;
   };
 
+  // Hand the cancel function up to the host so non-React dismissal paths
+  // (e.g. outside-click on the block widget) can cancel without invoking
+  // onRequestCancelled — that path also restores editor focus, which is
+  // wrong when the user is mid-click on a different target.
+  useEffect(() => {
+    props.registerCancel?.(cancelInflightRequest);
+    return () => props.registerCancel?.(null);
+  }, []);
+
   const onRequestSubmitted = (prompt: string) => {
     setModifiedCode('');
     setPromptSubmitted(true);

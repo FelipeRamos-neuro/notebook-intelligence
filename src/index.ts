@@ -1960,8 +1960,6 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
         telemetryEmitter: telemetryEmitter
       };
 
-      closeOpenPopover = removePopover;
-
       let requestTime: Date | null = null;
       let streamError: string | null = null;
       let blockPromptNode: HTMLElement | null = null;
@@ -2012,6 +2010,11 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
           });
         }
       };
+      // Handed up by InlinePopoverComponent on mount so this scope can
+      // cancel the in-flight WS request from non-React dismissal paths
+      // (focus-leave) without going through onRequestCancelled (which
+      // would also yank focus back to the editor).
+      let cancelInflightRequest: (() => void) | null = null;
       const widget = new InlinePromptBlockWidget(
         React.createElement(InlinePopoverComponent, {
           prompt: promptOptions.prompt,
@@ -2024,15 +2027,21 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
           language: promptOptions.language,
           filename: promptOptions.filename,
           onUpdatedCodeChange: promptOptions.onUpdatedCodeChange,
-          onUpdatedCodeAccepted: promptOptions.onUpdatedCodeAccepted
+          onUpdatedCodeAccepted: promptOptions.onUpdatedCodeAccepted,
+          registerCancel: (fn: (() => void) | null) => {
+            cancelInflightRequest = fn;
+          }
         }),
         node => {
           blockPromptNode = node;
         },
-        // removePopover (not onRequestCancelled) on focus-leave so the
-        // user's new focus target keeps focus — onRequestCancelled would
-        // yank it back to the editor.
-        () => removePopover()
+        // Focus-leave dismissal: cancel the request so the backend stops
+        // streaming, but don't call onRequestCancelled — that would steal
+        // focus back from whatever the user clicked.
+        () => {
+          cancelInflightRequest?.();
+          removePopover();
+        }
       );
       const anchorOffset = getLineEndOffset(
         editor,
@@ -2040,6 +2049,14 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
       );
       ensureInlinePromptExtension(editorView);
       blockPromptView = editorView;
+      // Replace-on-reopen path: when a second Ctrl+G fires while this
+      // popover is still here, cancel our in-flight request before the
+      // widget is torn down so the backend stops streaming for the
+      // discarded prompt.
+      closeOpenPopover = () => {
+        cancelInflightRequest?.();
+        removePopover();
+      };
       editorView.dispatch({
         effects: [
           addInlinePromptEffect.of({
