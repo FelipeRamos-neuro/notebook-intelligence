@@ -10,7 +10,7 @@ import React, {
   useState,
   memo
 } from 'react';
-import { ReactWidget } from '@jupyterlab/apputils';
+import { Notification, ReactWidget } from '@jupyterlab/apputils';
 import { UUID } from '@lumino/coreutils';
 
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js';
@@ -1749,19 +1749,16 @@ function SidebarComponent(props: any) {
   // Attach a list of workspace-relative paths (from JL file browser
   // drag) as chat context. Images are attached as image context (with a
   // base64 dataURL thumbnail) so the model can see them; text and
-  // notebook files are attached as content context. De-dupes against
-  // the currently selected set.
+  // notebook files are attached as content context.
   const attachWorkspacePaths = async (paths: string[]) => {
-    const alreadySelected = new Set(selectedContextFiles.map(f => f.path));
-    const unique = paths.filter(p => !alreadySelected.has(p));
-    if (unique.length === 0) {
+    if (paths.length === 0) {
       return;
     }
     const contentsManager = props.getApp().serviceManager.contents;
     const additions: ISelectedContextFile[] = [];
     const errors: string[] = [];
     await Promise.all(
-      unique.map(async path => {
+      paths.map(async path => {
         try {
           const model: any = await contentsManager.get(path, { content: true });
           const mimetype: string = model.mimetype || '';
@@ -1796,14 +1793,28 @@ function SidebarComponent(props: any) {
       })
     );
     if (additions.length > 0) {
-      setSelectedContextFiles(previous =>
-        [...previous, ...additions].sort((lhs, rhs) =>
+      // De-dupe inside the functional updater so it reads the freshest
+      // state. A stale closure on `selectedContextFiles` here would let
+      // the same path land twice when the user drops it a second time.
+      setSelectedContextFiles(previous => {
+        const existing = new Set(previous.map(f => f.path));
+        const fresh = additions.filter(a => !existing.has(a.path));
+        if (fresh.length === 0) {
+          return previous;
+        }
+        return [...previous, ...fresh].sort((lhs, rhs) =>
           lhs.path.localeCompare(rhs.path)
-        )
-      );
+        );
+      });
+      // Move keyboard focus into the prompt so the user can immediately
+      // describe what they want done with the attached files.
+      promptInputRef.current?.focus();
     }
     if (errors.length > 0) {
-      addSystemNotice(`Could not attach: ${errors.join('; ')}.`);
+      // Match the terminal-drag error path (Notification toast) instead
+      // of slipping a chat-message-notice into the transcript, which
+      // can scroll out of view.
+      Notification.warning(`Could not attach: ${errors.join('; ')}`);
     }
   };
 

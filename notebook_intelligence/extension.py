@@ -1869,10 +1869,31 @@ class WebsocketCopilotHandler(websocket.WebSocketHandler):
                 is_image = context.get("isImage", False)
                 file_path = context["filePath"]
                 if not is_upload:
-                    file_path = path.join(NotebookIntelligence.root_dir, file_path)
+                    # Workspace-relative paths arrive verbatim from the
+                    # frontend (file browser drag, @-mention picker, ...).
+                    # path.join silently passes through absolute paths and
+                    # doesn't normalize ``..`` traversal, so sandbox the
+                    # resolved path against root_dir before reading.
+                    joined = path.join(NotebookIntelligence.root_dir, file_path)
+                    resolved = os.path.realpath(joined)
+                    workspace_root = os.path.realpath(NotebookIntelligence.root_dir)
+                    try:
+                        in_workspace = (
+                            os.path.commonpath([resolved, workspace_root])
+                            == workspace_root
+                        )
+                    except ValueError:
+                        in_workspace = False
+                    if not in_workspace:
+                        log.warning(
+                            "Rejecting out-of-workspace context path: %r",
+                            context["filePath"],
+                        )
+                        continue
+                    file_path = resolved
                 context_filename = path.basename(file_path)
 
-                if is_image and is_upload:
+                if is_image:
                     if is_claude_code_mode:
                         # Claude Code CLI takes text only; pass file path so agent can read the image
                         chat_history.append({
