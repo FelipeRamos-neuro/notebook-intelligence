@@ -1747,7 +1747,10 @@ function SidebarComponent(props: any) {
   }, []);
 
   // Attach a list of workspace-relative paths (from JL file browser
-  // drag) as chat context. De-dupes against the currently selected set.
+  // drag) as chat context. Images are attached as image context (with a
+  // base64 dataURL thumbnail) so the model can see them; text and
+  // notebook files are attached as content context. De-dupes against
+  // the currently selected set.
   const attachWorkspacePaths = async (paths: string[]) => {
     const alreadySelected = new Set(selectedContextFiles.map(f => f.path));
     const unique = paths.filter(p => !alreadySelected.has(p));
@@ -1761,6 +1764,22 @@ function SidebarComponent(props: any) {
       unique.map(async path => {
         try {
           const model: any = await contentsManager.get(path, { content: true });
+          const mimetype: string = model.mimetype || '';
+          // Image branch: file is already on the server, so build a
+          // data URL from the base64 content for the thumbnail and let
+          // the backend resolve the workspace path. No upload needed.
+          if (model.format === 'base64' && mimetype.startsWith('image/')) {
+            additions.push({
+              content: '',
+              lineCount: 0,
+              path,
+              type: 'file',
+              isImage: true,
+              imageDataUrl: `data:${mimetype};base64,${model.content}`,
+              mimeType: mimetype
+            });
+            return;
+          }
           const content = serializeWorkspaceFileContent(model);
           if (content.trim() === '') {
             throw new Error(`'${path}' has no content to attach.`);
