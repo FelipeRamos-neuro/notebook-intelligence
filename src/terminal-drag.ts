@@ -160,27 +160,47 @@ function setupTerminal(
     void uploadAndInject(files, shiftHeld, inject);
   };
 
+  // Lumino dispatches lm-* events on the deepest DOM element under the
+  // cursor. Listening on `host` would in theory catch the bubble, but
+  // intermediate widgets (e.g. xterm's viewport) can call
+  // stopPropagation in a target-phase handler before we see it. Listening
+  // at the document level with a containment check is the most reliable
+  // way to observe a drop that's geometrically inside this terminal.
+  const isInsideHost = (event: Event): boolean => {
+    const target = event.target;
+    return target instanceof Node && host.contains(target);
+  };
+
   const handleLuminoDragEnter = (event: Event) => {
-    if (!isEnabled() || !hasFileBrowserPaths(event)) {
+    if (!isEnabled() || !hasFileBrowserPaths(event) || !isInsideHost(event)) {
       return;
     }
     state.dragDepth += 1;
     host.classList.add(DRAG_OVER_CLASS);
     event.preventDefault();
-    event.stopImmediatePropagation();
+    event.stopPropagation();
   };
 
   const handleLuminoDragOver = (event: Event) => {
-    if (!isEnabled() || !hasFileBrowserPaths(event)) {
+    if (!isEnabled() || !hasFileBrowserPaths(event) || !isInsideHost(event)) {
       return;
     }
     event.preventDefault();
-    event.stopImmediatePropagation();
-    (event as unknown as { dropAction: string }).dropAction = 'copy';
+    event.stopPropagation();
+    // Echo the source's proposedAction back as dropAction. The file
+    // browser starts its Drag with supportedActions: 'move', so a
+    // hardcoded 'copy' falls through validateAction to 'none' and
+    // Lumino skips lm-drop on pointerup. Mirroring proposedAction keeps
+    // us inside whatever the source supports.
+    const dragEvent = event as unknown as {
+      proposedAction?: string;
+      dropAction: string;
+    };
+    dragEvent.dropAction = dragEvent.proposedAction || 'move';
   };
 
   const handleLuminoDragLeave = (event: Event) => {
-    if (!isEnabled()) {
+    if (!isEnabled() || !isInsideHost(event)) {
       return;
     }
     state.dragDepth = Math.max(0, state.dragDepth - 1);
@@ -188,16 +208,17 @@ function setupTerminal(
       host.classList.remove(DRAG_OVER_CLASS);
     }
     event.preventDefault();
-    event.stopImmediatePropagation();
+    event.stopPropagation();
   };
 
   const handleLuminoDrop = (event: Event) => {
-    if (!isEnabled() || !hasFileBrowserPaths(event)) {
+    if (!isEnabled() || !hasFileBrowserPaths(event) || !isInsideHost(event)) {
       return;
     }
     const dragEvent = event as unknown as {
       mimeData: { getData: (key: string) => unknown };
       shiftKey: boolean;
+      proposedAction?: string;
       dropAction: string;
     };
     const paths = dragEvent.mimeData.getData(FILE_BROWSER_MIME);
@@ -205,8 +226,8 @@ function setupTerminal(
       return;
     }
     event.preventDefault();
-    event.stopImmediatePropagation();
-    dragEvent.dropAction = 'copy';
+    event.stopPropagation();
+    dragEvent.dropAction = dragEvent.proposedAction || 'move';
     state.dragDepth = 0;
     host.classList.remove(DRAG_OVER_CLASS);
     inject(
@@ -219,10 +240,14 @@ function setupTerminal(
   host.addEventListener('dragover', handleDragOver, true);
   host.addEventListener('dragleave', handleDragLeave, true);
   host.addEventListener('drop', handleDrop, true);
-  host.addEventListener('lm-dragenter', handleLuminoDragEnter);
-  host.addEventListener('lm-dragover', handleLuminoDragOver);
-  host.addEventListener('lm-dragleave', handleLuminoDragLeave);
-  host.addEventListener('lm-drop', handleLuminoDrop);
+  // lm-* listeners go on the document (capture phase) so we observe
+  // them before any intermediate widget can stopPropagation. The
+  // containment check filters to events whose target is inside this
+  // terminal's host node.
+  document.addEventListener('lm-dragenter', handleLuminoDragEnter, true);
+  document.addEventListener('lm-dragover', handleLuminoDragOver, true);
+  document.addEventListener('lm-dragleave', handleLuminoDragLeave, true);
+  document.addEventListener('lm-drop', handleLuminoDrop, true);
 
   const button = new TerminalDragModeButton('mention', () => {
     state.mode = state.mode === 'mention' ? 'raw' : 'mention';
@@ -235,10 +260,10 @@ function setupTerminal(
     host.removeEventListener('dragover', handleDragOver, true);
     host.removeEventListener('dragleave', handleDragLeave, true);
     host.removeEventListener('drop', handleDrop, true);
-    host.removeEventListener('lm-dragenter', handleLuminoDragEnter);
-    host.removeEventListener('lm-dragover', handleLuminoDragOver);
-    host.removeEventListener('lm-dragleave', handleLuminoDragLeave);
-    host.removeEventListener('lm-drop', handleLuminoDrop);
+    document.removeEventListener('lm-dragenter', handleLuminoDragEnter, true);
+    document.removeEventListener('lm-dragover', handleLuminoDragOver, true);
+    document.removeEventListener('lm-dragleave', handleLuminoDragLeave, true);
+    document.removeEventListener('lm-drop', handleLuminoDrop, true);
   };
 
   widget.disposed.connect(() => {

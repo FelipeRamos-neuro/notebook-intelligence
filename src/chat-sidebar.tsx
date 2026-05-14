@@ -1078,6 +1078,7 @@ function SidebarComponent(props: any) {
     useState(0);
   const promptInputRef = useRef<HTMLTextAreaElement>(null);
   const autocompleteRef = useRef<HTMLDivElement>(null);
+  const sidebarRootRef = useRef<HTMLDivElement>(null);
   const atButtonRef = useRef<HTMLAnchorElement>(null);
   const [promptHistory, setPromptHistory] = useState<string[]>([]);
   // position on prompt history stack
@@ -1633,6 +1634,159 @@ function SidebarComponent(props: any) {
   useEffect(() => {
     cleanupRemovedToolsFromToolSelections();
   }, [mcpServerEnabledState]);
+
+  // JupyterLab file-browser drag uses Lumino's lm-* CustomEvents (mime
+  // 'application/x-jupyter-icontents' carrying workspace-relative paths),
+  // not native HTML5 drag. We listen at the document level with capture
+  // phase + a containment check so intermediate widgets that
+  // stopPropagation in target phase can't swallow the event.
+  useEffect(() => {
+    const FILE_BROWSER_MIME = 'application/x-jupyter-icontents';
+
+    const isInsideSidebar = (event: Event): boolean => {
+      const root = sidebarRootRef.current;
+      if (!root) {
+        return false;
+      }
+      const target = event.target;
+      return target instanceof Node && root.contains(target);
+    };
+
+    const hasPaths = (event: Event): boolean => {
+      const mimeData = (
+        event as unknown as {
+          mimeData?: { hasData?: (key: string) => boolean };
+        }
+      ).mimeData;
+      return mimeData?.hasData?.(FILE_BROWSER_MIME) === true;
+    };
+
+    const dragEnter = (event: Event) => {
+      if (
+        !NBIAPI.getChatEnabled() ||
+        !hasPaths(event) ||
+        !isInsideSidebar(event)
+      ) {
+        return;
+      }
+      setIsDragOver(true);
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    const dragOver = (event: Event) => {
+      if (
+        !NBIAPI.getChatEnabled() ||
+        !hasPaths(event) ||
+        !isInsideSidebar(event)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      // Mirror the source's proposedAction. The JL file browser starts
+      // its Drag with supportedActions: 'move'; setting dropAction to a
+      // value outside that set falls through validateAction to 'none'
+      // and Lumino skips lm-drop on pointerup.
+      const drag = event as unknown as {
+        proposedAction?: string;
+        dropAction: string;
+      };
+      drag.dropAction = drag.proposedAction || 'move';
+    };
+
+    const dragLeave = (event: Event) => {
+      if (!NBIAPI.getChatEnabled() || !isInsideSidebar(event)) {
+        return;
+      }
+      // Only clear the overlay when the drag genuinely leaves the
+      // sidebar; ignore leaves that cross internal child boundaries.
+      const related = (event as unknown as { relatedTarget?: Node | null })
+        .relatedTarget;
+      if (related && sidebarRootRef.current?.contains(related)) {
+        return;
+      }
+      setIsDragOver(false);
+    };
+
+    const drop = (event: Event) => {
+      if (
+        !NBIAPI.getChatEnabled() ||
+        !hasPaths(event) ||
+        !isInsideSidebar(event)
+      ) {
+        return;
+      }
+      const dragEvent = event as unknown as {
+        mimeData: { getData: (key: string) => unknown };
+        proposedAction?: string;
+        dropAction: string;
+      };
+      const raw = dragEvent.mimeData.getData(FILE_BROWSER_MIME);
+      if (!Array.isArray(raw) || raw.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      dragEvent.dropAction = dragEvent.proposedAction || 'move';
+      setIsDragOver(false);
+      const paths = raw.filter((p): p is string => typeof p === 'string');
+      void attachWorkspacePaths(paths);
+    };
+
+    document.addEventListener('lm-dragenter', dragEnter, true);
+    document.addEventListener('lm-dragover', dragOver, true);
+    document.addEventListener('lm-dragleave', dragLeave, true);
+    document.addEventListener('lm-drop', drop, true);
+    return () => {
+      document.removeEventListener('lm-dragenter', dragEnter, true);
+      document.removeEventListener('lm-dragover', dragOver, true);
+      document.removeEventListener('lm-dragleave', dragLeave, true);
+      document.removeEventListener('lm-drop', drop, true);
+    };
+  }, []);
+
+  // Attach a list of workspace-relative paths (from JL file browser
+  // drag) as chat context. De-dupes against the currently selected set.
+  const attachWorkspacePaths = async (paths: string[]) => {
+    const alreadySelected = new Set(selectedContextFiles.map(f => f.path));
+    const unique = paths.filter(p => !alreadySelected.has(p));
+    if (unique.length === 0) {
+      return;
+    }
+    const contentsManager = props.getApp().serviceManager.contents;
+    const additions: ISelectedContextFile[] = [];
+    const errors: string[] = [];
+    await Promise.all(
+      unique.map(async path => {
+        try {
+          const model: any = await contentsManager.get(path, { content: true });
+          const content = serializeWorkspaceFileContent(model);
+          if (content.trim() === '') {
+            throw new Error(`'${path}' has no content to attach.`);
+          }
+          additions.push({
+            content,
+            lineCount: countContentLines(content),
+            path,
+            type: model.type === 'notebook' ? 'notebook' : 'file'
+          });
+        } catch (error: any) {
+          errors.push(error?.message || `Failed to attach '${path}'.`);
+        }
+      })
+    );
+    if (additions.length > 0) {
+      setSelectedContextFiles(previous =>
+        [...previous, ...additions].sort((lhs, rhs) =>
+          lhs.path.localeCompare(rhs.path)
+        )
+      );
+    }
+    if (errors.length > 0) {
+      addSystemNotice(`Could not attach: ${errors.join('; ')}.`);
+    }
+  };
 
   useEffect(() => {
     const handler = () => {
@@ -3156,6 +3310,7 @@ function SidebarComponent(props: any) {
 
   return (
     <div
+      ref={sidebarRootRef}
       className={`sidebar${isDragOver ? ' drag-over' : ''}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
