@@ -15,8 +15,13 @@ export { formatForMode, invertMode } from './terminal-drag-format';
 // unify with our top-level ones. Capturing only what we touch keeps the
 // module decoupled from that version skew and unit-testable without a
 // real JupyterLab application context.
+interface ITerminalSessionLike {
+  send(message: { type: string; content: string[] }): void;
+}
+
 interface ITerminalWidgetLike {
   paste(text: string): void;
+  session: ITerminalSessionLike;
 }
 
 interface IDisposedSignalLike {
@@ -236,6 +241,29 @@ function setupTerminal(
     );
   };
 
+  // xterm.js sends a bare CR for both Enter and Shift+Enter, so Claude
+  // Code's prompt input can't distinguish them and submits on either.
+  // Intercept Shift+Enter at the widget level and write the ESC+CR
+  // "meta-enter" byte sequence to the PTY instead; that's the same
+  // pattern macOS Terminal emits for Option+Enter and that Claude
+  // Code's prompt parses as a newline.
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (
+      event.key !== 'Enter' ||
+      !event.shiftKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      event.isComposing
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    widget.content.session.send({ type: 'stdin', content: ['\x1b\r'] });
+  };
+
+  host.addEventListener('keydown', handleKeyDown, true);
   host.addEventListener('dragenter', handleDragEnter, true);
   host.addEventListener('dragover', handleDragOver, true);
   host.addEventListener('dragleave', handleDragLeave, true);
@@ -256,6 +284,7 @@ function setupTerminal(
   widget.toolbar.addItem('nbi-terminal-drag-mode', button);
 
   state.cleanup = () => {
+    host.removeEventListener('keydown', handleKeyDown, true);
     host.removeEventListener('dragenter', handleDragEnter, true);
     host.removeEventListener('dragover', handleDragOver, true);
     host.removeEventListener('dragleave', handleDragLeave, true);
