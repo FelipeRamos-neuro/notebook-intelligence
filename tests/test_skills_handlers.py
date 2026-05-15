@@ -527,3 +527,48 @@ class TestSkillsReconcileHandler:
             "unchanged": 3,
             "errors": ["boom"],
         }
+
+
+class TestSkillsManagementPolicyGate:
+    """The skills_management policy short-circuits every /skills handler in
+    `prepare()` with 403 when force-off. We test the gate logic directly,
+    bypassing Tornado dispatch (matches the rest of this file's pattern).
+    """
+
+    @staticmethod
+    def _run_prepare(handler):
+        # Patch the superclass prepare to a no-op coroutine — we're only
+        # exercising the skills gate here, not jupyter_server's auth plumbing.
+        from jupyter_server.base.handlers import APIHandler
+
+        async def _noop(_self):
+            return None
+
+        with patch.object(APIHandler, "prepare", _noop):
+            asyncio.run(SkillsBaseHandler.prepare(handler))
+
+    def test_default_attribute_allows(self):
+        assert SkillsBaseHandler.skills_management_enabled is True
+
+    def test_prepare_rejects_when_disabled(self):
+        handler = MagicMock(spec=SkillsListHandler)
+        handler._finished = False
+        handler.skills_management_enabled = False
+
+        def _finish(payload):
+            handler._finished = True
+            handler._finish_payload = payload
+
+        handler.finish.side_effect = _finish
+        self._run_prepare(handler)
+        handler.set_status.assert_called_with(403)
+        body = json.loads(handler._finish_payload)
+        assert "administrator" in body["error"].lower()
+
+    def test_prepare_passes_when_enabled(self):
+        handler = MagicMock(spec=SkillsListHandler)
+        handler._finished = False
+        handler.skills_management_enabled = True
+        self._run_prepare(handler)
+        handler.set_status.assert_not_called()
+        handler.finish.assert_not_called()

@@ -357,6 +357,22 @@ NBI_ADDITIONAL_SKIPPED_WORKSPACE_DIRECTORIES=tmp,artifacts
 
 The env var **appends** to the traitlet value at server startup (in contrast to `NBI_ALLOW_GITHUB_SKILL_IMPORT` and the `NBI_*_POLICY` env vars, which override). Duplicates are collapsed; both lists are then merged with the built-in skip set on the frontend.
 
+### Disabling the Skills tab
+
+```python
+c.NotebookIntelligence.skills_management_policy = "force-off"
+```
+
+Or via env: `NBI_SKILLS_MANAGEMENT_POLICY=force-off`.
+
+Force-off does three things at once:
+
+- Hides the **Skills** tab in the Settings panel.
+- Returns HTTP 403 from every `/notebook-intelligence/skills/*` route, so a stale frontend or a direct API caller can't read or write skills.
+- Suppresses the [managed-skills reconciler](#managed-claude-skills-token) — the manifest is treated as empty, no `SkillReconciler` is constructed, and no scheduled reconcile runs. Org-curated skills still on disk are not touched, but new manifests aren't pulled.
+
+Use this when an org wants to disable user-authored Claude skills entirely.
+
 ---
 
 ## Multi-tenancy and per-team scoping

@@ -124,6 +124,16 @@ export class SettingsPanel extends ReactWidget {
 
 function SettingsPanelComponent(props: any) {
   const [activeTab, setActiveTab] = useState('general');
+  const { featurePolicies } = useNbiPolicies();
+  const skillsTabVisible = featurePolicies.skills_management.enabled;
+
+  // Bounce the user off a tab that has just been hidden by an admin policy
+  // change so they don't see a blank pane.
+  useEffect(() => {
+    if (!skillsTabVisible && activeTab === 'skills') {
+      setActiveTab('general');
+    }
+  }, [skillsTabVisible, activeTab]);
 
   const onTabSelected = (tab: string) => {
     setActiveTab(tab);
@@ -134,6 +144,7 @@ function SettingsPanelComponent(props: any) {
       <SettingsPanelTabsComponent
         onTabSelected={onTabSelected}
         activeTab={activeTab}
+        skillsTabVisible={skillsTabVisible}
       />
       <div
         className="nbi-settings-panel-tab-content"
@@ -157,13 +168,20 @@ function SettingsPanelComponent(props: any) {
             onEditMCPConfigClicked={props.onEditMCPConfigClicked}
           />
         )}
+        {activeTab === 'skills' && skillsTabVisible && (
+          <SettingsPanelComponentSkills />
+        )}
       </div>
     </div>
   );
 }
 
 function SettingsPanelTabsComponent(props: any) {
-  const [activeTab, setActiveTab] = useState(props.activeTab);
+  // Fully controlled: parent owns `activeTab`. Reading directly from props
+  // (instead of a local mirror) prevents drift when the parent flips the
+  // tab — e.g. when an admin policy hides the active tab and the parent
+  // bounces the user to `general`.
+  const activeTab = props.activeTab;
   const [isInClaudeCodeMode, setIsInClaudeCodeMode] = useState(
     NBIAPI.config.isInClaudeCodeMode
   );
@@ -197,9 +215,11 @@ function SettingsPanelTabsComponent(props: any) {
   if (!isInClaudeCodeMode) {
     tabs.push({ id: 'mcp-servers', label: 'MCP Servers' });
   }
+  if (props.skillsTabVisible) {
+    tabs.push({ id: 'skills', label: 'Skills' });
+  }
 
   const selectTab = (id: string): void => {
-    setActiveTab(id);
     props.onTabSelected(id);
   };
 
@@ -1158,421 +1178,348 @@ function SettingsPanelComponentClaude(props: any) {
     continueConversation
   ]);
 
-  const [claudeSubTab, setClaudeSubTab] = useState<'settings' | 'skills'>(
-    'settings'
-  );
-
-  useEffect(() => {
-    if (!nbiConfig.isInClaudeCodeMode && claudeSubTab !== 'settings') {
-      setClaudeSubTab('settings');
-    }
-  }, [nbiConfig.isInClaudeCodeMode, claudeSubTab]);
-
-  const subTabs: { id: 'settings' | 'skills'; label: string }[] = [
-    { id: 'settings', label: 'Settings' },
-    { id: 'skills', label: 'Skills' }
-  ];
-
-  const onSubTabKeyDown = useTablistArrowKeys(
-    subTabs,
-    claudeSubTab,
-    id => setClaudeSubTab(id as 'settings' | 'skills'),
-    'horizontal',
-    id => tabId('nbi-claude-subtab', id)
-  );
-
   return (
     <div className="config-dialog claude-mode-config-dialog">
-      {nbiConfig.isInClaudeCodeMode && (
-        <div
-          className="nbi-subtab-bar"
-          role="tablist"
-          aria-label="Claude settings sections"
-          aria-orientation="horizontal"
-          onKeyDown={onSubTabKeyDown}
-        >
-          {subTabs.map(tab => {
-            const selected = claudeSubTab === tab.id;
-            return (
-              <button
-                type="button"
-                key={tab.id}
-                id={tabId('nbi-claude-subtab', tab.id)}
-                className={`nbi-subtab ${selected ? 'active' : ''}`}
-                role="tab"
-                aria-selected={selected}
-                aria-controls={tabId('nbi-claude-subtabpanel', tab.id)}
-                tabIndex={selected ? 0 : -1}
-                onClick={() => setClaudeSubTab(tab.id)}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {claudeSubTab === 'skills' && (
-        <div
-          role="tabpanel"
-          id={tabId('nbi-claude-subtabpanel', 'skills')}
-          aria-labelledby={tabId('nbi-claude-subtab', 'skills')}
-        >
-          <SettingsPanelComponentSkills />
-        </div>
-      )}
-      {claudeSubTab === 'settings' && (
-        <div
-          className="config-dialog-body"
-          role="tabpanel"
-          id={tabId('nbi-claude-subtabpanel', 'settings')}
-          aria-labelledby={tabId('nbi-claude-subtab', 'settings')}
-        >
-          <div className="model-config-section">
-            <div className="model-config-section-header">
-              Enable Claude mode
+      <div className="config-dialog-body">
+        <div className="model-config-section">
+          <div className="model-config-section-header">Enable Claude mode</div>
+          <div className="model-config-section-body">
+            <div className="model-config-section-row">
+              <span>
+                This requires a{' '}
+                <a href="https://claude.ai" target="_blank">
+                  Claude
+                </a>{' '}
+                account and{' '}
+                <a href="https://code.claude.com/" target="_blank">
+                  Claude Code
+                </a>{' '}
+                installed in your system.
+              </span>
             </div>
-            <div className="model-config-section-body">
-              <div className="model-config-section-row">
-                <span>
-                  This requires a{' '}
-                  <a href="https://claude.ai" target="_blank">
-                    Claude
-                  </a>{' '}
-                  account and{' '}
-                  <a href="https://code.claude.com/" target="_blank">
-                    Claude Code
-                  </a>{' '}
-                  installed in your system.
-                </span>
-              </div>
-              <div className="model-config-section-row">
-                <div className="model-config-section-column">
-                  <div>
-                    <CheckBoxItem
-                      header={true}
-                      label="Enable Claude mode"
-                      checked={checkedValue(
-                        featurePolicies.claude_mode,
-                        claudeEnabled
-                      )}
-                      disabled={featurePolicies.claude_mode.locked}
-                      tooltip={lockedTip(featurePolicies.claude_mode.locked)}
-                      onClick={() => {
-                        setClaudeEnabled(!claudeEnabled);
-                      }}
-                    ></CheckBoxItem>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="model-config-section">
-            <div
-              className="model-config-section-header"
-              style={{ display: 'flex' }}
-            >
-              <div style={{ flexGrow: 1 }}>Models</div>
-              <div>
-                <button
-                  className="jp-toast-button jp-mod-small jp-Button"
-                  onClick={refreshClaudeModels}
-                  disabled={loadingModels}
-                >
-                  <div className="jp-Dialog-buttonLabel">
-                    {loadingModels ? 'Loading...' : 'Refresh'}
-                  </div>
-                </button>
-              </div>
-            </div>
-            <div className="model-config-section-body">
-              <div className="model-config-section-row">
-                <div className="model-config-section-column">
-                  <div>Chat model</div>
-                  <div title={lockedTip(settingLocks.claude_chat_model.locked)}>
-                    <select
-                      className="jp-mod-styled"
-                      disabled={settingLocks.claude_chat_model.locked}
-                      onChange={event => setChatModel(event.target.value)}
-                    >
-                      <option
-                        value={ClaudeModelType.Default}
-                        selected={chatModel === ClaudeModelType.Default}
-                      >
-                        Default (recommended)
-                      </option>
-                      {claudeModels.map(model => (
-                        <option
-                          key={model.id}
-                          value={model.id}
-                          selected={chatModel === model.id}
-                        >
-                          {model.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                <div className="model-config-section-column">
-                  <div>Auto-complete model</div>
-                  <div
-                    title={lockedTip(
-                      settingLocks.claude_inline_completion_model.locked
+            <div className="model-config-section-row">
+              <div className="model-config-section-column">
+                <div>
+                  <CheckBoxItem
+                    header={true}
+                    label="Enable Claude mode"
+                    checked={checkedValue(
+                      featurePolicies.claude_mode,
+                      claudeEnabled
                     )}
-                  >
-                    <select
-                      className="jp-mod-styled"
-                      disabled={
-                        settingLocks.claude_inline_completion_model.locked
-                      }
-                      onChange={event =>
-                        setInlineCompletionModel(event.target.value)
-                      }
-                    >
-                      <option
-                        value={ClaudeModelType.None}
-                        selected={
-                          inlineCompletionModel === ClaudeModelType.None
-                        }
-                      >
-                        None
-                      </option>
-                      <option
-                        value={ClaudeModelType.Inherit}
-                        selected={
-                          inlineCompletionModel === ClaudeModelType.Inherit
-                        }
-                      >
-                        Inherit from general settings
-                      </option>
-                      <option
-                        value={ClaudeModelType.Default}
-                        selected={
-                          inlineCompletionModel === ClaudeModelType.Default
-                        }
-                      >
-                        Default (recommended)
-                      </option>
-                      {claudeModels.map(model => (
-                        <option
-                          key={model.id}
-                          value={model.id}
-                          selected={inlineCompletionModel === model.id}
-                        >
-                          {model.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="model-config-section">
-            <div className="model-config-section-header">
-              Chat Agent setting sources
-            </div>
-            <div className="model-config-section-body">
-              <div className="model-config-section-row">
-                <div className="model-config-section-column">
-                  <div>
-                    <CheckBoxItem
-                      header={true}
-                      label="User"
-                      checked={checkedValue(
-                        featurePolicies.claude_setting_source_user,
-                        settingSources.includes('user')
-                      )}
-                      disabled={
-                        featurePolicies.claude_setting_source_user.locked
-                      }
-                      tooltip={lockedTip(
-                        featurePolicies.claude_setting_source_user.locked
-                      )}
-                      onClick={() => {
-                        setSettingSources(
-                          settingSources.includes('user')
-                            ? settingSources.filter(
-                                (source: string) => source !== 'user'
-                              )
-                            : [...settingSources, 'user']
-                        );
-                      }}
-                    ></CheckBoxItem>
-                  </div>
-                </div>
-                <div className="model-config-section-column">
-                  <div>
-                    <CheckBoxItem
-                      header={true}
-                      label="Project (Jupyter root directory)"
-                      checked={checkedValue(
-                        featurePolicies.claude_setting_source_project,
-                        settingSources.includes('project')
-                      )}
-                      disabled={
-                        featurePolicies.claude_setting_source_project.locked
-                      }
-                      tooltip={lockedTip(
-                        featurePolicies.claude_setting_source_project.locked
-                      )}
-                      onClick={() => {
-                        setSettingSources(
-                          settingSources.includes('project')
-                            ? settingSources.filter(
-                                (source: string) => source !== 'project'
-                              )
-                            : [...settingSources, 'project']
-                        );
-                      }}
-                    ></CheckBoxItem>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="model-config-section">
-            <div className="model-config-section-header">Chat Agent tools</div>
-            <div className="model-config-section-body">
-              <div className="model-config-section-row">
-                <div className="model-config-section-column">
-                  <div>
-                    <CheckBoxItem
-                      header={true}
-                      label="Claude Code tools"
-                      checked={checkedValue(
-                        featurePolicies.claude_code_tools,
-                        tools.includes(ClaudeToolType.ClaudeCodeTools)
-                      )}
-                      disabled={true}
-                      tooltip={lockedTip(
-                        featurePolicies.claude_code_tools.locked
-                      )}
-                      onClick={() => {
-                        setTools(
-                          tools.includes(ClaudeToolType.ClaudeCodeTools)
-                            ? tools.filter(
-                                (tool: string) =>
-                                  tool !== ClaudeToolType.ClaudeCodeTools
-                              )
-                            : [...tools, ClaudeToolType.ClaudeCodeTools]
-                        );
-                      }}
-                    ></CheckBoxItem>
-                  </div>
-                </div>
-                <div className="model-config-section-column">
-                  <div>
-                    <CheckBoxItem
-                      header={true}
-                      label="Jupyter UI tools"
-                      checked={checkedValue(
-                        featurePolicies.claude_jupyter_ui_tools,
-                        tools.includes(ClaudeToolType.JupyterUITools)
-                      )}
-                      disabled={featurePolicies.claude_jupyter_ui_tools.locked}
-                      tooltip={lockedTip(
-                        featurePolicies.claude_jupyter_ui_tools.locked
-                      )}
-                      onClick={() => {
-                        setTools(
-                          tools.includes(ClaudeToolType.JupyterUITools)
-                            ? tools.filter(
-                                (tool: string) =>
-                                  tool !== ClaudeToolType.JupyterUITools
-                              )
-                            : [...tools, ClaudeToolType.JupyterUITools]
-                        );
-                      }}
-                    ></CheckBoxItem>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="model-config-section">
-            <div className="model-config-section-header">
-              Conversation History
-            </div>
-            <div className="model-config-section-body">
-              <div className="model-config-section-row">
-                <div className="model-config-section-column">
-                  <div>
-                    <CheckBoxItem
-                      header={true}
-                      label="Remember conversation history"
-                      checked={checkedValue(
-                        featurePolicies.claude_continue_conversation,
-                        continueConversation
-                      )}
-                      disabled={
-                        featurePolicies.claude_continue_conversation.locked
-                      }
-                      tooltip={lockedTip(
-                        featurePolicies.claude_continue_conversation.locked
-                      )}
-                      onClick={() => {
-                        setContinueConversation(!continueConversation);
-                      }}
-                    ></CheckBoxItem>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="model-config-section">
-            <div className="model-config-section-header">Claude account</div>
-            <div className="model-config-section-body">
-              <div className="model-config-section-row">
-                <div className="model-config-section-column">
-                  <div className="form-field-row">
-                    <div className="form-field-description">
-                      API Key (optional)
-                    </div>
-                    <input
-                      name="chat-model-id-input"
-                      placeholder={
-                        settingLocks.claude_api_key.locked
-                          ? 'Locked by ANTHROPIC_API_KEY'
-                          : 'API Key'
-                      }
-                      className="jp-mod-styled"
-                      spellCheck={false}
-                      value={settingLocks.claude_api_key.locked ? '' : apiKey}
-                      disabled={settingLocks.claude_api_key.locked}
-                      title={lockedTip(settingLocks.claude_api_key.locked)}
-                      onChange={event => setApiKey(event.target.value)}
-                    />
-                  </div>
-                  <div className="form-field-row">
-                    <div className="form-field-description">
-                      Base URL (optional)
-                    </div>
-                    <input
-                      name="chat-model-id-input"
-                      placeholder={
-                        settingLocks.claude_base_url.locked
-                          ? 'Locked by ANTHROPIC_BASE_URL'
-                          : 'https://api.anthropic.com'
-                      }
-                      className="jp-mod-styled"
-                      spellCheck={false}
-                      value={baseUrl}
-                      disabled={settingLocks.claude_base_url.locked}
-                      title={lockedTip(settingLocks.claude_base_url.locked)}
-                      onChange={event => setBaseUrl(event.target.value)}
-                    />
-                  </div>
+                    disabled={featurePolicies.claude_mode.locked}
+                    tooltip={lockedTip(featurePolicies.claude_mode.locked)}
+                    onClick={() => {
+                      setClaudeEnabled(!claudeEnabled);
+                    }}
+                  ></CheckBoxItem>
                 </div>
               </div>
             </div>
           </div>
         </div>
-      )}
+
+        <div className="model-config-section">
+          <div
+            className="model-config-section-header"
+            style={{ display: 'flex' }}
+          >
+            <div style={{ flexGrow: 1 }}>Models</div>
+            <div>
+              <button
+                className="jp-toast-button jp-mod-small jp-Button"
+                onClick={refreshClaudeModels}
+                disabled={loadingModels}
+              >
+                <div className="jp-Dialog-buttonLabel">
+                  {loadingModels ? 'Loading...' : 'Refresh'}
+                </div>
+              </button>
+            </div>
+          </div>
+          <div className="model-config-section-body">
+            <div className="model-config-section-row">
+              <div className="model-config-section-column">
+                <div>Chat model</div>
+                <div title={lockedTip(settingLocks.claude_chat_model.locked)}>
+                  <select
+                    className="jp-mod-styled"
+                    disabled={settingLocks.claude_chat_model.locked}
+                    onChange={event => setChatModel(event.target.value)}
+                  >
+                    <option
+                      value={ClaudeModelType.Default}
+                      selected={chatModel === ClaudeModelType.Default}
+                    >
+                      Default (recommended)
+                    </option>
+                    {claudeModels.map(model => (
+                      <option
+                        key={model.id}
+                        value={model.id}
+                        selected={chatModel === model.id}
+                      >
+                        {model.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="model-config-section-column">
+                <div>Auto-complete model</div>
+                <div
+                  title={lockedTip(
+                    settingLocks.claude_inline_completion_model.locked
+                  )}
+                >
+                  <select
+                    className="jp-mod-styled"
+                    disabled={
+                      settingLocks.claude_inline_completion_model.locked
+                    }
+                    onChange={event =>
+                      setInlineCompletionModel(event.target.value)
+                    }
+                  >
+                    <option
+                      value={ClaudeModelType.None}
+                      selected={inlineCompletionModel === ClaudeModelType.None}
+                    >
+                      None
+                    </option>
+                    <option
+                      value={ClaudeModelType.Inherit}
+                      selected={
+                        inlineCompletionModel === ClaudeModelType.Inherit
+                      }
+                    >
+                      Inherit from general settings
+                    </option>
+                    <option
+                      value={ClaudeModelType.Default}
+                      selected={
+                        inlineCompletionModel === ClaudeModelType.Default
+                      }
+                    >
+                      Default (recommended)
+                    </option>
+                    {claudeModels.map(model => (
+                      <option
+                        key={model.id}
+                        value={model.id}
+                        selected={inlineCompletionModel === model.id}
+                      >
+                        {model.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="model-config-section">
+          <div className="model-config-section-header">
+            Chat Agent setting sources
+          </div>
+          <div className="model-config-section-body">
+            <div className="model-config-section-row">
+              <div className="model-config-section-column">
+                <div>
+                  <CheckBoxItem
+                    header={true}
+                    label="User"
+                    checked={checkedValue(
+                      featurePolicies.claude_setting_source_user,
+                      settingSources.includes('user')
+                    )}
+                    disabled={featurePolicies.claude_setting_source_user.locked}
+                    tooltip={lockedTip(
+                      featurePolicies.claude_setting_source_user.locked
+                    )}
+                    onClick={() => {
+                      setSettingSources(
+                        settingSources.includes('user')
+                          ? settingSources.filter(
+                              (source: string) => source !== 'user'
+                            )
+                          : [...settingSources, 'user']
+                      );
+                    }}
+                  ></CheckBoxItem>
+                </div>
+              </div>
+              <div className="model-config-section-column">
+                <div>
+                  <CheckBoxItem
+                    header={true}
+                    label="Project (Jupyter root directory)"
+                    checked={checkedValue(
+                      featurePolicies.claude_setting_source_project,
+                      settingSources.includes('project')
+                    )}
+                    disabled={
+                      featurePolicies.claude_setting_source_project.locked
+                    }
+                    tooltip={lockedTip(
+                      featurePolicies.claude_setting_source_project.locked
+                    )}
+                    onClick={() => {
+                      setSettingSources(
+                        settingSources.includes('project')
+                          ? settingSources.filter(
+                              (source: string) => source !== 'project'
+                            )
+                          : [...settingSources, 'project']
+                      );
+                    }}
+                  ></CheckBoxItem>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="model-config-section">
+          <div className="model-config-section-header">Chat Agent tools</div>
+          <div className="model-config-section-body">
+            <div className="model-config-section-row">
+              <div className="model-config-section-column">
+                <div>
+                  <CheckBoxItem
+                    header={true}
+                    label="Claude Code tools"
+                    checked={checkedValue(
+                      featurePolicies.claude_code_tools,
+                      tools.includes(ClaudeToolType.ClaudeCodeTools)
+                    )}
+                    disabled={true}
+                    tooltip={lockedTip(
+                      featurePolicies.claude_code_tools.locked
+                    )}
+                    onClick={() => {
+                      setTools(
+                        tools.includes(ClaudeToolType.ClaudeCodeTools)
+                          ? tools.filter(
+                              (tool: string) =>
+                                tool !== ClaudeToolType.ClaudeCodeTools
+                            )
+                          : [...tools, ClaudeToolType.ClaudeCodeTools]
+                      );
+                    }}
+                  ></CheckBoxItem>
+                </div>
+              </div>
+              <div className="model-config-section-column">
+                <div>
+                  <CheckBoxItem
+                    header={true}
+                    label="Jupyter UI tools"
+                    checked={checkedValue(
+                      featurePolicies.claude_jupyter_ui_tools,
+                      tools.includes(ClaudeToolType.JupyterUITools)
+                    )}
+                    disabled={featurePolicies.claude_jupyter_ui_tools.locked}
+                    tooltip={lockedTip(
+                      featurePolicies.claude_jupyter_ui_tools.locked
+                    )}
+                    onClick={() => {
+                      setTools(
+                        tools.includes(ClaudeToolType.JupyterUITools)
+                          ? tools.filter(
+                              (tool: string) =>
+                                tool !== ClaudeToolType.JupyterUITools
+                            )
+                          : [...tools, ClaudeToolType.JupyterUITools]
+                      );
+                    }}
+                  ></CheckBoxItem>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="model-config-section">
+          <div className="model-config-section-header">
+            Conversation History
+          </div>
+          <div className="model-config-section-body">
+            <div className="model-config-section-row">
+              <div className="model-config-section-column">
+                <div>
+                  <CheckBoxItem
+                    header={true}
+                    label="Remember conversation history"
+                    checked={checkedValue(
+                      featurePolicies.claude_continue_conversation,
+                      continueConversation
+                    )}
+                    disabled={
+                      featurePolicies.claude_continue_conversation.locked
+                    }
+                    tooltip={lockedTip(
+                      featurePolicies.claude_continue_conversation.locked
+                    )}
+                    onClick={() => {
+                      setContinueConversation(!continueConversation);
+                    }}
+                  ></CheckBoxItem>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="model-config-section">
+          <div className="model-config-section-header">Claude account</div>
+          <div className="model-config-section-body">
+            <div className="model-config-section-row">
+              <div className="model-config-section-column">
+                <div className="form-field-row">
+                  <div className="form-field-description">
+                    API Key (optional)
+                  </div>
+                  <input
+                    name="chat-model-id-input"
+                    placeholder={
+                      settingLocks.claude_api_key.locked
+                        ? 'Locked by ANTHROPIC_API_KEY'
+                        : 'API Key'
+                    }
+                    className="jp-mod-styled"
+                    spellCheck={false}
+                    value={settingLocks.claude_api_key.locked ? '' : apiKey}
+                    disabled={settingLocks.claude_api_key.locked}
+                    title={lockedTip(settingLocks.claude_api_key.locked)}
+                    onChange={event => setApiKey(event.target.value)}
+                  />
+                </div>
+                <div className="form-field-row">
+                  <div className="form-field-description">
+                    Base URL (optional)
+                  </div>
+                  <input
+                    name="chat-model-id-input"
+                    placeholder={
+                      settingLocks.claude_base_url.locked
+                        ? 'Locked by ANTHROPIC_BASE_URL'
+                        : 'https://api.anthropic.com'
+                    }
+                    className="jp-mod-styled"
+                    spellCheck={false}
+                    value={baseUrl}
+                    disabled={settingLocks.claude_base_url.locked}
+                    title={lockedTip(settingLocks.claude_base_url.locked)}
+                    onChange={event => setBaseUrl(event.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
