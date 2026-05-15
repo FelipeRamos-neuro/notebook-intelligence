@@ -164,26 +164,45 @@ export interface IInlinePromptWidgetOptions {
 }
 
 export class InlinePromptWidget extends ReactWidget {
-  constructor(rect: DOMRect, options: IInlinePromptWidgetOptions) {
+  // Pass `rect` for floating mode (file editor). Pass null for inline mode
+  // (notebook cell), where CodeMirror owns the in-flow block placement.
+  constructor(rect: DOMRect | null, options: IInlinePromptWidgetOptions) {
     super();
 
     this.node.classList.add('inline-prompt-widget');
-    this.node.style.top = `${rect.top + 32}px`;
-    this.node.style.left = `${rect.left}px`;
-    this.node.style.width = rect.width + 'px';
-    this.node.style.height = '48px';
+    if (rect) {
+      this._floating = true;
+      this.node.classList.add('inline-prompt-widget-floating');
+      this.node.style.top = `${rect.top + 32}px`;
+      this.node.style.left = `${rect.left}px`;
+      this.node.style.width = rect.width + 'px';
+      this.node.style.height = '48px';
+    } else {
+      this.node.classList.add('inline-prompt-widget-inline');
+      this.node.style.height = '48px';
+    }
     this._options = options;
 
-    this.node.addEventListener('focusout', (event: any) => {
-      if (this.node.contains(event.relatedTarget)) {
-        return;
-      }
+    if (this._floating) {
+      this.node.addEventListener('focusout', (event: any) => {
+        if (this.node.contains(event.relatedTarget)) {
+          return;
+        }
 
-      this._options.onRequestCancelled();
-    });
+        window.setTimeout(() => {
+          if (this.node.contains(document.activeElement)) {
+            return;
+          }
+          this._options.onRequestCancelled();
+        }, 0);
+      });
+    }
   }
 
   updatePosition(rect: DOMRect) {
+    if (!this._floating) {
+      return;
+    }
     this.node.style.top = `${rect.top + 32}px`;
     this.node.style.left = `${rect.left}px`;
     this.node.style.width = rect.width + 'px';
@@ -265,6 +284,7 @@ export class InlinePromptWidget extends ReactWidget {
   private _options: IInlinePromptWidgetOptions;
   private _requestTime: Date;
   private _streamError: string | null = null;
+  private _floating = false;
 }
 
 export class GitHubCopilotStatusBarItem extends ReactWidget {
@@ -3598,7 +3618,7 @@ function SidebarComponent(props: any) {
   );
 }
 
-function InlinePopoverComponent(props: any) {
+export function InlinePopoverComponent(props: any) {
   const [modifiedCode, setModifiedCode] = useState<string>('');
   const [promptSubmitted, setPromptSubmitted] = useState(false);
   // Tracks the in-flight backend request so Escape / Cancel / Accept can
@@ -3630,6 +3650,15 @@ function InlinePopoverComponent(props: any) {
     );
     inflightMessageIdRef.current = null;
   };
+
+  // Hand the cancel function up to the host so non-React dismissal paths
+  // (e.g. outside-click on the block widget) can cancel without invoking
+  // onRequestCancelled — that path also restores editor focus, which is
+  // wrong when the user is mid-click on a different target.
+  useEffect(() => {
+    props.registerCancel?.(cancelInflightRequest);
+    return () => props.registerCancel?.(null);
+  }, []);
 
   const onRequestSubmitted = (prompt: string) => {
     setModifiedCode('');
@@ -3828,8 +3857,9 @@ function InlinePromptComponent(props: any) {
   };
 
   const onPromptKeyDown = async (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    event.stopPropagation();
+
     if (event.key === 'Enter' && !event.shiftKey) {
-      event.stopPropagation();
       event.preventDefault();
       if (inputSubmitted && (event.metaKey || event.ctrlKey)) {
         props.onUpdatedCodeAccepted();
@@ -3838,18 +3868,30 @@ function InlinePromptComponent(props: any) {
         handleUserInputSubmit();
       }
     } else if (event.key === 'Escape') {
-      event.stopPropagation();
       event.preventDefault();
       props.onRequestCancelled();
     }
   };
 
-  useEffect(() => {
+  const focusPromptInput = () => {
     const input = promptInputRef.current;
-    if (input) {
-      input.select();
-      promptInputRef.current?.focus();
+    if (!input) {
+      return;
     }
+
+    input.focus({ preventScroll: true });
+    input.select();
+  };
+
+  useEffect(() => {
+    focusPromptInput();
+    const animationFrame = requestAnimationFrame(focusPromptInput);
+    const timeout = window.setTimeout(focusPromptInput, 0);
+
+    return () => {
+      cancelAnimationFrame(animationFrame);
+      window.clearTimeout(timeout);
+    };
   }, []);
 
   return (
@@ -3861,7 +3903,12 @@ function InlinePromptComponent(props: any) {
         ref={promptInputRef}
         rows={3}
         onChange={onPromptChange}
+        onClick={event => {
+          event.stopPropagation();
+          focusPromptInput();
+        }}
         onKeyDown={onPromptKeyDown}
+        onMouseDown={event => event.stopPropagation()}
         placeholder="Ask Notebook Intelligence to generate Python code..."
         spellCheck={false}
         value={prompt}

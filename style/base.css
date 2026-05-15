@@ -1063,8 +1063,33 @@ body[data-jp-theme-light='false'] .inline-popover {
 .inline-prompt-widget {
   border-radius: 4px;
   padding: 3px;
+}
+
+.inline-prompt-widget-floating {
   z-index: 1000;
   box-shadow: rgba(90 76 191 / 30%) 0 0 10px 10px;
+}
+
+.inline-prompt-widget-inline {
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 4px 0;
+  box-shadow: rgba(90 76 191 / 25%) 0 0 4px 1px;
+}
+
+/* Undo .cm-content { caret-color: transparent } from CM6's drawSelection,
+   which inherits into our textarea when the popover renders as a block
+   widget inside the editor. */
+.inline-prompt-widget-inline textarea {
+  caret-color: auto;
+}
+
+.nbi-inline-prompt-block {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  padding: 2px 0;
 }
 
 .inline-prompt-widget::before {
