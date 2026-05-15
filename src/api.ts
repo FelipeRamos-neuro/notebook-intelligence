@@ -66,6 +66,53 @@ export enum ClaudeToolType {
 
 export type SkillScope = 'user' | 'project';
 
+export type ClaudeMCPScope = 'user' | 'project' | 'local';
+export type ClaudeMCPTransport = 'stdio' | 'sse' | 'http';
+
+export interface IClaudeMCPServer {
+  name: string;
+  scope: ClaudeMCPScope;
+  transport: ClaudeMCPTransport | string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  url: string;
+  headers: Record<string, string>;
+}
+
+export interface IClaudeMCPAddInput {
+  name: string;
+  scope: ClaudeMCPScope;
+  transport: ClaudeMCPTransport;
+  commandOrUrl: string;
+  args?: string[];
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+}
+
+function claudeMCPServerFromWire(wire: any): IClaudeMCPServer {
+  return {
+    name: String(wire?.name ?? ''),
+    scope: (wire?.scope ?? 'user') as ClaudeMCPScope,
+    transport: String(wire?.transport ?? 'stdio'),
+    command: String(wire?.command ?? ''),
+    args: Array.isArray(wire?.args) ? wire.args.map(String) : [],
+    env:
+      wire?.env && typeof wire.env === 'object'
+        ? Object.fromEntries(
+            Object.entries(wire.env).map(([k, v]) => [String(k), String(v)])
+          )
+        : {},
+    url: String(wire?.url ?? ''),
+    headers:
+      wire?.headers && typeof wire.headers === 'object'
+        ? Object.fromEntries(
+            Object.entries(wire.headers).map(([k, v]) => [String(k), String(v)])
+          )
+        : {}
+  };
+}
+
 export interface ISkillSummary {
   scope: SkillScope;
   name: string;
@@ -165,7 +212,8 @@ export type FeaturePolicyName =
   | 'claude_setting_source_user'
   | 'claude_setting_source_project'
   | 'store_github_access_token'
-  | 'skills_management';
+  | 'skills_management'
+  | 'claude_mcp_management';
 
 export type IFeaturePolicies = Record<
   FeaturePolicyName,
@@ -327,7 +375,8 @@ export class NBIConfig {
       'claude_setting_source_user',
       'claude_setting_source_project',
       'store_github_access_token',
-      'skills_management'
+      'skills_management',
+      'claude_mcp_management'
     ];
     const result = {} as IFeaturePolicies;
     for (const name of names) {
@@ -741,6 +790,47 @@ export class NBIAPI {
       body: JSON.stringify(wire)
     });
     return skillFromWire(data.skill);
+  }
+
+  static async listClaudeMCPServers(): Promise<IClaudeMCPServer[]> {
+    const data = await requestAPI<any>('claude-mcp');
+    return Array.isArray(data?.servers)
+      ? data.servers.map(claudeMCPServerFromWire)
+      : [];
+  }
+
+  static async addClaudeMCPServer(
+    input: IClaudeMCPAddInput
+  ): Promise<IClaudeMCPServer> {
+    const body: any = {
+      name: input.name,
+      scope: input.scope,
+      transport: input.transport,
+      command_or_url: input.commandOrUrl
+    };
+    if (input.args && input.args.length) {
+      body.args = input.args;
+    }
+    if (input.env && Object.keys(input.env).length) {
+      body.env = input.env;
+    }
+    if (input.headers && Object.keys(input.headers).length) {
+      body.headers = input.headers;
+    }
+    const data = await requestAPI<any>('claude-mcp', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    });
+    return claudeMCPServerFromWire(data.server);
+  }
+
+  static async removeClaudeMCPServer(
+    name: string,
+    scope: ClaudeMCPScope
+  ): Promise<void> {
+    await requestAPI<any>(`claude-mcp/${scope}/${encodeURIComponent(name)}`, {
+      method: 'DELETE'
+    });
   }
 
   static async reconcileManagedSkills(): Promise<IReconcileResult> {

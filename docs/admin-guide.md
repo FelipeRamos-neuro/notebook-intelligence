@@ -373,6 +373,23 @@ Force-off does three things at once:
 
 Use this when an org wants to disable user-authored Claude skills entirely.
 
+### Disabling the Claude-mode MCP Servers tab
+
+```python
+c.NotebookIntelligence.claude_mcp_management_policy = "force-off"
+```
+
+Or via env: `NBI_CLAUDE_MCP_MANAGEMENT_POLICY=force-off`.
+
+Force-off:
+
+- Hides the Claude-mode **MCP Servers** tab in the Settings panel (visible only when Claude mode is on and the `claude` CLI is available).
+- Returns HTTP 403 from every `/notebook-intelligence/claude-mcp/*` route.
+
+The Claude-mode tab is **independent** of the existing non-Claude **MCP Servers** tab. The former wraps Claude Code's own config (`~/.claude.json` and project `.mcp.json`); the latter manages NBI's own MCP servers used by the non-Claude chat path. They never appear at the same time — the non-Claude tab is hidden when Claude mode is on, and the Claude-mode tab is hidden when it's off.
+
+Reads come from Claude's JSON config files directly (fast, no health checks). Writes (add / remove) shell out to `claude mcp add` / `claude mcp remove` so Claude remains the source of truth for any side effects (project-trust prompts, OAuth bookkeeping).
+
 ---
 
 ## Multi-tenancy and per-team scoping

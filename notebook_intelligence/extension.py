@@ -42,6 +42,7 @@ from notebook_intelligence.feature_flags import (
     resolve_feature_flag,
 )
 from notebook_intelligence.claude import ClaudeCodeChatParticipant, fetch_claude_models
+from notebook_intelligence.claude_mcp_manager import ClaudeMCPManager
 from notebook_intelligence.claude_sessions import (
     NBI_CONTEXT_PREFIX,
     get_sessions_dir as get_claude_sessions_dir,
@@ -238,6 +239,11 @@ FEATURE_POLICY_SPEC = (
         "NBI_SKILLS_MANAGEMENT_POLICY",
         "skills_management_policy",
     ),
+    (
+        "claude_mcp_management",
+        "NBI_CLAUDE_MCP_MANAGEMENT_POLICY",
+        "claude_mcp_management_policy",
+    ),
 )
 FEATURE_POLICY_NAMES = tuple(name for name, _, _ in FEATURE_POLICY_SPEC)
 
@@ -284,6 +290,7 @@ def _build_feature_policies_response(policies: dict, nbi_config) -> dict:
         # Admin-only gate; user has no toggle, so user_value is always True.
         # The policy resolver still applies force-off / force-on correctly.
         "skills_management": True,
+        "claude_mcp_management": True,
     }
 
     response = {}
@@ -701,6 +708,96 @@ class RulesReloadHandler(APIHandler):
         except Exception as e:
             self.set_status(500)
             self.finish(json.dumps({"error": str(e)}))
+
+
+class ClaudeMCPBaseHandler(APIHandler):
+    """Shared helpers + policy gate for Claude-MCP endpoints."""
+
+    claude_mcp_management_enabled = True
+
+    async def prepare(self):
+        # Mirrors SkillsBaseHandler.prepare — see there for the rationale on
+        # awaiting super() and checking _finished.
+        await super().prepare()
+        if self._finished:
+            return
+        if not self.claude_mcp_management_enabled:
+            self.set_status(403)
+            self.finish(
+                json.dumps({"error": "Claude MCP management is disabled by your administrator"})
+            )
+
+    @property
+    def manager(self) -> "ClaudeMCPManager":
+        return ClaudeMCPManager(working_dir=get_jupyter_root_dir() or None)
+
+    def _parse_json_body(self):
+        try:
+            return json.loads(self.request.body)
+        except json.JSONDecodeError as e:
+            self.set_status(400)
+            self.finish(json.dumps({"error": f"Invalid JSON: {e}"}))
+            return None
+
+    def _error(self, exc: Exception):
+        if isinstance(exc, FileNotFoundError):
+            self.set_status(404)
+        elif isinstance(exc, TimeoutError):
+            self.set_status(504)
+        else:
+            self.set_status(400)
+        self.finish(json.dumps({"error": str(exc)}))
+
+
+class ClaudeMCPListHandler(ClaudeMCPBaseHandler):
+    @tornado.web.authenticated
+    def get(self):
+        try:
+            servers = [s.to_dict() for s in self.manager.list_servers()]
+        except Exception as e:
+            self._error(e)
+            return
+        self.finish(json.dumps({"servers": servers}))
+
+    @tornado.web.authenticated
+    async def post(self):
+        data = self._parse_json_body()
+        if data is None:
+            return
+        try:
+            srv = await self.manager.add_server(
+                name=data.get("name", ""),
+                scope=data.get("scope", "user"),
+                transport=data.get("transport", "stdio"),
+                command_or_url=data.get("command_or_url", ""),
+                args=data.get("args"),
+                env=data.get("env"),
+                headers=data.get("headers"),
+            )
+            self.finish(json.dumps({"server": srv.to_dict()}))
+        except (FileNotFoundError, TimeoutError, ValueError) as e:
+            self._error(e)
+
+
+class ClaudeMCPDetailHandler(ClaudeMCPBaseHandler):
+    @tornado.web.authenticated
+    def get(self, scope, name):
+        srv = self.manager.get_server(name, scope)
+        if srv is None:
+            self.set_status(404)
+            self.finish(json.dumps({
+                "error": f"MCP server {name!r} not found in {scope} scope"
+            }))
+            return
+        self.finish(json.dumps({"server": srv.to_dict()}))
+
+    @tornado.web.authenticated
+    async def delete(self, scope, name):
+        try:
+            await self.manager.remove_server(name, scope)
+            self.finish(json.dumps({"success": True}))
+        except (FileNotFoundError, TimeoutError, ValueError) as e:
+            self._error(e)
 
 
 class SkillsBaseHandler(APIHandler):
@@ -1889,6 +1986,22 @@ class NotebookIntelligence(ExtensionApp):
         config=True,
     )
 
+    claude_mcp_management_policy = TraitletEnum(
+        list(VALID_POLICIES),
+        default_value=POLICY_USER_CHOICE,
+        help="""
+        Org-wide policy for the Claude-mode MCP Servers management tab.
+        "user-choice" (default) and "force-on" both leave the tab visible
+        when Claude mode is on and the Claude CLI is available; the two are
+        behaviorally identical here (no user toggle to override). "force-off"
+        hides the tab and returns 403 from /claude-mcp handlers. Independent
+        of the existing non-Claude `MCP Servers` tab, which is governed by
+        `mcp_server_settings` (its own surface). Overridden by the
+        NBI_CLAUDE_MCP_MANAGEMENT_POLICY env var.
+        """,
+        config=True,
+    )
+
     skills_manifest = Unicode(
         default_value="",
         help="""
@@ -2030,6 +2143,10 @@ class NotebookIntelligence(ExtensionApp):
         route_pattern_upload_file = url_path_join(base_url, "notebook-intelligence", "upload-file")
         route_pattern_claude_sessions = url_path_join(base_url, "notebook-intelligence", "claude-sessions")
         route_pattern_claude_sessions_resume = url_path_join(base_url, "notebook-intelligence", "claude-sessions", "resume")
+        route_pattern_claude_mcp = url_path_join(base_url, "notebook-intelligence", "claude-mcp")
+        route_pattern_claude_mcp_detail = url_path_join(
+            base_url, "notebook-intelligence", "claude-mcp", r"(user|project|local)", r"([^/]+)"
+        )
         GetCapabilitiesHandler.disabled_tools = self.disabled_tools
         GetCapabilitiesHandler.allow_enabling_tools_with_env = self.allow_enabling_tools_with_env
         GetCapabilitiesHandler.disabled_providers = self.disabled_providers
@@ -2048,6 +2165,9 @@ class NotebookIntelligence(ExtensionApp):
         )
         SkillsBaseHandler.skills_management_enabled = not is_force_off(
             feature_policies, "skills_management"
+        )
+        ClaudeMCPBaseHandler.claude_mcp_management_enabled = not is_force_off(
+            feature_policies, "claude_mcp_management"
         )
         self._publish_policies(feature_policies, string_overrides)
         NotebookIntelligence.handlers = [
@@ -2078,6 +2198,10 @@ class NotebookIntelligence(ExtensionApp):
             (route_pattern_upload_file, FileUploadHandler),
             (route_pattern_claude_sessions_resume, ClaudeSessionsResumeHandler),
             (route_pattern_claude_sessions, ClaudeSessionsListHandler),
+            # Claude-MCP routes: detail before list so {scope}/{name} doesn't
+            # shadow specialized URLs added later (parallels the skills order).
+            (route_pattern_claude_mcp_detail, ClaudeMCPDetailHandler),
+            (route_pattern_claude_mcp, ClaudeMCPListHandler),
             (route_pattern_copilot, WebsocketCopilotHandler),
         ]
         web_app.add_handlers(host_pattern, NotebookIntelligence.handlers)

@@ -153,19 +153,20 @@ Most settings panel toggles can be locked by org administrators. Two shapes:
 
 **Boolean policies** use the `*_POLICY` suffix and accept three values: `user-choice` (default — user toggles freely), `force-on` (locked enabled), `force-off` (locked disabled). When forced, the panel control is disabled with a "Locked by your administrator" tooltip and any client-side write is ignored.
 
-| Env var                                    | Locks the Settings panel control for                                                              |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| `NBI_EXPLAIN_ERROR_POLICY`                 | "Explain cell errors"                                                                             |
-| `NBI_OUTPUT_FOLLOWUP_POLICY`               | "Ask about cell outputs"                                                                          |
-| `NBI_OUTPUT_TOOLBAR_POLICY`                | "Show output toolbar"                                                                             |
-| `NBI_CLAUDE_MODE_POLICY`                   | "Enable Claude mode"                                                                              |
-| `NBI_CLAUDE_CONTINUE_CONVERSATION_POLICY`  | "Remember conversation history"                                                                   |
-| `NBI_CLAUDE_CODE_TOOLS_POLICY`             | "Claude Code tools"                                                                               |
-| `NBI_CLAUDE_JUPYTER_UI_TOOLS_POLICY`       | "Jupyter UI tools"                                                                                |
-| `NBI_CLAUDE_SETTING_SOURCE_USER_POLICY`    | Setting source: User                                                                              |
-| `NBI_CLAUDE_SETTING_SOURCE_PROJECT_POLICY` | Setting source: Project                                                                           |
-| `NBI_STORE_GITHUB_ACCESS_TOKEN_POLICY`     | "Remember my GitHub Copilot access token"                                                         |
-| `NBI_SKILLS_MANAGEMENT_POLICY`             | The Skills tab (force-off hides it and 403s the API; also disables the managed-skills reconciler) |
+| Env var                                    | Locks the Settings panel control for                                                                                         |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `NBI_EXPLAIN_ERROR_POLICY`                 | "Explain cell errors"                                                                                                        |
+| `NBI_OUTPUT_FOLLOWUP_POLICY`               | "Ask about cell outputs"                                                                                                     |
+| `NBI_OUTPUT_TOOLBAR_POLICY`                | "Show output toolbar"                                                                                                        |
+| `NBI_CLAUDE_MODE_POLICY`                   | "Enable Claude mode"                                                                                                         |
+| `NBI_CLAUDE_CONTINUE_CONVERSATION_POLICY`  | "Remember conversation history"                                                                                              |
+| `NBI_CLAUDE_CODE_TOOLS_POLICY`             | "Claude Code tools"                                                                                                          |
+| `NBI_CLAUDE_JUPYTER_UI_TOOLS_POLICY`       | "Jupyter UI tools"                                                                                                           |
+| `NBI_CLAUDE_SETTING_SOURCE_USER_POLICY`    | Setting source: User                                                                                                         |
+| `NBI_CLAUDE_SETTING_SOURCE_PROJECT_POLICY` | Setting source: Project                                                                                                      |
+| `NBI_STORE_GITHUB_ACCESS_TOKEN_POLICY`     | "Remember my GitHub Copilot access token"                                                                                    |
+| `NBI_SKILLS_MANAGEMENT_POLICY`             | The Skills tab (force-off hides it and 403s the API; also disables the managed-skills reconciler)                            |
+| `NBI_CLAUDE_MCP_MANAGEMENT_POLICY`         | The Claude-mode MCP Servers tab (force-off hides it and 403s `/claude-mcp/*`; independent of the non-Claude MCP Servers tab) |
 
 The first three also have matching traitlets on `NotebookIntelligence` (`explain_error_policy`, `output_followup_policy`, `output_toolbar_policy`); add the others as needed in the same shape:
 

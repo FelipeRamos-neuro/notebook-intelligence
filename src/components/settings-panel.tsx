@@ -18,6 +18,7 @@ import { CheckBoxItem } from './checkbox';
 import { PillItem } from './pill';
 import { mcpServerSettingsToEnabledState } from './mcp-util';
 import { SettingsPanelComponentSkills } from './skills-panel';
+import { SettingsPanelComponentClaudeMCP } from './claude-mcp-panel';
 import { writeTextToClipboard } from '../utils';
 
 const lockedTip = (locked: boolean): string =>
@@ -125,7 +126,29 @@ export class SettingsPanel extends ReactWidget {
 function SettingsPanelComponent(props: any) {
   const [activeTab, setActiveTab] = useState('general');
   const { featurePolicies } = useNbiPolicies();
+  const [isInClaudeCodeMode, setIsInClaudeCodeMode] = useState(
+    NBIAPI.config.isInClaudeCodeMode
+  );
+  const [isClaudeCliAvailable, setIsClaudeCliAvailable] = useState(
+    NBIAPI.config.isClaudeCliAvailable
+  );
+
+  useEffect(() => {
+    const handler = () => {
+      setIsInClaudeCodeMode(NBIAPI.config.isInClaudeCodeMode);
+      setIsClaudeCliAvailable(NBIAPI.config.isClaudeCliAvailable);
+    };
+    NBIAPI.configChanged.connect(handler);
+    return () => {
+      NBIAPI.configChanged.disconnect(handler);
+    };
+  }, []);
+
   const skillsTabVisible = featurePolicies.skills_management.enabled;
+  const claudeMcpTabVisible =
+    featurePolicies.claude_mcp_management.enabled &&
+    isInClaudeCodeMode &&
+    isClaudeCliAvailable;
 
   // Bounce the user off a tab that has just been hidden by an admin policy
   // change so they don't see a blank pane.
@@ -133,7 +156,10 @@ function SettingsPanelComponent(props: any) {
     if (!skillsTabVisible && activeTab === 'skills') {
       setActiveTab('general');
     }
-  }, [skillsTabVisible, activeTab]);
+    if (!claudeMcpTabVisible && activeTab === 'claude-mcp') {
+      setActiveTab('general');
+    }
+  }, [skillsTabVisible, claudeMcpTabVisible, activeTab]);
 
   const onTabSelected = (tab: string) => {
     setActiveTab(tab);
@@ -145,6 +171,7 @@ function SettingsPanelComponent(props: any) {
         onTabSelected={onTabSelected}
         activeTab={activeTab}
         skillsTabVisible={skillsTabVisible}
+        claudeMcpTabVisible={claudeMcpTabVisible}
       />
       <div
         className="nbi-settings-panel-tab-content"
@@ -170,6 +197,9 @@ function SettingsPanelComponent(props: any) {
         )}
         {activeTab === 'skills' && skillsTabVisible && (
           <SettingsPanelComponentSkills />
+        )}
+        {activeTab === 'claude-mcp' && claudeMcpTabVisible && (
+          <SettingsPanelComponentClaudeMCP />
         )}
       </div>
     </div>
@@ -214,6 +244,9 @@ function SettingsPanelTabsComponent(props: any) {
   ];
   if (!isInClaudeCodeMode) {
     tabs.push({ id: 'mcp-servers', label: 'MCP Servers' });
+  }
+  if (props.claudeMcpTabVisible) {
+    tabs.push({ id: 'claude-mcp', label: 'Claude MCP' });
   }
   if (props.skillsTabVisible) {
     tabs.push({ id: 'skills', label: 'Skills' });
