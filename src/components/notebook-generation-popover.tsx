@@ -70,13 +70,15 @@ export function NotebookGenerationPopover(
           Update active notebook
         </div>
         <div style={{ flexGrow: 1 }}></div>
-        <div
+        <button
+          type="button"
           className="notebook-generation-popover-close-button"
+          aria-label="Close notebook generation popover"
           title="Close"
           onClick={props.onClose}
         >
-          <VscClose />
-        </div>
+          <VscClose aria-hidden="true" />
+        </button>
       </div>
       <div className="notebook-generation-popover-body">
         <textarea

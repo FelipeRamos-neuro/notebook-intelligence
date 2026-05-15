@@ -672,7 +672,7 @@ function ChatResponse(props: any) {
             <div
               className={`chat-message-from-icon chat-message-from-icon-${chatParticipantId} ${isDarkTheme() ? 'dark' : ''}`}
             >
-              <img src={msg.participant.iconPath} />
+              <img src={msg.participant.iconPath} alt="" />
             </div>
           )}
           <div className="chat-message-from-title">
@@ -701,14 +701,22 @@ function ChatResponse(props: any) {
                       <div
                         className={`expandable-content ${!item.reasoningFinished ? 'expanded' : ''}`}
                       >
-                        <div
+                        <button
+                          type="button"
                           className="expandable-content-title"
                           onClick={(event: any) => onExpandCollapseClick(event)}
+                          aria-expanded={!item.reasoningFinished}
                         >
-                          <VscTriangleRight className="collapsed-icon"></VscTriangleRight>
-                          <VscTriangleDown className="expanded-icon"></VscTriangleDown>{' '}
+                          <VscTriangleRight
+                            className="collapsed-icon"
+                            aria-hidden="true"
+                          />
+                          <VscTriangleDown
+                            className="expanded-icon"
+                            aria-hidden="true"
+                          />{' '}
                           {getReasoningTitle(item)}
-                        </div>
+                        </button>
                         <div className="expandable-content-text">
                           <MarkdownRenderer
                             key={`reasoning-${index}`}
@@ -730,14 +738,22 @@ function ChatResponse(props: any) {
                   </MarkdownRenderer>
                   {item.contentDetail ? (
                     <div className="expandable-content expanded">
-                      <div
+                      <button
+                        type="button"
                         className="expandable-content-title"
                         onClick={(event: any) => onExpandCollapseClick(event)}
+                        aria-expanded={true}
                       >
-                        <VscTriangleRight className="collapsed-icon"></VscTriangleRight>
-                        <VscTriangleDown className="expanded-icon"></VscTriangleDown>{' '}
+                        <VscTriangleRight
+                          className="collapsed-icon"
+                          aria-hidden="true"
+                        />
+                        <VscTriangleDown
+                          className="expanded-icon"
+                          aria-hidden="true"
+                        />{' '}
                         {item.contentDetail.title}
-                      </div>
+                      </button>
                       <div className="expandable-content-text">
                         <MarkdownRenderer
                           key={`key-${index}`}
@@ -754,7 +770,7 @@ function ChatResponse(props: any) {
             case ResponseStreamDataType.Image:
               return (
                 <div className="chat-response-img" key={`key-${index}`}>
-                  <img src={item.content} />
+                  <img src={item.content} alt="Chat response image" />
                 </div>
               );
             case ResponseStreamDataType.HTMLFrame:
@@ -783,8 +799,13 @@ function ChatResponse(props: any) {
             case ResponseStreamDataType.Anchor:
               return (
                 <div className="chat-response-anchor" key={`key-${index}`}>
-                  <a href={item.content.uri} target="_blank">
+                  <a
+                    href={item.content.uri}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
                     {item.content.title}
+                    <span className="nbi-sr-only"> (opens in new tab)</span>
                   </a>
                 </div>
               );
@@ -3161,21 +3182,26 @@ function SidebarComponent(props: any) {
                   className={`user-input-context user-input-context-active-file ${contextOn ? 'on' : 'off'}`}
                 >
                   <div>{currentFileContextTitle}</div>
-                  {contextOn ? (
-                    <div
-                      className="user-input-context-toggle"
-                      onClick={() => setContextOn(!contextOn)}
-                    >
-                      <VscEye title="Use as context" />
-                    </div>
-                  ) : (
-                    <div
-                      className="user-input-context-toggle"
-                      onClick={() => setContextOn(!contextOn)}
-                    >
-                      <VscEyeClosed title="Don't use as context" />
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    className="user-input-context-toggle"
+                    onClick={() => setContextOn(!contextOn)}
+                    aria-label={
+                      contextOn
+                        ? 'Stop using current file as context'
+                        : 'Use current file as context'
+                    }
+                    aria-pressed={contextOn}
+                    title={
+                      contextOn ? 'Use as context' : "Don't use as context"
+                    }
+                  >
+                    {contextOn ? (
+                      <VscEye aria-hidden="true" />
+                    ) : (
+                      <VscEyeClosed aria-hidden="true" />
+                    )}
+                  </button>
                 </div>
               )}
               {selectedContextFiles.map(file => {
@@ -3218,14 +3244,43 @@ function SidebarComponent(props: any) {
                         label
                       )}
                     </div>
-                    <div
+                    <button
+                      type="button"
                       className="user-input-context-toggle"
-                      onClick={() =>
-                        removeSelectedContextFile(file.serverPath ?? file.path)
-                      }
+                      onClick={event => {
+                        // The row this button lives in is about to disappear
+                        // from the DOM, which would otherwise drop focus to
+                        // ``<body>``. Hand focus to the next remove button
+                        // in the row (preferred) or back to the textarea so
+                        // keyboard users keep their place.
+                        const target = event.currentTarget;
+                        const row =
+                          target.closest('.user-input-context-row') ?? null;
+                        const buttons = row
+                          ? Array.from(
+                              row.querySelectorAll<HTMLButtonElement>(
+                                'button.user-input-context-toggle'
+                              )
+                            )
+                          : [];
+                        const idx = buttons.indexOf(target);
+                        const next = buttons[idx + 1] ?? buttons[idx - 1];
+                        removeSelectedContextFile(file.serverPath ?? file.path);
+                        // Defer the focus move past the React re-render that
+                        // unmounts ``target``.
+                        window.requestAnimationFrame(() => {
+                          if (next && document.contains(next)) {
+                            next.focus();
+                          } else {
+                            promptInputRef.current?.focus();
+                          }
+                        });
+                      }}
+                      aria-label={`Remove attached file ${label}`}
+                      title="Remove attached file"
                     >
-                      <VscClose title="Remove attached file" />
-                    </div>
+                      <VscClose aria-hidden="true" />
+                    </button>
                   </div>
                 );
               })}
@@ -4029,16 +4084,23 @@ function GitHubCopilotLoginDialogBodyComponent(props: any) {
             memory.
           </div>
           <div>
-            <a href="https://github.com/features/copilot" target="_blank">
+            <a
+              href="https://github.com/features/copilot"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
               GitHub Copilot
+              <span className="nbi-sr-only"> (opens in new tab)</span>
             </a>{' '}
             requires a subscription and it has a free tier. GitHub Copilot is
             subject to the{' '}
             <a
               href="https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features"
               target="_blank"
+              rel="noopener noreferrer"
             >
               GitHub Terms for Additional Products and Features
+              <span className="nbi-sr-only"> (opens in new tab)</span>
             </a>
             .
           </div>
@@ -4049,16 +4111,20 @@ function GitHubCopilotLoginDialogBodyComponent(props: any) {
             <a
               href="https://docs.github.com/en/copilot/responsible-use-of-github-copilot-features/responsible-use-of-github-copilot-chat-in-your-ide"
               target="_blank"
+              rel="noopener noreferrer"
             >
               GitHub Copilot chat terms
+              <span className="nbi-sr-only"> (opens in new tab)</span>
             </a>
             . Review the terms to understand about usage, limitations and ways
             to improve GitHub Copilot. Please review{' '}
             <a
               href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement"
               target="_blank"
+              rel="noopener noreferrer"
             >
               Privacy Statement
+              <span className="nbi-sr-only"> (opens in new tab)</span>
             </a>
             .
           </div>
@@ -4108,7 +4174,11 @@ function GitHubCopilotLoginDialogBodyComponent(props: any) {
                 </b>
               </span>{' '}
               and enter at{' '}
-              <a href={deviceActivationURL} target="_blank">
+              <a
+                href={deviceActivationURL}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
                 {deviceActivationURL}
               </a>{' '}
               to allow access to GitHub Copilot from this app. Activation could

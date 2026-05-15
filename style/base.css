@@ -12,6 +12,21 @@
   position: relative;
 }
 
+/* Visually-hidden text that stays in the accessibility tree. Used to add
+   screen-reader-only annotations next to links / buttons (e.g.
+   "(opens in new tab)") without changing the visual layout. */
+.nbi-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .drop-zone-overlay {
   position: absolute;
   inset: 0;
@@ -165,10 +180,22 @@
 
 .user-input-context-toggle {
   cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
 }
 
 .user-input-context-toggle:hover {
   background-color: var(--jp-layout-color2);
+}
+
+.user-input-context-toggle:focus-visible {
+  outline: 2px solid var(--jp-brand-color1);
+  outline-offset: 1px;
 }
 
 .user-input-context svg {
@@ -865,6 +892,10 @@ pre:has(.code-block-header) {
   gap: 4px;
   cursor: pointer;
   padding: 2px;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
 }
 
 .code-block-header-button:hover {
@@ -873,6 +904,11 @@ pre:has(.code-block-header) {
 
 .code-block-header-button:active {
   background-color: var(--jp-layout-color3);
+}
+
+.code-block-header-button:focus-visible {
+  outline: 2px solid var(--jp-brand-color1);
+  outline-offset: 1px;
 }
 
 .copy-icon svg {
@@ -1153,6 +1189,17 @@ body[data-jp-theme-light='false'] .inline-popover {
   gap: 5px;
   cursor: pointer;
   color: var(--jp-ui-font-color2);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+.expandable-content-title:focus-visible {
+  outline: 2px solid var(--jp-brand-color1);
+  outline-offset: 1px;
 }
 
 .expandable-content-text {
@@ -2421,12 +2468,21 @@ svg.access-token-warning {
   height: 22px;
   cursor: pointer;
   color: var(--jp-ui-font-color2);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
 }
 
 .notebook-generation-popover-close-button:hover {
   color: var(--jp-ui-font-color0);
   background-color: var(--jp-layout-color3);
   border-radius: 2px;
+}
+
+.notebook-generation-popover-close-button:focus-visible {
+  outline: 2px solid var(--jp-brand-color1);
+  outline-offset: 1px;
 }
 
 .notebook-generation-popover-body {

@@ -17,6 +17,61 @@ import {
   SkillScope
 } from '../api';
 
+// Closes the enclosing modal on document-level Escape, regardless of which
+// element inside the dialog has focus. The previous per-input handler only
+// fired while the URL field was focused, leaving keyboard users stuck once
+// they tabbed onto a button.
+function useEscapeKey(onEscape: () => void): void {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onEscape();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onEscape]);
+}
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Constrain Tab / Shift+Tab to cycle within ``container``. Without this, Tab
+// from the last button in the modal escapes into the lab toolbar — keyboard
+// users lose the dialog. ARIA APG's modal pattern requires the trap.
+function useFocusTrap(container: React.RefObject<HTMLElement>): void {
+  useEffect(() => {
+    const node = container.current;
+    if (!node) {
+      return;
+    }
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') {
+        return;
+      }
+      const focusables = Array.from(
+        node.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
+      ).filter(el => !el.hasAttribute('disabled'));
+      if (focusables.length === 0) {
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    node.addEventListener('keydown', handler);
+    return () => node.removeEventListener('keydown', handler);
+  }, [container]);
+}
+
 // Must match SKILL_NAME_PATTERN in notebook_intelligence/skillset.py
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SKILL_NAME_REQUIREMENT =
@@ -407,6 +462,10 @@ function GitHubImportDialog(props: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEscapeKey(props.onCancel);
+  const formRef = useRef<HTMLFormElement>(null);
+  useFocusTrap(formRef);
+
   const effectiveName = (nameOverride.trim() || preview?.name || '').trim();
   const nameValid = SKILL_NAME_PATTERN.test(effectiveName);
   const collides =
@@ -461,9 +520,17 @@ function GitHubImportDialog(props: {
   };
 
   return (
-    <div className="nbi-modal-backdrop" onClick={props.onCancel}>
+    <div
+      className="nbi-modal-backdrop"
+      onClick={props.onCancel}
+      role="presentation"
+    >
       <form
+        ref={formRef}
         className="nbi-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Import skill from GitHub"
         onClick={e => e.stopPropagation()}
         onSubmit={step === 'url' ? handleFetchPreview : handleInstall}
       >
@@ -480,12 +547,6 @@ function GitHubImportDialog(props: {
                   value={url}
                   onChange={e => setUrl(e.target.value)}
                   placeholder="https://github.com/owner/repo or .../tree/main/path/to/skill"
-                  onKeyDown={e => {
-                    if (e.key === 'Escape') {
-                      e.preventDefault();
-                      props.onCancel();
-                    }
-                  }}
                 />
                 <div className="nbi-form-hint">
                   Public repos only. Link to the repo root, a branch, or a
@@ -803,6 +864,10 @@ function SkillPromptDialog(props: {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  useEscapeKey(props.onCancel);
+  const formRef = useRef<HTMLFormElement>(null);
+  useFocusTrap(formRef);
+
   const trimmed = name.trim();
   const nameValid = SKILL_NAME_PATTERN.test(trimmed);
   const isUnchangedRename = isRename && trimmed === prompt.skill.name;
@@ -834,9 +899,17 @@ function SkillPromptDialog(props: {
   };
 
   return (
-    <div className="nbi-modal-backdrop" onClick={props.onCancel}>
+    <div
+      className="nbi-modal-backdrop"
+      onClick={props.onCancel}
+      role="presentation"
+    >
       <form
+        ref={formRef}
         className="nbi-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         onClick={e => e.stopPropagation()}
         onSubmit={handleSubmit}
       >
