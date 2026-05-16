@@ -112,8 +112,16 @@ def model_info_from_id(model_id: str) -> dict:
         "context_window": 200000,
     }
 
-# Cache of available Claude models fetched from API
+# Cache of available Claude models fetched from API.
+# `_claude_models_fetch_lock` short-circuits concurrent ``fetch_claude_models``
+# calls: ``AIServiceManager.update_models_from_config`` fires a background
+# fetch each time the cache is empty, and that method runs on every
+# ``/capabilities`` GET and every ``/config`` POST. Without the lock,
+# an in-flight (or recently-failed) fetch lets each subsequent call spawn
+# another doomed thread, hammering api.anthropic.com in parallel when the
+# api_key is missing or wrong.
 _claude_models_cache: list[dict] = []
+_claude_models_fetch_lock = threading.Lock()
 
 def get_claude_models() -> list[dict]:
     """Return the cached list of available Claude models."""
@@ -153,24 +161,37 @@ def _create_anthropic_client(api_key: str = None, base_url: str = None) -> Anthr
 
 
 def fetch_claude_models(api_key: str = None, base_url: str = None) -> list[dict]:
-    """Fetch available models from the Anthropic API and update cache."""
-    try:
-        client = _create_anthropic_client(api_key, base_url)
-        page = client.models.list(limit=100)
-        models = []
-        for model in page.data:
-            models.append({
-                "id": model.id,
-                "name": model.display_name,
-                "context_window": _get_context_window(model.id),
-            })
-        _claude_models_cache.clear()
-        _claude_models_cache.extend(models)
-        log.info(f"Fetched {len(models)} Claude models: {[m['id'] + ' (' + m['name'] + ')' for m in models]}")
-        return models
-    except Exception as e:
-        log.warning(f"Failed to fetch Claude models: {e}")
+    """Fetch available models from the Anthropic API and update cache.
+
+    Single-flight: if another caller is already inside this function (e.g.
+    the daemon thread launched at startup), additional callers return the
+    current cache snapshot without firing a duplicate request. The
+    non-blocking acquire avoids piling up requests when the api_key is
+    missing or wrong and every call would otherwise hit the SDK's
+    timeout in parallel.
+    """
+    if not _claude_models_fetch_lock.acquire(blocking=False):
         return _claude_models_cache
+    try:
+        try:
+            client = _create_anthropic_client(api_key, base_url)
+            page = client.models.list(limit=100)
+            models = []
+            for model in page.data:
+                models.append({
+                    "id": model.id,
+                    "name": model.display_name,
+                    "context_window": _get_context_window(model.id),
+                })
+            _claude_models_cache.clear()
+            _claude_models_cache.extend(models)
+            log.info(f"Fetched {len(models)} Claude models: {[m['id'] + ' (' + m['name'] + ')' for m in models]}")
+            return models
+        except Exception as e:
+            log.warning(f"Failed to fetch Claude models: {e}")
+            return _claude_models_cache
+    finally:
+        _claude_models_fetch_lock.release()
 
 class ClaudeChatModel(ChatModel):
     def __init__(self, model_id: str, api_key: str = None, base_url: str = None):

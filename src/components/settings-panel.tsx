@@ -1283,10 +1283,16 @@ function SettingsPanelComponentClaude(props: any) {
           <div className="model-config-section-body">
             <div className="model-config-section-row">
               <div className="model-config-section-column">
-                <div>Chat model</div>
+                <div id="nbi-claude-chat-model-label">Chat model</div>
                 <div title={lockedTip(settingLocks.claude_chat_model.locked)}>
                   <select
                     className="jp-mod-styled"
+                    aria-labelledby="nbi-claude-chat-model-label"
+                    aria-describedby={
+                      settingLocks.claude_chat_model.locked
+                        ? 'nbi-claude-chat-model-lock-reason'
+                        : undefined
+                    }
                     disabled={settingLocks.claude_chat_model.locked}
                     value={chatModel}
                     onChange={event => setChatModel(event.target.value)}
@@ -1294,22 +1300,36 @@ function SettingsPanelComponentClaude(props: any) {
                     <option value={ClaudeModelType.Default}>
                       Default (recommended)
                     </option>
-                    {claudeModels.map(model => (
-                      <option key={model.id} value={model.id}>
-                        {model.name}
-                      </option>
-                    ))}
+                    {/* Placeholder for a persisted model id that hasn't
+                        landed in `claudeModels` yet (empty cache, no api
+                        key, mid-fetch). Rendered just after Default so
+                        the active value sits near the top of the list. */}
                     {chatModel !== ClaudeModelType.Default &&
                       !claudeModels.some(m => m.id === chatModel) && (
                         <option key={chatModel} value={chatModel}>
                           {chatModel}
                         </option>
                       )}
+                    {claudeModels.map(model => (
+                      <option key={model.id} value={model.id}>
+                        {model.name}
+                      </option>
+                    ))}
                   </select>
+                  {settingLocks.claude_chat_model.locked && (
+                    <span
+                      id="nbi-claude-chat-model-lock-reason"
+                      className="nbi-sr-only"
+                    >
+                      Locked by your administrator
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="model-config-section-column">
-                <div>Auto-complete model</div>
+                <div id="nbi-claude-inline-model-label">
+                  Auto-complete model
+                </div>
                 <div
                   title={lockedTip(
                     settingLocks.claude_inline_completion_model.locked
@@ -1317,6 +1337,12 @@ function SettingsPanelComponentClaude(props: any) {
                 >
                   <select
                     className="jp-mod-styled"
+                    aria-labelledby="nbi-claude-inline-model-label"
+                    aria-describedby={
+                      settingLocks.claude_inline_completion_model.locked
+                        ? 'nbi-claude-inline-model-lock-reason'
+                        : undefined
+                    }
                     disabled={
                       settingLocks.claude_inline_completion_model.locked
                     }
@@ -1332,11 +1358,6 @@ function SettingsPanelComponentClaude(props: any) {
                     <option value={ClaudeModelType.Default}>
                       Default (recommended)
                     </option>
-                    {claudeModels.map(model => (
-                      <option key={model.id} value={model.id}>
-                        {model.name}
-                      </option>
-                    ))}
                     {![
                       ClaudeModelType.None,
                       ClaudeModelType.Inherit,
@@ -1352,7 +1373,20 @@ function SettingsPanelComponentClaude(props: any) {
                           {inlineCompletionModel}
                         </option>
                       )}
+                    {claudeModels.map(model => (
+                      <option key={model.id} value={model.id}>
+                        {model.name}
+                      </option>
+                    ))}
                   </select>
+                  {settingLocks.claude_inline_completion_model.locked && (
+                    <span
+                      id="nbi-claude-inline-model-lock-reason"
+                      className="nbi-sr-only"
+                    >
+                      Locked by your administrator
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
