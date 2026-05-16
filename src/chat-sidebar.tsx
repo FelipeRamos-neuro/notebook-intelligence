@@ -3724,11 +3724,19 @@ function SidebarComponent(props: any) {
                     <div>
                       {file.isImage && file.imageDataUrl ? (
                         <>
-                          <img
-                            src={file.imageDataUrl}
-                            className="context-pill-thumbnail"
-                            alt={file.path}
-                          />
+                          <span className="context-pill-thumbnail-wrap">
+                            <img
+                              src={file.imageDataUrl}
+                              className="context-pill-thumbnail"
+                              alt={file.path}
+                            />
+                            <img
+                              src={file.imageDataUrl}
+                              className="context-pill-thumbnail-preview"
+                              alt=""
+                              aria-hidden="true"
+                            />
+                          </span>
                           {file.path}
                         </>
                       ) : file.source === 'upload' ? (
