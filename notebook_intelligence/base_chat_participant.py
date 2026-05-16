@@ -483,7 +483,7 @@ class BaseChatParticipant(ChatParticipant):
 
         try:
             if chat_model.provider.id != "github-copilot":
-                response.stream(ProgressData("Thinking..."))
+                response.stream(ProgressData("Thinking…"))
             chat_model.completions(messages, response=response, cancel_token=request.cancel_token)
         except Exception as e:
             log.error(f"Error while handling chat request!\n{e}")

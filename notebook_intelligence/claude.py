@@ -18,7 +18,7 @@ from notebook_intelligence.base_chat_participant import BaseChatParticipant
 from notebook_intelligence._version import __version__ as NBI_VERSION
 import base64
 import logging
-from claude_agent_sdk import AssistantMessage, PermissionResultAllow, PermissionResultDeny, TextBlock, UserMessage, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient, tool
+from claude_agent_sdk import AssistantMessage, PermissionResultAllow, PermissionResultDeny, TextBlock, ToolResultBlock, ToolUseBlock, UserMessage, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient, tool
 from anthropic.types.text_block import TextBlock as AnthropicTextBlock
 
 from notebook_intelligence.util import ThreadSafeWebSocketConnector, _emit, get_jupyter_root_dir, resolve_claude_cli_path
@@ -61,6 +61,65 @@ CLAUDE_AGENT_CLIENT_RESPONSE_TIMEOUT = float(os.getenv("NBI_CLAUDE_AGENT_CLIENT_
 CLAUDE_AGENT_CLIENT_UPDATE_WAIT_TIME = float(os.getenv("NBI_CLAUDE_AGENT_CLIENT_UPDATE_WAIT_TIME", "0.5"))
 CLAUDE_AGENT_CONNECT_TIMEOUT = float(os.getenv("NBI_CLAUDE_AGENT_CONNECT_TIMEOUT", "15"))
 CLAUDE_AGENT_HEARTBEAT_INTERVAL = float(os.getenv("NBI_CLAUDE_AGENT_HEARTBEAT_INTERVAL", "20"))
+
+# Human-readable labels for tool calls surfaced through the chat sidebar's
+# progress indicator. The keys are the SDK tool names — NBI's MCP tools
+# use the kebab-case @tool decorator names; Claude's built-ins keep their
+# CamelCase identifiers. Unknown names fall through `humanize_claude_tool_name`
+# to a generic kebab→sentence conversion rather than masking the raw name.
+_CLAUDE_TOOL_LABELS: dict[str, str] = {
+    # NBI's MCP toolset (defined in this file via @tool(...))
+    "create-new-notebook": "Creating notebook",
+    "rename-notebook": "Renaming notebook",
+    "add-markdown-cell": "Adding markdown cell",
+    "add-code-cell": "Adding code cell",
+    "get-number-of-cells": "Reading notebook",
+    "get-cell-type-and-source": "Reading cell",
+    "get-cell-output": "Reading cell output",
+    "set-cell-type-and-source": "Editing cell",
+    "delete-cell": "Deleting cell",
+    "insert-cell": "Inserting cell",
+    "run-cell": "Running cell",
+    "save-notebook": "Saving notebook",
+    "run-command-in-jupyter-terminal": "Running shell command",
+    "open-file-in-jupyter-ui": "Opening file",
+    # Claude's built-in toolset
+    "Bash": "Running shell command",
+    "Read": "Reading file",
+    "Write": "Writing file",
+    "Edit": "Editing file",
+    "Glob": "Searching files",
+    "Grep": "Searching contents",
+    "WebFetch": "Fetching URL",
+    "WebSearch": "Searching web",
+    "Task": "Spawning subagent",
+    "TodoWrite": "Updating task list",
+}
+
+
+def humanize_claude_tool_name(name: str) -> str:
+    """Map a Claude SDK tool name to a short progress-indicator label.
+
+    Falls back to a sentence-cased version of the raw name so unknown
+    tools still surface something the user can read rather than a bare
+    kebab-case identifier.
+    """
+    if name in _CLAUDE_TOOL_LABELS:
+        return _CLAUDE_TOOL_LABELS[name]
+    # MCP server tools come through as `mcp__<server>__<tool>` — strip
+    # the wrapper before falling back so we don't surface protocol noise.
+    inner = name
+    if name.startswith("mcp__"):
+        parts = name.split("__")
+        if len(parts) >= 3:
+            inner = parts[-1]
+            if inner in _CLAUDE_TOOL_LABELS:
+                return _CLAUDE_TOOL_LABELS[inner]
+    pretty = inner.replace("-", " ").replace("_", " ").strip()
+    if not pretty:
+        return name
+    return pretty[:1].upper() + pretty[1:]
+
 
 _current_request = None
 _current_response = None
@@ -593,13 +652,28 @@ class ClaudeCodeClient():
 
                             if not already_handled and not request.cancel_token.is_cancel_requested:
                                 await client.query(client_query)
+                                # Per-query map from tool_use_id to its
+                                # humanized label so the ToolResultBlock
+                                # echo back can name the tool that just
+                                # finished. Lifetime is one query — pops
+                                # entries on completion so the dict stays
+                                # bounded.
+                                in_flight_tools: dict[str, str] = {}
                                 async for message in client.receive_response():
                                     if request.cancel_token.is_cancel_requested:
-                                        continue
+                                        # Stop iterating once the user cancels — we'd
+                                        # otherwise keep recording ToolUseBlocks into
+                                        # `in_flight_tools` for results that will
+                                        # never be paired with progress callbacks.
+                                        break
                                     if isinstance(message, AssistantMessage):
                                         for block in message.content:
                                             if isinstance(block, TextBlock):
                                                 response.stream(MarkdownData(block.text))
+                                            elif isinstance(block, ToolUseBlock):
+                                                label = humanize_claude_tool_name(block.name)
+                                                in_flight_tools[block.id] = label
+                                                response.stream(ProgressData(f"{label}…"))
                                     elif isinstance(message, UserMessage):
                                         if isinstance(message.content, str):
                                             content = message.content
@@ -609,6 +683,25 @@ class ClaudeCodeClient():
                                             content = message.content.text
                                             content = content.replace('<local-command-stdout>', '').replace('</local-command-stdout>', '')
                                             response.stream(MarkdownData(content))
+                                        elif isinstance(message.content, list):
+                                            for block in message.content:
+                                                if isinstance(block, ToolResultBlock):
+                                                    # A result without a matching
+                                                    # ToolUseBlock is anomalous (cross-
+                                                    # query stragglers, sub-agent
+                                                    # results routed through a parent
+                                                    # tool_use_id). A bare "✓ Tool"
+                                                    # without context is more
+                                                    # confusing than silence, so we
+                                                    # only surface results we can
+                                                    # name.
+                                                    label = in_flight_tools.pop(
+                                                        block.tool_use_id, None
+                                                    )
+                                                    if label is None:
+                                                        continue
+                                                    icon = "✗" if block.is_error else "✓"
+                                                    response.stream(ProgressData(f"{icon} {label}"))
                                     else:
                                         pass
                         except Exception as e:
@@ -1199,7 +1292,7 @@ class ClaudeCodeChatParticipant(BaseChatParticipant):
         self._current_chat_request = request
 
         try:
-            response.stream(ProgressData("Thinking..."))
+            response.stream(ProgressData("Thinking…"))
             result = self._client.query(request, response)
             # query() returns a string when it bails early without dispatching —
             # e.g. the agent isn't connected, a response timeout elapsed, or the

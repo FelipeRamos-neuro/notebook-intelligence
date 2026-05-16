@@ -495,7 +495,7 @@ class MCPChatParticipant(BaseChatParticipant):
         return self._servers
     
     async def handle_chat_request(self, request: ChatRequest, response: ChatResponse, options: dict = {}) -> None:
-        response.stream(ProgressData("Thinking..."))
+        response.stream(ProgressData("Thinking…"))
 
         if request.command == "info":
             for server in self._servers:

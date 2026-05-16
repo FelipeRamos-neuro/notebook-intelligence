@@ -318,35 +318,47 @@ pre:has(.code-block-header) {
   padding-left: 10px;
   flex-grow: 1;
   font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.loading-ellipsis::after {
+/* The React `key` prop on this span is keyed to the heartbeat tick, so
+   each beat remounts the element and the animation runs from t=0. */
+.generating-pulse {
   display: inline-block;
-  width: 1.5ch;
-  text-align: left;
-  animation: animated-ellipsis steps(1, end) 1s infinite;
-  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--jp-brand-color1);
+  flex-shrink: 0;
+  opacity: 0.5;
+  animation: nbi-progress-pulse 1.2s ease-out;
 }
 
-@keyframes animated-ellipsis {
+.generating-pulse.is-stalled {
+  background-color: var(--jp-warn-color1);
+}
+
+.generating-label {
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes nbi-progress-pulse {
   0% {
-    content: '';
-  }
-
-  25% {
-    content: '.';
-  }
-
-  50% {
-    content: '..';
-  }
-
-  75% {
-    content: '...';
+    opacity: 1;
+    transform: scale(1.4);
   }
 
   100% {
-    content: '';
+    opacity: 0.5;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .generating-pulse {
+    animation: none;
   }
 }
 

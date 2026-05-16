@@ -18,6 +18,10 @@ import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js';
 import { NBIAPI, GitHubCopilotLoginStatus } from './api';
 import { injectTaskTargetNotebook } from './task-target-notebook';
 import {
+  formatElapsedSeconds,
+  isHeartbeatStale
+} from './chat-progress-feedback';
+import {
   BackendMessageType,
   BuiltinToolsetType,
   CLAUDE_CODE_CHAT_PARTICIPANT_ID,
@@ -693,7 +697,28 @@ function ChatResponse(props: any) {
             className="chat-message-from-progress"
             style={{ display: `${props.showGenerating ? 'visible' : 'none'}` }}
           >
-            <div className="loading-ellipsis">Generating</div>
+            <span
+              // Key on the heartbeat tick so React re-mounts the dot on
+              // every beat; CSS-animation restart from an attribute-only
+              // change is not reliable across browsers.
+              key={props.heartbeatTick}
+              className={`generating-pulse${
+                props.isStalled ? ' is-stalled' : ''
+              }`}
+              aria-hidden="true"
+            />
+            <div
+              className="generating-label"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {props.isStalled
+                ? 'Still working, server may be slow'
+                : 'Generating'}
+              {props.showGenerating && props.elapsedSeconds > 0
+                ? ` (${formatElapsedSeconds(props.elapsedSeconds)})`
+                : ''}
+            </div>
           </div>
         </div>
         <div className="chat-message-timestamp">{timestamp}</div>
@@ -819,11 +844,16 @@ function ChatResponse(props: any) {
                 </div>
               );
             case ResponseStreamDataType.Progress:
-              // show only while generating and no more message available
+              // Render only the most recent progress entry, and only while
+              // the request is still in flight — once the assistant has
+              // finished, transient activity markers disappear. The icon
+              // is part of the streamed text so backend callers can pick
+              // an appropriate symbol (e.g. ↻ for in-progress, ✓ for done,
+              // ✗ for error) rather than forcing a single rendering here.
               return index === groupedContents.length - 1 &&
                 props.showGenerating ? (
                 <div className="chat-response-progress" key={`key-${index}`}>
-                  &#x2713; {item.content}
+                  {item.content}
                 </div>
               ) : null;
             case ResponseStreamDataType.Confirmation:
@@ -1124,6 +1154,23 @@ function SidebarComponent(props: any) {
   // targeting the right notebook after the user switches tabs mid-task
   // (issue #252). Cleared / reset on every new chat submission.
   const taskTargetNotebookPathRef = useRef<string | null>(null);
+
+  // Progress-feedback state for the "Generating" indicator.
+  // `elapsedSeconds` ticks every 1s while a request is in flight (so the
+  // user can see at a glance how long they've been waiting).
+  // `lastHeartbeatAtRef` tracks the most recent ClaudeCodeHeartbeat from
+  // the server; when the gap exceeds HEARTBEAT_STALE_MS the indicator
+  // copy flips to a "may be slow" variant. `heartbeatTick` increments on
+  // each heartbeat to drive a brief CSS pulse on the indicator dot. None
+  // of these matter outside Claude mode because heartbeats only fire
+  // there, but the elapsed counter is a useful signal regardless of
+  // provider.
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const requestStartedAtRef = useRef<number | null>(null);
+  const lastHeartbeatAtRef = useRef<number | null>(null);
+  const [heartbeatTick, setHeartbeatTick] = useState(0);
+  const [isStalled, setIsStalled] = useState(false);
+
   const [isDragOver, setIsDragOver] = useState(false);
   const [isUploadingFiles, setIsUploadingFiles] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1749,6 +1796,55 @@ function SidebarComponent(props: any) {
     }
     setHasExtensionTools(hasTools);
   }, [toolConfigRef.current]);
+
+  // Subscribe to the Claude agent's 20s keepalive. Each beat resets the
+  // staleness window, kicks a pulse on the indicator dot, and clears the
+  // "server may be slow" copy.
+  useEffect(() => {
+    const handler = () => {
+      lastHeartbeatAtRef.current = Date.now();
+      setHeartbeatTick(tick => tick + 1);
+      setIsStalled(false);
+    };
+    NBIAPI.claudeCodeHeartbeat.connect(handler);
+    return () => {
+      NBIAPI.claudeCodeHeartbeat.disconnect(handler);
+    };
+  }, []);
+
+  // Drive the elapsed-time counter while a request is in flight. The same
+  // interval re-evaluates whether the heartbeat has gone stale so the
+  // indicator copy can swap to "Still working..." without a second timer.
+  useEffect(() => {
+    if (!copilotRequestInProgress) {
+      requestStartedAtRef.current = null;
+      setElapsedSeconds(0);
+      setIsStalled(false);
+      return;
+    }
+    requestStartedAtRef.current = Date.now();
+    lastHeartbeatAtRef.current = Date.now();
+    setElapsedSeconds(0);
+    setIsStalled(false);
+    const tick = () => {
+      const started = requestStartedAtRef.current;
+      if (started === null) {
+        return;
+      }
+      setElapsedSeconds(Math.floor((Date.now() - started) / 1000));
+      // Heartbeats only fire in Claude mode; suppress the staleness check
+      // for other providers so they don't get a permanent "may be slow"
+      // banner just because no heartbeats arrive there.
+      if (NBIAPI.config.isInClaudeCodeMode) {
+        setIsStalled(isHeartbeatStale(lastHeartbeatAtRef.current, Date.now()));
+      }
+    };
+    tick();
+    const intervalId = window.setInterval(tick, 1000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [copilotRequestInProgress]);
 
   useEffect(() => {
     const builtinToolSelCount = toolSelections.builtinToolsets.length;
@@ -3338,23 +3434,33 @@ function SidebarComponent(props: any) {
           </div>
         ) : (
           <div className="sidebar-messages">
-            {chatMessages.map((msg, index) => (
-              <MemoizedChatResponse
-                key={msg.id}
-                message={msg}
-                openFile={props.openFile}
-                getApp={props.getApp}
-                getActiveDocumentInfo={props.getActiveDocumentInfo}
-                showGenerating={
-                  index === chatMessages.length - 1 &&
-                  msg.from === 'copilot' &&
-                  copilotRequestInProgress
-                }
-                onFeedback={handleFeedback}
-                chatId={chatId}
-                telemetryEmitter={telemetryEmitter}
-              />
-            ))}
+            {chatMessages.map((msg, index) => {
+              // Only the most recent copilot message owns the live
+              // progress-feedback state. Non-active messages receive
+              // stable primitives so React.memo can prune them; otherwise
+              // the 1Hz elapsed-time tick would re-render every message
+              // in the chat history every second.
+              const isActiveCopilotMessage =
+                index === chatMessages.length - 1 &&
+                msg.from === 'copilot' &&
+                copilotRequestInProgress;
+              return (
+                <MemoizedChatResponse
+                  key={msg.id}
+                  message={msg}
+                  openFile={props.openFile}
+                  getApp={props.getApp}
+                  getActiveDocumentInfo={props.getActiveDocumentInfo}
+                  showGenerating={isActiveCopilotMessage}
+                  elapsedSeconds={isActiveCopilotMessage ? elapsedSeconds : 0}
+                  heartbeatTick={isActiveCopilotMessage ? heartbeatTick : 0}
+                  isStalled={isActiveCopilotMessage ? isStalled : false}
+                  onFeedback={handleFeedback}
+                  chatId={chatId}
+                  telemetryEmitter={telemetryEmitter}
+                />
+              );
+            })}
             <div ref={messagesEndRef} />
           </div>
         ))}

@@ -479,6 +479,10 @@ export class NBIAPI {
   static configChanged = this.config.changed;
   static githubLoginStatusChanged = new Signal<unknown, void>(this);
   static skillsReloaded = new Signal<unknown, void>(this);
+  // Emits each time the Claude agent sends its 20s keepalive (#252 follow-up).
+  // The chat sidebar uses it to drive the "Generating" indicator's pulse
+  // and to swap to a "server may be slow" copy when the gap stretches.
+  static claudeCodeHeartbeat = new Signal<unknown, void>(this);
 
   static async initialize() {
     await this.fetchCapabilities();
@@ -501,6 +505,8 @@ export class NBIAPI {
         });
       } else if (msg.type === BackendMessageType.SkillsReloaded) {
         this.skillsReloaded.emit();
+      } else if (msg.type === BackendMessageType.ClaudeCodeHeartbeat) {
+        this.claudeCodeHeartbeat.emit();
       }
     });
   }
