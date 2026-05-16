@@ -69,6 +69,29 @@ export type SkillScope = 'user' | 'project';
 export type ClaudeMCPScope = 'user' | 'project' | 'local';
 export type ClaudeMCPTransport = 'stdio' | 'sse' | 'http';
 
+export type PluginScope = 'user' | 'project' | 'local';
+
+// Claude's `claude plugin list --json` output schema isn't formally
+// documented; we forward the raw object and let the panel fish out fields
+// it cares about. Defining only the fields we observe today as optional
+// keeps newer Claude releases from getting truncated.
+export interface IPluginInfo {
+  name?: string;
+  scope?: PluginScope | string;
+  enabled?: boolean;
+  marketplace?: string;
+  version?: string;
+  description?: string;
+  [key: string]: unknown;
+}
+
+export interface IPluginMarketplaceInfo {
+  name?: string;
+  source?: string;
+  scope?: PluginScope | string;
+  [key: string]: unknown;
+}
+
 export interface IClaudeMCPServer {
   name: string;
   scope: ClaudeMCPScope;
@@ -213,7 +236,8 @@ export type FeaturePolicyName =
   | 'claude_setting_source_project'
   | 'store_github_access_token'
   | 'skills_management'
-  | 'claude_mcp_management';
+  | 'claude_mcp_management'
+  | 'claude_plugins_management';
 
 export type IFeaturePolicies = Record<
   FeaturePolicyName,
@@ -344,6 +368,13 @@ export class NBIConfig {
     return Array.isArray(v) ? v : [];
   }
 
+  get allowGithubPluginImport(): boolean {
+    // Default-open: missing/undefined means the org hasn't gated this, so
+    // older backends without the flag continue to allow the GitHub
+    // affordance. Mirrors `cellOutputFeatures` polarity.
+    return this.capabilities.allow_github_plugin_import !== false;
+  }
+
   get cellOutputFeatures(): ICellOutputFeatures {
     const v = this.capabilities.cell_output_features ?? {};
     return {
@@ -376,13 +407,36 @@ export class NBIConfig {
       'claude_setting_source_project',
       'store_github_access_token',
       'skills_management',
-      'claude_mcp_management'
+      'claude_mcp_management',
+      'claude_plugins_management'
     ];
+    // Admin-only management gates (no per-user toggle) default *open* when
+    // missing — a new frontend hitting an older backend without these
+    // capability fields must keep the tab visible. The other policies pair
+    // with a user-toggle and default closed (a missing field means "no
+    // user pref recorded yet, treat as off"), matching prior semantics.
+    const defaultOpen: ReadonlySet<FeaturePolicyName> = new Set([
+      'skills_management',
+      'claude_mcp_management',
+      'claude_plugins_management'
+    ]);
     const result = {} as IFeaturePolicies;
     for (const name of names) {
+      const entry = v[name];
+      // Strict polarity: only default-open when the entry is wholly absent
+      // (old backend). A malformed entry (string "false", null, missing
+      // `enabled` field) falls through to closed for default-closed gates
+      // and stays open only when the field is explicitly true for default-open
+      // gates — never silently land in the open bucket.
+      let enabled: boolean;
+      if (entry === undefined) {
+        enabled = defaultOpen.has(name);
+      } else {
+        enabled = entry.enabled === true;
+      }
       result[name] = {
-        enabled: v[name]?.enabled === true,
-        locked: v[name]?.locked === true
+        enabled,
+        locked: entry?.locked === true
       };
     }
     return result;
@@ -829,6 +883,64 @@ export class NBIAPI {
     scope: ClaudeMCPScope
   ): Promise<void> {
     await requestAPI<any>(`claude-mcp/${scope}/${encodeURIComponent(name)}`, {
+      method: 'DELETE'
+    });
+  }
+
+  static async listPlugins(): Promise<IPluginInfo[]> {
+    const data = await requestAPI<any>('plugins');
+    return Array.isArray(data?.plugins) ? (data.plugins as IPluginInfo[]) : [];
+  }
+
+  static async installPlugin(
+    plugin: string,
+    scope: PluginScope = 'user'
+  ): Promise<void> {
+    await requestAPI<any>('plugins', {
+      method: 'POST',
+      body: JSON.stringify({ plugin, scope })
+    });
+  }
+
+  static async uninstallPlugin(
+    plugin: string,
+    scope: PluginScope = 'user'
+  ): Promise<void> {
+    await requestAPI<any>(`plugins/${scope}/${encodeURIComponent(plugin)}`, {
+      method: 'DELETE'
+    });
+  }
+
+  static async setPluginEnabled(
+    plugin: string,
+    scope: PluginScope,
+    enabled: boolean
+  ): Promise<void> {
+    await requestAPI<any>(`plugins/${scope}/${encodeURIComponent(plugin)}`, {
+      method: 'POST',
+      body: JSON.stringify({ action: enabled ? 'enable' : 'disable' })
+    });
+  }
+
+  static async listPluginMarketplaces(): Promise<IPluginMarketplaceInfo[]> {
+    const data = await requestAPI<any>('plugins/marketplace');
+    return Array.isArray(data?.marketplaces)
+      ? (data.marketplaces as IPluginMarketplaceInfo[])
+      : [];
+  }
+
+  static async addPluginMarketplace(
+    source: string,
+    scope: PluginScope = 'user'
+  ): Promise<void> {
+    await requestAPI<any>('plugins/marketplace', {
+      method: 'POST',
+      body: JSON.stringify({ source, scope })
+    });
+  }
+
+  static async removePluginMarketplace(name: string): Promise<void> {
+    await requestAPI<any>(`plugins/marketplace/${encodeURIComponent(name)}`, {
       method: 'DELETE'
     });
   }

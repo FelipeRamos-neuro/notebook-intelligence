@@ -43,6 +43,7 @@ from notebook_intelligence.feature_flags import (
 )
 from notebook_intelligence.claude import ClaudeCodeChatParticipant, fetch_claude_models
 from notebook_intelligence.claude_mcp_manager import ClaudeMCPManager
+from notebook_intelligence.plugin_manager import PluginManager
 from notebook_intelligence.claude_sessions import (
     NBI_CONTEXT_PREFIX,
     get_sessions_dir as get_claude_sessions_dir,
@@ -50,7 +51,7 @@ from notebook_intelligence.claude_sessions import (
 )
 import notebook_intelligence.github_copilot as github_copilot
 from notebook_intelligence.built_in_toolsets import built_in_toolsets
-from notebook_intelligence.util import ThreadSafeWebSocketConnector, get_jupyter_root_dir, set_jupyter_root_dir, is_builtin_tool_enabled_in_env, is_provider_enabled_in_env
+from notebook_intelligence.util import ThreadSafeWebSocketConnector, get_jupyter_root_dir, set_jupyter_root_dir, is_builtin_tool_enabled_in_env, is_provider_enabled_in_env, resolve_claude_cli_path
 from notebook_intelligence.context_factory import RuleContextFactory
 from notebook_intelligence.skillset import SKILL_NAME_REGEX
 
@@ -143,18 +144,20 @@ def _resolve_supports_vision(ai_service_manager) -> bool:
 
 
 def _resolve_policy_with_env(env_var_name: str, traitlet_value: str) -> str:
-    """Resolve a feature policy: env var wins if valid, else traitlet."""
+    """Resolve a feature policy: env var wins if valid, else traitlet.
+
+    Raises ValueError on unrecognized env values so a typo can't silently
+    relax a force-off gate. Matches the polarity of `_resolve_bool_with_env`.
+    """
     env_value = os.environ.get(env_var_name, "").strip()
-    if env_value:
-        if env_value in VALID_POLICIES:
-            return env_value
-        log.warning(
-            "Ignoring %s=%r: must be one of %s",
-            env_var_name,
-            env_value,
-            ", ".join(VALID_POLICIES),
-        )
-    return traitlet_value
+    if not env_value:
+        return traitlet_value
+    if env_value in VALID_POLICIES:
+        return env_value
+    raise ValueError(
+        f"Invalid {env_var_name}={env_value!r}: "
+        f"must be one of {', '.join(VALID_POLICIES)}"
+    )
 
 
 _TRUE_VALUES = frozenset({"true", "1", "yes", "on"})
@@ -199,6 +202,21 @@ def _resolve_bool_with_env(env_var_name: str, fallback: bool | None) -> bool:
 # Single source of truth for the boolean policies. Each entry is
 # ``(policy_name, env_var, traitlet_attr)``. Drives env-var resolution, the
 # capabilities response, and the lock-rejection set in ConfigHandler.
+#
+# Adding a new policy requires updates in *seven* places — keep them all in
+# sync or the policy will silently no-op:
+#   1. A new tuple entry below.
+#   2. A ``TraitletEnum`` declaration on ``NotebookIntelligence`` further
+#      down in this file.
+#   3. A ``user_values`` entry in ``_build_feature_policies_response``
+#      (admin-only gates use ``True``).
+#   4. (For backend gates) An ``is_force_off`` call in ``_setup_handlers``
+#      that sets the resolved bool on the handler class.
+#   5. A row in the Admin policies table in ``README.md``.
+#   6. A section in ``docs/admin-guide.md``.
+#   7. ``FeaturePolicyName`` union + the ``names`` array in
+#      ``src/api.ts`` ``featurePolicies``. Admin-only gates also need an
+#      entry in the ``defaultOpen`` set if they should default visible.
 FEATURE_POLICY_SPEC = (
     ("explain_error", "NBI_EXPLAIN_ERROR_POLICY", "explain_error_policy"),
     ("output_followup", "NBI_OUTPUT_FOLLOWUP_POLICY", "output_followup_policy"),
@@ -243,6 +261,11 @@ FEATURE_POLICY_SPEC = (
         "claude_mcp_management",
         "NBI_CLAUDE_MCP_MANAGEMENT_POLICY",
         "claude_mcp_management_policy",
+    ),
+    (
+        "claude_plugins_management",
+        "NBI_CLAUDE_PLUGINS_MANAGEMENT_POLICY",
+        "claude_plugins_management_policy",
     ),
 )
 FEATURE_POLICY_NAMES = tuple(name for name, _, _ in FEATURE_POLICY_SPEC)
@@ -291,6 +314,7 @@ def _build_feature_policies_response(policies: dict, nbi_config) -> dict:
         # The policy resolver still applies force-off / force-on correctly.
         "skills_management": True,
         "claude_mcp_management": True,
+        "claude_plugins_management": True,
     }
 
     response = {}
@@ -334,7 +358,6 @@ class GetCapabilitiesHandler(APIHandler):
     disabled_providers = []
     allow_enabling_providers_with_env = False
     enable_chat_feedback = False
-    allow_github_skill_import = True
     additional_skipped_workspace_directories = []
     feature_policies = {}
     string_overrides = {}
@@ -419,11 +442,14 @@ class GetCapabilitiesHandler(APIHandler):
             ),
             "claude_models": ai_service_manager.claude_models,
             # Drives launcher-tile visibility (issue #183).
-            "claude_cli_available": shutil.which("claude") is not None,
+            "claude_cli_available": resolve_claude_cli_path() is not None,
             "default_chat_mode": nbi_config.default_chat_mode,
             "chat_feedback_enabled": self.enable_chat_feedback,
-            "allow_github_skill_import": self.allow_github_skill_import,
+            # Single source of truth lives on each domain's base handler so
+            # `_setup_handlers` only writes one site per flag.
+            "allow_github_skill_import": SkillsBaseHandler.allow_github_skill_import,
             "additional_skipped_workspace_directories": self.additional_skipped_workspace_directories,
+            "allow_github_plugin_import": PluginsBaseHandler.allow_github_plugin_import,
             "cell_output_features": _build_cell_output_features_response(
                 self.feature_policies.get("explain_error", POLICY_USER_CHOICE),
                 self.feature_policies.get("output_followup", POLICY_USER_CHOICE),
@@ -710,26 +736,66 @@ class RulesReloadHandler(APIHandler):
             self.finish(json.dumps({"error": str(e)}))
 
 
-class ClaudeMCPBaseHandler(APIHandler):
-    """Shared helpers + policy gate for Claude-MCP endpoints."""
+class PolicyGatedHandler(APIHandler):
+    """APIHandler base used by all NBI management surfaces (Skills,
+    Claude-MCP, Plugins). Owns three concerns:
 
-    claude_mcp_management_enabled = True
+    1. **Admin policy gate** in ``prepare()``. Short-circuits with 403
+       when the associated ``*_management_policy`` resolves to
+       ``force-off``. Subclasses set ``policy_enabled_attr`` to the
+       class-attribute name holding the resolved bool (mutated in
+       ``_setup_handlers``), and ``policy_disabled_message`` for the
+       user-facing error string.
+
+    2. **JSON request parsing** via ``_parse_json_body``. Returns the
+       decoded body or ``None`` after writing a 400; callers must ``if
+       data is None: return``.
+
+    3. **Domain-aware error mapping** via ``_error`` + the
+       ``exception_status_map`` class attribute (exception class → HTTP
+       status). Most-specific class wins via MRO depth ordering.
+
+    Subclasses also typically expose a ``manager`` property that returns
+    the per-domain CLI/file-backed manager — convention rather than
+    contract since not every handler needs one.
+    """
+
+    policy_enabled_attr: str = ""
+    policy_disabled_message: str = "This feature is disabled by your administrator"
+
+    def __init_subclass__(cls, **kwargs):
+        # Force-off must fail closed; a concrete handler that forgets to
+        # declare `policy_enabled_attr` would silently bypass the gate.
+        # Intermediate `*BaseHandler` classes are allowed to defer the
+        # declaration to the concrete subclass; everything else must set it
+        # explicitly (or its MRO must, which getattr below picks up).
+        super().__init_subclass__(**kwargs)
+        if cls.__name__.endswith("BaseHandler"):
+            return
+        if not getattr(cls, "policy_enabled_attr", ""):
+            raise TypeError(
+                f"{cls.__name__} subclasses PolicyGatedHandler but does not "
+                "declare policy_enabled_attr — set it on the class or on an "
+                "intermediate *BaseHandler"
+            )
 
     async def prepare(self):
-        # Mirrors SkillsBaseHandler.prepare — see there for the rationale on
-        # awaiting super() and checking _finished.
+        # APIHandler.prepare is async (xsrf/auth); must await before applying
+        # the policy gate.
         await super().prepare()
         if self._finished:
             return
-        if not self.claude_mcp_management_enabled:
+        attr = self.policy_enabled_attr
+        if attr and not getattr(self, attr, True):
             self.set_status(403)
-            self.finish(
-                json.dumps({"error": "Claude MCP management is disabled by your administrator"})
-            )
+            self.finish(json.dumps({"error": self.policy_disabled_message}))
 
-    @property
-    def manager(self) -> "ClaudeMCPManager":
-        return ClaudeMCPManager(working_dir=get_jupyter_root_dir() or None)
+    # Subclasses extend this to map domain-specific exception types to HTTP
+    # statuses. Most-specific class wins (we sort by MRO depth at lookup
+    # time), so a subclass that adds ``OSError: 500`` next to an
+    # inherited ``FileNotFoundError: 404`` still routes the latter to 404.
+    # Anything not covered falls through to 400.
+    exception_status_map: dict[type[Exception], int] = {}
 
     def _parse_json_body(self):
         try:
@@ -740,13 +806,34 @@ class ClaudeMCPBaseHandler(APIHandler):
             return None
 
     def _error(self, exc: Exception):
-        if isinstance(exc, FileNotFoundError):
-            self.set_status(404)
-        elif isinstance(exc, TimeoutError):
-            self.set_status(504)
-        else:
-            self.set_status(400)
+        # Sort candidates by MRO depth (deepest = most specific) so
+        # narrower exception classes always win over their bases.
+        candidates = sorted(
+            (cls for cls in self.exception_status_map if isinstance(exc, cls)),
+            key=lambda c: -len(c.__mro__),
+        )
+        if candidates:
+            self.set_status(self.exception_status_map[candidates[0]])
+            self.finish(json.dumps({"error": str(exc)}))
+            return
+        self.set_status(400)
         self.finish(json.dumps({"error": str(exc)}))
+
+
+class ClaudeMCPBaseHandler(PolicyGatedHandler):
+    """Shared helpers + policy gate for Claude-MCP endpoints."""
+
+    claude_mcp_management_enabled = True
+    policy_enabled_attr = "claude_mcp_management_enabled"
+    policy_disabled_message = "Claude MCP management is disabled by your administrator"
+    exception_status_map = {
+        FileNotFoundError: 404,
+        TimeoutError: 504,
+    }
+
+    @property
+    def manager(self) -> "ClaudeMCPManager":
+        return ClaudeMCPManager(working_dir=get_jupyter_root_dir() or None)
 
 
 class ClaudeMCPListHandler(ClaudeMCPBaseHandler):
@@ -754,7 +841,7 @@ class ClaudeMCPListHandler(ClaudeMCPBaseHandler):
     def get(self):
         try:
             servers = [s.to_dict() for s in self.manager.list_servers()]
-        except Exception as e:
+        except (FileNotFoundError, TimeoutError, ValueError) as e:
             self._error(e)
             return
         self.finish(json.dumps({"servers": servers}))
@@ -800,23 +887,129 @@ class ClaudeMCPDetailHandler(ClaudeMCPBaseHandler):
             self._error(e)
 
 
-class SkillsBaseHandler(APIHandler):
+class PluginsBaseHandler(PolicyGatedHandler):
+    """Shared helpers + policy gate for plugin endpoints."""
+
+    claude_plugins_management_enabled = True
+    allow_github_plugin_import = True
+    policy_enabled_attr = "claude_plugins_management_enabled"
+    policy_disabled_message = "Plugins management is disabled by your administrator"
+    exception_status_map = {
+        FileNotFoundError: 404,
+        PermissionError: 403,
+        TimeoutError: 504,
+    }
+
+    @property
+    def manager(self) -> "PluginManager":
+        # Same as ClaudeMCPBaseHandler: scope=project resolves against the
+        # CLI cwd, so the user's Jupyter root must be passed through.
+        return PluginManager(working_dir=get_jupyter_root_dir() or None)
+
+
+class PluginsListHandler(PluginsBaseHandler):
+    @tornado.web.authenticated
+    async def get(self):
+        try:
+            plugins = await self.manager.list_plugins()
+        except (FileNotFoundError, TimeoutError, ValueError) as e:
+            self._error(e)
+            return
+        self.finish(json.dumps({"plugins": plugins}))
+
+    @tornado.web.authenticated
+    async def post(self):
+        data = self._parse_json_body()
+        if data is None:
+            return
+        try:
+            await self.manager.install_plugin(
+                plugin=data.get("plugin", ""),
+                scope=data.get("scope", "user"),
+            )
+            self.finish(json.dumps({"success": True}))
+        except (FileNotFoundError, TimeoutError, ValueError) as e:
+            self._error(e)
+
+
+class PluginsDetailHandler(PluginsBaseHandler):
+    @tornado.web.authenticated
+    async def delete(self, scope, plugin):
+        try:
+            await self.manager.uninstall_plugin(plugin=plugin, scope=scope)
+            self.finish(json.dumps({"success": True}))
+        except (FileNotFoundError, TimeoutError, ValueError) as e:
+            self._error(e)
+
+    @tornado.web.authenticated
+    async def post(self, scope, plugin):
+        # Body: {"action": "enable" | "disable"}.
+        data = self._parse_json_body()
+        if data is None:
+            return
+        action = data.get("action")
+        if action not in ("enable", "disable"):
+            self.set_status(400)
+            self.finish(json.dumps({
+                "error": "Missing or invalid 'action' (must be 'enable' or 'disable')"
+            }))
+            return
+        try:
+            await self.manager.set_plugin_enabled(
+                plugin=plugin, enabled=action == "enable", scope=scope
+            )
+            self.finish(json.dumps({"success": True}))
+        except (FileNotFoundError, TimeoutError, ValueError) as e:
+            self._error(e)
+
+
+class PluginsMarketplaceListHandler(PluginsBaseHandler):
+    @tornado.web.authenticated
+    async def get(self):
+        try:
+            marketplaces = await self.manager.list_marketplaces()
+        except (FileNotFoundError, TimeoutError, ValueError) as e:
+            self._error(e)
+            return
+        self.finish(json.dumps({"marketplaces": marketplaces}))
+
+    @tornado.web.authenticated
+    async def post(self):
+        data = self._parse_json_body()
+        if data is None:
+            return
+        try:
+            await self.manager.add_marketplace(
+                source=data.get("source", ""),
+                scope=data.get("scope", "user"),
+                allow_github=bool(self.allow_github_plugin_import),
+            )
+            self.finish(json.dumps({"success": True}))
+        except (FileNotFoundError, PermissionError, TimeoutError, ValueError) as e:
+            self._error(e)
+
+
+class PluginsMarketplaceDetailHandler(PluginsBaseHandler):
+    @tornado.web.authenticated
+    async def delete(self, name):
+        try:
+            await self.manager.remove_marketplace(name=name)
+            self.finish(json.dumps({"success": True}))
+        except (FileNotFoundError, TimeoutError, ValueError) as e:
+            self._error(e)
+
+
+class SkillsBaseHandler(PolicyGatedHandler):
     """Shared helpers for skills endpoints."""
 
     allow_github_skill_import = True
     skills_management_enabled = True
-
-    async def prepare(self):
-        # APIHandler.prepare is async (xsrf/auth), so we must await it before
-        # applying the skills_management policy gate.
-        await super().prepare()
-        if self._finished:
-            return
-        if not self.skills_management_enabled:
-            self.set_status(403)
-            self.finish(
-                json.dumps({"error": "Skills management is disabled by your administrator"})
-            )
+    policy_enabled_attr = "skills_management_enabled"
+    policy_disabled_message = "Skills management is disabled by your administrator"
+    exception_status_map = {
+        FileExistsError: 409,
+        FileNotFoundError: 404,
+    }
 
     @property
     def skill_manager(self):
@@ -829,14 +1022,6 @@ class SkillsBaseHandler(APIHandler):
         self.finish(json.dumps({"error": "GitHub Skill import is disabled by configuration"}))
         return True
 
-    def _error(self, exc):
-        if isinstance(exc, FileExistsError):
-            self.set_status(409)
-        elif isinstance(exc, FileNotFoundError):
-            self.set_status(404)
-        else:
-            self.set_status(400)
-        self.finish(json.dumps({"error": str(exc)}))
 
     def _bundle_rel_path(self):
         rel_path = self.get_query_argument("path", default=None)
@@ -845,14 +1030,6 @@ class SkillsBaseHandler(APIHandler):
             self.finish(json.dumps({"error": "Missing required 'path' query parameter"}))
             return None
         return rel_path
-
-    def _parse_json_body(self):
-        try:
-            return json.loads(self.request.body)
-        except json.JSONDecodeError as e:
-            self.set_status(400)
-            self.finish(json.dumps({"error": f"Invalid JSON: {e}"}))
-            return None
 
 
 class SkillsListHandler(SkillsBaseHandler):
@@ -1974,14 +2151,15 @@ class NotebookIntelligence(ExtensionApp):
         default_value=POLICY_USER_CHOICE,
         help="""
         Org-wide policy for the Skills management UI. "user-choice" (default)
-        and "force-on" both leave the Skills tab visible — there is no user
-        toggle to override, so the two are behaviorally identical today; the
-        three-value shape is preserved for symmetry with the other
-        feature_policies. "force-off" hides the tab, returns 403 from
-        /skills handlers, and **also disables the managed-skills reconciler**
-        — orgs that ship curated skills via NBI_SKILLS_MANIFEST should leave
-        this on user-choice and rely on filesystem permissions instead.
-        Overridden by the NBI_SKILLS_MANAGEMENT_POLICY env var.
+        and "force-on" both leave the Skills tab visible. There is no user
+        toggle to override, so neither value flips a user-visible setting on
+        its own — the three-value shape is preserved for symmetry with the
+        other feature_policies. "force-off" is the materially different
+        case: hides the tab, returns 403 from /skills handlers, and *also*
+        disables the managed-skills reconciler. Orgs that ship curated
+        skills via NBI_SKILLS_MANIFEST should leave this on user-choice and
+        rely on filesystem permissions instead. Overridden by the
+        NBI_SKILLS_MANAGEMENT_POLICY env var.
         """,
         config=True,
     )
@@ -1999,6 +2177,37 @@ class NotebookIntelligence(ExtensionApp):
         `mcp_server_settings` (its own surface). Overridden by the
         NBI_CLAUDE_MCP_MANAGEMENT_POLICY env var.
         """,
+        config=True,
+    )
+
+    claude_plugins_management_policy = TraitletEnum(
+        list(VALID_POLICIES),
+        default_value=POLICY_USER_CHOICE,
+        help="""
+        Org-wide policy for the Claude-mode Plugins management tab.
+        "user-choice" (default) and "force-on" both leave the tab visible
+        when Claude mode is on and the Claude CLI is available; the two are
+        behaviorally identical here (no user toggle to override). "force-off"
+        hides the tab and returns 403 from /plugins handlers. Overridden by
+        the NBI_CLAUDE_PLUGINS_MANAGEMENT_POLICY env var. Mirrors the
+        `claude_` prefix on `claude_mcp_management_policy` since both gate
+        Claude-only management surfaces.
+        """,
+        config=True,
+    )
+
+    allow_github_plugin_import = Bool(
+        default_value=True,
+        help="""
+        Allow adding plugin marketplaces from GitHub (URL or owner/repo
+        shorthand). Set False to hide the "From GitHub" affordance in the
+        plugins panel and reject backend marketplace-add requests whose
+        source string is a GitHub reference. Local-path and arbitrary-URL
+        sources remain available — this is a fine-grained gate paralleling
+        `allow_github_skill_import`. Overridden by the
+        NBI_ALLOW_GITHUB_PLUGIN_IMPORT env var.
+        """,
+        allow_none=True,
         config=True,
     )
 
@@ -2147,16 +2356,24 @@ class NotebookIntelligence(ExtensionApp):
         route_pattern_claude_mcp_detail = url_path_join(
             base_url, "notebook-intelligence", "claude-mcp", r"(user|project|local)", r"([^/]+)"
         )
+        route_pattern_plugins = url_path_join(base_url, "notebook-intelligence", "plugins")
+        route_pattern_plugins_detail = url_path_join(
+            base_url, "notebook-intelligence", "plugins", r"(user|project|local)", r"([^/]+)"
+        )
+        route_pattern_plugins_marketplace = url_path_join(
+            base_url, "notebook-intelligence", "plugins", "marketplace"
+        )
+        route_pattern_plugins_marketplace_detail = url_path_join(
+            base_url, "notebook-intelligence", "plugins", "marketplace", r"([^/]+)"
+        )
         GetCapabilitiesHandler.disabled_tools = self.disabled_tools
         GetCapabilitiesHandler.allow_enabling_tools_with_env = self.allow_enabling_tools_with_env
         GetCapabilitiesHandler.disabled_providers = self.disabled_providers
         GetCapabilitiesHandler.allow_enabling_providers_with_env = self.allow_enabling_providers_with_env
         GetCapabilitiesHandler.enable_chat_feedback = self.enable_chat_feedback
-        allow_github_skill_import = _resolve_bool_with_env(
+        SkillsBaseHandler.allow_github_skill_import = _resolve_bool_with_env(
             "NBI_ALLOW_GITHUB_SKILL_IMPORT", self.allow_github_skill_import
         )
-        GetCapabilitiesHandler.allow_github_skill_import = allow_github_skill_import
-        SkillsBaseHandler.allow_github_skill_import = allow_github_skill_import
         GetCapabilitiesHandler.additional_skipped_workspace_directories = (
             _resolve_csv_appended(
                 "NBI_ADDITIONAL_SKIPPED_WORKSPACE_DIRECTORIES",
@@ -2168,6 +2385,12 @@ class NotebookIntelligence(ExtensionApp):
         )
         ClaudeMCPBaseHandler.claude_mcp_management_enabled = not is_force_off(
             feature_policies, "claude_mcp_management"
+        )
+        PluginsBaseHandler.claude_plugins_management_enabled = not is_force_off(
+            feature_policies, "claude_plugins_management"
+        )
+        PluginsBaseHandler.allow_github_plugin_import = _resolve_bool_with_env(
+            "NBI_ALLOW_GITHUB_PLUGIN_IMPORT", self.allow_github_plugin_import
         )
         self._publish_policies(feature_policies, string_overrides)
         NotebookIntelligence.handlers = [
@@ -2202,6 +2425,12 @@ class NotebookIntelligence(ExtensionApp):
             # shadow specialized URLs added later (parallels the skills order).
             (route_pattern_claude_mcp_detail, ClaudeMCPDetailHandler),
             (route_pattern_claude_mcp, ClaudeMCPListHandler),
+            # Plugin routes: marketplace endpoints before the {scope}/{plugin}
+            # catch-all so the literal "marketplace" segment isn't eaten.
+            (route_pattern_plugins_marketplace_detail, PluginsMarketplaceDetailHandler),
+            (route_pattern_plugins_marketplace, PluginsMarketplaceListHandler),
+            (route_pattern_plugins_detail, PluginsDetailHandler),
+            (route_pattern_plugins, PluginsListHandler),
             (route_pattern_copilot, WebsocketCopilotHandler),
         ]
         web_app.add_handlers(host_pattern, NotebookIntelligence.handlers)

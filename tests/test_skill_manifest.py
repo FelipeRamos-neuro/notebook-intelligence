@@ -151,7 +151,7 @@ class TestUrlLoading:
     def test_github_host_uses_gh_token_fallback(self):
         body = b"skills: []\n"
         with patch(
-            "notebook_intelligence.skill_manifest._get_github_token",
+            "notebook_intelligence.skill_manifest.resolve_github_token",
             return_value="gh_fallback",
         ), patch(
             "notebook_intelligence.skill_manifest._urlopen_no_redirect"
@@ -166,7 +166,7 @@ class TestUrlLoading:
     def test_non_github_host_skips_gh_token_fallback(self):
         body = b"skills: []\n"
         with patch(
-            "notebook_intelligence.skill_manifest._get_github_token",
+            "notebook_intelligence.skill_manifest.resolve_github_token",
             return_value="gh_fallback",
         ) as probe, patch(
             "notebook_intelligence.skill_manifest._urlopen_no_redirect"
@@ -180,7 +180,7 @@ class TestUrlLoading:
     def test_explicit_token_wins_over_gh_token_fallback(self):
         body = b"skills: []\n"
         with patch(
-            "notebook_intelligence.skill_manifest._get_github_token",
+            "notebook_intelligence.skill_manifest.resolve_github_token",
             return_value="gh_fallback",
         ) as probe, patch(
             "notebook_intelligence.skill_manifest._urlopen_no_redirect"

@@ -10,11 +10,11 @@ from notebook_intelligence.skill_github_import import (
     _derive_name,
     _extract_skill,
     _fetch_tarball,
-    _get_github_token,
     _slug,
     parse_github_url,
     stage_skill_from_github,
 )
+from notebook_intelligence.util import resolve_github_token
 from tests.conftest import build_tarball
 
 
@@ -228,26 +228,26 @@ class TestGetGitHubToken:
         with patch.dict(
             "os.environ", {"GITHUB_TOKEN": "from-github-token", "GH_TOKEN": "other"}
         ):
-            assert _get_github_token() == "from-github-token"
+            assert resolve_github_token() == "from-github-token"
 
     def test_falls_back_to_gh_token_env(self):
         env = {"GH_TOKEN": "from-gh-token"}
         # Clear GITHUB_TOKEN if present in the real env.
         with patch.dict("os.environ", env, clear=True):
-            assert _get_github_token() == "from-gh-token"
+            assert resolve_github_token() == "from-gh-token"
 
     def test_strips_whitespace(self):
         with patch.dict("os.environ", {"GITHUB_TOKEN": "  padded  "}, clear=True):
-            assert _get_github_token() == "padded"
+            assert resolve_github_token() == "padded"
 
     def test_ignores_empty_env(self):
         # Empty env var should not short-circuit; fall through to gh CLI (mocked missing).
         with patch.dict("os.environ", {"GITHUB_TOKEN": "   "}, clear=True):
             with patch(
-                "notebook_intelligence.skill_github_import.subprocess.run",
+                "notebook_intelligence.util.subprocess.run",
                 side_effect=FileNotFoundError,
             ):
-                assert _get_github_token() is None
+                assert resolve_github_token() is None
 
     def test_falls_back_to_gh_cli(self):
         with patch.dict("os.environ", {}, clear=True):
@@ -255,18 +255,18 @@ class TestGetGitHubToken:
                 args=[], returncode=0, stdout="gh-cli-token\n", stderr=""
             )
             with patch(
-                "notebook_intelligence.skill_github_import.subprocess.run",
+                "notebook_intelligence.util.subprocess.run",
                 return_value=fake,
             ):
-                assert _get_github_token() == "gh-cli-token"
+                assert resolve_github_token() == "gh-cli-token"
 
     def test_gh_cli_missing_returns_none(self):
         with patch.dict("os.environ", {}, clear=True):
             with patch(
-                "notebook_intelligence.skill_github_import.subprocess.run",
+                "notebook_intelligence.util.subprocess.run",
                 side_effect=FileNotFoundError,
             ):
-                assert _get_github_token() is None
+                assert resolve_github_token() is None
 
     def test_gh_cli_error_returns_none(self):
         with patch.dict("os.environ", {}, clear=True):
@@ -274,18 +274,35 @@ class TestGetGitHubToken:
                 args=[], returncode=1, stdout="", stderr="not logged in"
             )
             with patch(
-                "notebook_intelligence.skill_github_import.subprocess.run",
+                "notebook_intelligence.util.subprocess.run",
                 return_value=fake,
             ):
-                assert _get_github_token() is None
+                assert resolve_github_token() is None
 
     def test_gh_cli_timeout_returns_none(self):
         with patch.dict("os.environ", {}, clear=True):
             with patch(
-                "notebook_intelligence.skill_github_import.subprocess.run",
+                "notebook_intelligence.util.subprocess.run",
                 side_effect=subprocess.TimeoutExpired(cmd=["gh"], timeout=5),
             ):
-                assert _get_github_token() is None
+                assert resolve_github_token() is None
+
+    def test_gh_cli_strips_extra_lines(self):
+        # Defensive: a misbehaving gh install could prepend warnings or
+        # trailing whitespace. Take the first non-empty line so we don't
+        # smuggle unrelated bytes into the token.
+        with patch.dict("os.environ", {}, clear=True):
+            fake = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="\n  \nrealtoken\n\nextra\n",
+                stderr="",
+            )
+            with patch(
+                "notebook_intelligence.util.subprocess.run",
+                return_value=fake,
+            ):
+                assert resolve_github_token() == "realtoken"
 
 
 class _FakeUrlopenResponse:
@@ -320,7 +337,7 @@ class TestFetchTarballAuth:
     def test_adds_auth_header_when_token_present(self):
         captured = {}
         with patch(
-            "notebook_intelligence.skill_github_import._get_github_token",
+            "notebook_intelligence.skill_github_import.resolve_github_token",
             return_value="secret-token",
         ):
             with patch(
@@ -338,7 +355,7 @@ class TestFetchTarballAuth:
     def test_no_auth_header_when_no_token(self):
         captured = {}
         with patch(
-            "notebook_intelligence.skill_github_import._get_github_token",
+            "notebook_intelligence.skill_github_import.resolve_github_token",
             return_value=None,
         ):
             with patch(
@@ -352,7 +369,7 @@ class TestFetchTarballAuth:
 
     def test_401_without_token_prompts_for_auth(self):
         with patch(
-            "notebook_intelligence.skill_github_import._get_github_token",
+            "notebook_intelligence.skill_github_import.resolve_github_token",
             return_value=None,
         ):
             with patch(
@@ -364,7 +381,7 @@ class TestFetchTarballAuth:
 
     def test_403_with_token_reports_rejection(self):
         with patch(
-            "notebook_intelligence.skill_github_import._get_github_token",
+            "notebook_intelligence.skill_github_import.resolve_github_token",
             return_value="bad-token",
         ):
             with patch(
@@ -376,7 +393,7 @@ class TestFetchTarballAuth:
 
     def test_404_without_token_hints_private(self):
         with patch(
-            "notebook_intelligence.skill_github_import._get_github_token",
+            "notebook_intelligence.skill_github_import.resolve_github_token",
             return_value=None,
         ):
             with patch(
@@ -388,7 +405,7 @@ class TestFetchTarballAuth:
 
     def test_404_with_token_no_private_hint(self):
         with patch(
-            "notebook_intelligence.skill_github_import._get_github_token",
+            "notebook_intelligence.skill_github_import.resolve_github_token",
             return_value="some-token",
         ):
             with patch(

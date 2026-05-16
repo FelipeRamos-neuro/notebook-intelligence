@@ -38,7 +38,7 @@ NBI reads configuration from three layers, listed in order of precedence (later 
 2. **User config** — `~/.jupyter/nbi/config.json` and `~/.jupyter/nbi/mcp.json`. The user mutates these via the Settings dialog. Lives on the per-user PVC.
 3. **Environment variables** — `NBI_*` and certain provider variables (see the [reference table](#environment-variables-and-traitlets)). Override at pod startup time.
 
-Traitlets configured via JupyterLab CLI flags or `jupyter_server_config.py` (e.g., `c.NotebookIntelligence.disabled_providers = [...]`) are evaluated at server startup. Where a traitlet has a corresponding env var (e.g., `NBI_ENABLED_PROVIDERS` for `disabled_providers` and `allow_enabling_providers_with_env`), NBI reads the env var at request time.
+Traitlets configured via JupyterLab CLI flags or `jupyter_server_config.py` (e.g., `c.NotebookIntelligence.disabled_providers = [...]`) are evaluated at server startup. Most env-var overrides (`NBI_*_POLICY`, `NBI_ALLOW_GITHUB_*`, `NBI_*_MANAGEMENT_POLICY`, etc.) are also resolved once at startup and cached on the handler classes — flipping them requires a JupyterLab restart. The `NBI_ENABLED_PROVIDERS` and `NBI_ENABLED_BUILTIN_TOOLS` re-enable env vars (gated by `allow_enabling_*_with_env`) are the exception: those are read on every request.
 
 Manual edits to `config.json` while JupyterLab is running require a JupyterLab restart to take effect. Edits via the Settings dialog are picked up live.
 
@@ -369,9 +369,11 @@ Force-off does three things at once:
 
 - Hides the **Skills** tab in the Settings panel.
 - Returns HTTP 403 from every `/notebook-intelligence/skills/*` route, so a stale frontend or a direct API caller can't read or write skills.
-- Suppresses the [managed-skills reconciler](#managed-claude-skills-token) — the manifest is treated as empty, no `SkillReconciler` is constructed, and no scheduled reconcile runs. Org-curated skills still on disk are not touched, but new manifests aren't pulled.
+- Suppresses the [managed-skills reconciler](#managed-claude-skills-token) — the manifest is treated as empty, no `SkillReconciler` is constructed, and no scheduled reconcile runs. Org-curated skills still on disk are not touched, but new manifests aren't pulled. **Takes effect on JupyterLab server restart.** Live config-reload won't stop a reconciler that's already running.
 
 Use this when an org wants to disable user-authored Claude skills entirely.
+
+> **Blast radius.** Force-off only kills the _management UI_ — skill bundles already on disk under `~/.claude/skills/` or a project's `.claude/skills/` keep being discovered by Claude Code itself because Claude's skill loader doesn't consult NBI's policy. To stop existing skills from loading, remove them on disk before flipping the policy.
 
 ### Disabling the Claude-mode MCP Servers tab
 
@@ -389,6 +391,46 @@ Force-off:
 The Claude-mode tab is **independent** of the existing non-Claude **MCP Servers** tab. The former wraps Claude Code's own config (`~/.claude.json` and project `.mcp.json`); the latter manages NBI's own MCP servers used by the non-Claude chat path. They never appear at the same time — the non-Claude tab is hidden when Claude mode is on, and the Claude-mode tab is hidden when it's off.
 
 Reads come from Claude's JSON config files directly (fast, no health checks). Writes (add / remove) shell out to `claude mcp add` / `claude mcp remove` so Claude remains the source of truth for any side effects (project-trust prompts, OAuth bookkeeping).
+
+> **Blast radius.** Force-off only kills the _management UI_ — MCP servers already configured in `~/.claude.json` or `<cwd>/.mcp.json` keep loading inside Claude Code sessions because Claude's MCP loader doesn't consult NBI's policy. To stop existing servers, remove them on disk (or via the `claude mcp remove` CLI) before flipping the policy.
+
+> **Trust model.** MCP servers run as subprocesses (stdio transport) or accept arbitrary URLs (sse/http transport) inside Claude Code sessions; NBI does not validate or sandbox the command, environment, or network endpoint beyond rejecting CLI flag-smuggling. For multi-tenant or regulated deployments, default to `claude_mcp_management_policy = force-off` and ship a curated set of servers via `~/.claude/settings.json` instead.
+
+### Disabling the Plugins tab
+
+```python
+c.NotebookIntelligence.claude_plugins_management_policy = "force-off"
+```
+
+Or via env: `NBI_CLAUDE_PLUGINS_MANAGEMENT_POLICY=force-off`.
+
+Force-off hides the **Plugins** tab and returns 403 from every `/notebook-intelligence/plugins/*` route. The tab is otherwise visible only when Claude mode is on and the `claude` CLI is available. Both reads (`claude plugin list --json`) and writes (`claude plugin install` / `uninstall` / `enable` / `disable` / `marketplace add` / `marketplace remove`) shell out to the Claude CLI; Claude owns the plugin state under `~/.claude/plugins/`.
+
+> **Blast radius.** Force-off only kills the _management UI_ — already-installed plugins keep loading inside Claude Code sessions because Claude's plugin loader doesn't consult NBI's policy. To stop existing plugins from loading, you'd need to remove them on disk or disable them via the `claude plugin disable` CLI before flipping the policy. Force-off prevents user-driven add/remove/enable/disable through NBI; that's the contract.
+
+To allow user-driven plugin management but block GitHub-sourced marketplaces:
+
+```python
+c.NotebookIntelligence.allow_github_plugin_import = False
+```
+
+Or via env: `NBI_ALLOW_GITHUB_PLUGIN_IMPORT=false` (also accepts `true`/`1`/`0`/`yes`/`no`/`on`/`off`). When False, the "From GitHub" affordance in the Plugins panel hides itself and the backend rejects marketplace-add requests whose source is a GitHub URL, `owner/repo` shorthand, or `git@github.com:` reference. Local-path and arbitrary-URL sources remain available. This is finer-grained than `claude_plugins_management_policy = force-off`, which kills the entire surface.
+
+> **Trust model.** Plugins installed via `claude plugin install` execute as part of Claude Code sessions; NBI does not signature-verify or sandbox them, and the `claude` CLI's validation is best-effort. The marketplace-add path is a network fetch (server-side) — for multi-tenant or regulated deployments, default to `claude_plugins_management_policy = force-off` and curate plugins server-side, or restrict marketplaces to vetted sources only.
+
+#### GitHub auth for marketplace add
+
+When the marketplace source is a GitHub URL or `owner/repo` shorthand, NBI resolves a token with the same precedence as Skills' GitHub import:
+
+1. `GITHUB_TOKEN` env var (server-process scope)
+2. `GH_TOKEN` env var
+3. `gh auth token` subprocess output (only if `gh` is on PATH)
+
+Resolved tokens are injected into the `claude plugin marketplace add` subprocess via env, never argv — they do not appear in DEBUG logs. The chain is re-evaluated per call, so rotating the token (env update or `gh auth refresh`) takes effect on the next add. Required scope: `repo` for classic PATs, or `contents:read` on the target repo for fine-grained PATs. When `gh` is not installed the third step short-circuits silently; rely on `GITHUB_TOKEN` instead.
+
+The chain only fires for github.com sources today. **GitHub Enterprise instances are not detected** as GitHub by `is_github_marketplace_source`, so a GHE marketplace URL falls through to anonymous git auth — track that as a separate item if your org runs GHE.
+
+For air-gap deployments, marketplace-add inherits the JupyterLab process env, so the same `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` / `NODE_EXTRA_CA_CERTS` settings documented in [Custom CA certs and corporate proxies](#custom-ca-certs-and-corporate-proxies) apply. Pre-installed plugins (under `~/.claude/plugins/`) keep loading without any network access.
 
 ---
 

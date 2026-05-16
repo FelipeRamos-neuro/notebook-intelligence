@@ -160,19 +160,70 @@ class TestClaudeMCPManagerListServers:
 
 
 class TestClaudeMCPManagerWrites:
+    def test_add_returns_canonical_record_when_post_read_succeeds(
+        self, claude_home, working_dir, monkeypatch
+    ):
+        """When the post-add re-read finds the freshly-written server, the
+        canonical record (parsed from disk) is returned — *not* the
+        synthesized fallback. This pins the preference: a regression that
+        always synthesized would silently lose any field-level rewriting
+        Claude does (e.g. inferring transport from the URL)."""
+        monkeypatch.setattr(
+            "notebook_intelligence._claude_cli.resolve_claude_cli_path",
+            lambda: "/usr/local/bin/claude",
+        )
+
+        async def fake_subprocess(*argv, **kwargs):
+            # Simulate Claude actually writing the server to ~/.claude.json.
+            doc = {
+                "mcpServers": {
+                    "my-srv": {
+                        "type": "stdio",
+                        "command": "claude-rewrote-this",
+                        "args": ["--from", "claude"],
+                        "env": {"CLAUDE": "added"},
+                    }
+                }
+            }
+            (claude_home / ".claude.json").write_text(json.dumps(doc))
+            proc = MagicMock()
+
+            async def communicate():
+                return (b"", b"")
+
+            proc.communicate = communicate
+            proc.returncode = 0
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+        manager = ClaudeMCPManager(working_dir=str(working_dir))
+        result = asyncio.run(
+            manager.add_server(
+                name="my-srv",
+                scope="user",
+                transport="stdio",
+                command_or_url="user-supplied-cmd",
+                args=["--user-arg"],
+            )
+        )
+        # Canonical fields from disk, not synthesized from inputs.
+        assert result.command == "claude-rewrote-this"
+        assert result.args == ["--from", "claude"]
+        assert result.env == {"CLAUDE": "added"}
+
     @pytest.mark.parametrize("scope", ["user", "project", "local"])
     def test_add_invokes_cli_with_correct_args(
         self, claude_home, working_dir, scope, monkeypatch
     ):
         monkeypatch.setattr(
-            "notebook_intelligence.claude_mcp_manager.resolve_claude_cli_path",
+            "notebook_intelligence._claude_cli.resolve_claude_cli_path",
             lambda: "/usr/local/bin/claude",
         )
         captured: dict = {}
 
-        async def fake_subprocess(*argv, cwd, stdin, stdout, stderr):
+        async def fake_subprocess(*argv, **kwargs):
             captured["argv"] = list(argv)
-            captured["cwd"] = cwd
+            captured["cwd"] = kwargs.get("cwd")
             proc = MagicMock()
 
             async def communicate():
@@ -213,14 +264,77 @@ class TestClaudeMCPManagerWrites:
         assert result.name == "my-srv"
         assert result.scope == scope
 
+    @pytest.mark.parametrize(
+        "env_key",
+        ["-flag", "--inject", "BAD=KEY"],
+    )
+    def test_add_rejects_env_key_that_could_smuggle_flag(
+        self, claude_home, working_dir, env_key
+    ):
+        manager = ClaudeMCPManager(working_dir=str(working_dir))
+        with pytest.raises(ValueError, match="env key"):
+            asyncio.run(
+                manager.add_server(
+                    name="s",
+                    scope="user",
+                    transport="stdio",
+                    command_or_url="npx",
+                    env={env_key: "v"},
+                )
+            )
+
+    @pytest.mark.parametrize(
+        "header_key",
+        ["-flag", "--inject", "Bad:Name"],
+    )
+    def test_add_rejects_header_name_that_could_smuggle_flag(
+        self, claude_home, working_dir, header_key
+    ):
+        manager = ClaudeMCPManager(working_dir=str(working_dir))
+        with pytest.raises(ValueError, match="header name"):
+            asyncio.run(
+                manager.add_server(
+                    name="s",
+                    scope="user",
+                    transport="http",
+                    command_or_url="https://example.com",
+                    headers={header_key: "v"},
+                )
+            )
+
+    @pytest.mark.parametrize("transport", ["sse", "http"])
+    @pytest.mark.parametrize(
+        "bad_url",
+        [
+            "http://example.com",
+            "http://169.254.169.254/latest/meta-data/",
+            "file:///etc/passwd",
+            "ftp://example.com",
+        ],
+    )
+    def test_add_rejects_non_https_network_transport(
+        self, claude_home, working_dir, transport, bad_url
+    ):
+        # SSRF defense: sse/http transports must be https only.
+        manager = ClaudeMCPManager(working_dir=str(working_dir))
+        with pytest.raises(ValueError, match="https"):
+            asyncio.run(
+                manager.add_server(
+                    name="s",
+                    scope="user",
+                    transport=transport,
+                    command_or_url=bad_url,
+                )
+            )
+
     def test_remove_invokes_cli(self, claude_home, working_dir, monkeypatch):
         monkeypatch.setattr(
-            "notebook_intelligence.claude_mcp_manager.resolve_claude_cli_path",
+            "notebook_intelligence._claude_cli.resolve_claude_cli_path",
             lambda: "/usr/local/bin/claude",
         )
         captured: dict = {}
 
-        async def fake_subprocess(*argv, cwd, stdin, stdout, stderr):
+        async def fake_subprocess(*argv, **kwargs):
             captured["argv"] = list(argv)
             proc = MagicMock()
 
@@ -247,11 +361,11 @@ class TestClaudeMCPManagerWrites:
         self, claude_home, working_dir, monkeypatch
     ):
         monkeypatch.setattr(
-            "notebook_intelligence.claude_mcp_manager.resolve_claude_cli_path",
+            "notebook_intelligence._claude_cli.resolve_claude_cli_path",
             lambda: "/usr/local/bin/claude",
         )
 
-        async def fake_subprocess(*argv, cwd, stdin, stdout, stderr):
+        async def fake_subprocess(*argv, **kwargs):
             proc = MagicMock()
 
             async def communicate():
@@ -271,7 +385,7 @@ class TestClaudeMCPManagerWrites:
         self, claude_home, working_dir, monkeypatch
     ):
         monkeypatch.setattr(
-            "notebook_intelligence.claude_mcp_manager.resolve_claude_cli_path",
+            "notebook_intelligence._claude_cli.resolve_claude_cli_path",
             lambda: None,
         )
         manager = ClaudeMCPManager(working_dir=str(working_dir))
@@ -280,7 +394,7 @@ class TestClaudeMCPManagerWrites:
 
     def test_leading_dash_name_rejected(self, claude_home, working_dir, monkeypatch):
         monkeypatch.setattr(
-            "notebook_intelligence.claude_mcp_manager.resolve_claude_cli_path",
+            "notebook_intelligence._claude_cli.resolve_claude_cli_path",
             lambda: "/usr/local/bin/claude",
         )
         manager = ClaudeMCPManager(working_dir=str(working_dir))
@@ -298,7 +412,7 @@ class TestClaudeMCPManagerWrites:
         self, claude_home, working_dir, monkeypatch
     ):
         monkeypatch.setattr(
-            "notebook_intelligence.claude_mcp_manager.resolve_claude_cli_path",
+            "notebook_intelligence._claude_cli.resolve_claude_cli_path",
             lambda: "/usr/local/bin/claude",
         )
         manager = ClaudeMCPManager(working_dir=str(working_dir))
@@ -315,7 +429,7 @@ class TestClaudeMCPManagerWrites:
 
 class TestRedactArgvForLog:
     def test_redacts_env_values(self):
-        from notebook_intelligence.claude_mcp_manager import _redact_argv_for_log
+        from notebook_intelligence._claude_cli import redact_argv_for_log as _redact_argv_for_log
 
         argv = ["claude", "mcp", "add", "-e", "API_KEY=sk-secret", "name", "cmd"]
         assert _redact_argv_for_log(argv) == [
@@ -329,54 +443,64 @@ class TestRedactArgvForLog:
         ]
 
     def test_redacts_header_values(self):
-        from notebook_intelligence.claude_mcp_manager import _redact_argv_for_log
+        from notebook_intelligence._claude_cli import redact_argv_for_log as _redact_argv_for_log
 
         argv = ["claude", "mcp", "add", "-H", "Authorization: Bearer abc"]
         assert _redact_argv_for_log(argv)[-2:] == ["-H", "<redacted>"]
 
     def test_passes_through_non_secrets(self):
-        from notebook_intelligence.claude_mcp_manager import _redact_argv_for_log
+        from notebook_intelligence._claude_cli import redact_argv_for_log as _redact_argv_for_log
 
         argv = ["claude", "mcp", "add", "--scope", "user", "name", "npx"]
         assert _redact_argv_for_log(argv) == argv
 
 
-class TestClaudeMCPManagementPolicyGate:
-    """Mirror of TestSkillsManagementPolicyGate — ensures the prepare()
-    chokepoint short-circuits with 403 when force-off."""
+class TestLockSerialization:
+    """Two concurrent writes against the (process-shared) lock must not
+    interleave at the subprocess layer."""
 
-    @staticmethod
-    def _run_prepare(handler):
-        from jupyter_server.base.handlers import APIHandler
+    def test_concurrent_add_server_calls_are_serialized(
+        self, claude_home, working_dir, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "notebook_intelligence._claude_cli.resolve_claude_cli_path",
+            lambda: "/usr/local/bin/claude",
+        )
+        events: list[str] = []
 
-        async def _noop(_self):
-            return None
+        async def fake_subprocess(*argv, **kwargs):
+            proc = MagicMock()
+            # `claude mcp add ... <name> <commandOrUrl>` — name is second-to-last.
+            tag = argv[-2]
 
-        with patch.object(APIHandler, "prepare", _noop):
-            asyncio.run(ClaudeMCPBaseHandler.prepare(handler))
+            async def communicate():
+                events.append(f"start:{tag}")
+                await asyncio.sleep(0.01)
+                events.append(f"end:{tag}")
+                return (b"", b"")
 
-    def test_default_attribute_allows(self):
-        assert ClaudeMCPBaseHandler.claude_mcp_management_enabled is True
+            proc.communicate = communicate
+            proc.returncode = 0
+            return proc
 
-    def test_prepare_rejects_when_disabled(self):
-        handler = MagicMock(spec=ClaudeMCPListHandler)
-        handler._finished = False
-        handler.claude_mcp_management_enabled = False
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
 
-        def _finish(payload):
-            handler._finished = True
-            handler._finish_payload = payload
+        async def driver():
+            m1 = ClaudeMCPManager(working_dir=str(working_dir))
+            m2 = ClaudeMCPManager(working_dir=str(working_dir))
+            await asyncio.gather(
+                m1.add_server(name="A", scope="user", transport="stdio", command_or_url="x"),
+                m2.add_server(name="B", scope="user", transport="stdio", command_or_url="y"),
+            )
 
-        handler.finish.side_effect = _finish
-        self._run_prepare(handler)
-        handler.set_status.assert_called_with(403)
-        body = json.loads(handler._finish_payload)
-        assert "administrator" in body["error"].lower()
+        asyncio.run(driver())
+        assert len(events) == 4
+        assert events[0].startswith("start:")
+        assert events[1] == events[0].replace("start:", "end:")
+        assert events[2].startswith("start:")
+        assert events[3] == events[2].replace("start:", "end:")
 
-    def test_prepare_passes_when_enabled(self):
-        handler = MagicMock(spec=ClaudeMCPListHandler)
-        handler._finished = False
-        handler.claude_mcp_management_enabled = True
-        self._run_prepare(handler)
-        handler.set_status.assert_not_called()
-        handler.finish.assert_not_called()
+
+# Per-family policy-gate coverage lives in `tests/test_policy_gate.py`,
+# parametrized across SkillsBaseHandler / ClaudeMCPBaseHandler /
+# PluginsBaseHandler.

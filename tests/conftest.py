@@ -1,12 +1,45 @@
+import asyncio
 import io
 import pytest
 import tarfile
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from notebook_intelligence.ruleset import RuleContext
 from notebook_intelligence.config import NBIConfig
+
+
+def stub_claude_subprocess(
+    monkeypatch,
+    *,
+    captured: dict,
+    stdout: bytes = b"",
+    returncode: int = 0,
+):
+    """Patch ``asyncio.create_subprocess_exec`` for Claude-CLI shellouts.
+
+    Used by both the Claude-MCP and plugin manager tests; lives here to keep
+    the fake's signature consistent across files. ``captured`` is a dict the
+    test inspects after the call; ``stdout``/``returncode`` shape the fake
+    process's outputs.
+    """
+    out_bytes = stdout
+    rc = returncode
+
+    async def fake_subprocess(*argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["kwargs"] = kwargs
+        proc = MagicMock()
+
+        async def communicate():
+            return (out_bytes, b"")
+
+        proc.communicate = communicate
+        proc.returncode = rc
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
 
 
 def build_tarball(file_map: dict) -> bytes:

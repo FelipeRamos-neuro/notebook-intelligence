@@ -167,6 +167,7 @@ Most settings panel toggles can be locked by org administrators. Two shapes:
 | `NBI_STORE_GITHUB_ACCESS_TOKEN_POLICY`     | "Remember my GitHub Copilot access token"                                                                                    |
 | `NBI_SKILLS_MANAGEMENT_POLICY`             | The Skills tab (force-off hides it and 403s the API; also disables the managed-skills reconciler)                            |
 | `NBI_CLAUDE_MCP_MANAGEMENT_POLICY`         | The Claude-mode MCP Servers tab (force-off hides it and 403s `/claude-mcp/*`; independent of the non-Claude MCP Servers tab) |
+| `NBI_CLAUDE_PLUGINS_MANAGEMENT_POLICY`     | The Claude-mode Plugins tab (force-off hides it and 403s `/plugins/*`)                                                       |
 
 The first three also have matching traitlets on `NotebookIntelligence` (`explain_error_policy`, `output_followup_policy`, `output_toolbar_policy`); add the others as needed in the same shape:
 

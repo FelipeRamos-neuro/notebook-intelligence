@@ -9,6 +9,7 @@ import {
   IClaudeMCPServer,
   NBIAPI
 } from '../api';
+import { FormDialog } from './form-dialog';
 
 const SCOPES: ClaudeMCPScope[] = ['user', 'project', 'local'];
 const TRANSPORTS: ClaudeMCPTransport[] = ['stdio', 'sse', 'http'];
@@ -85,7 +86,7 @@ export function SettingsPanelComponentClaudeMCP(_props: any): JSX.Element {
   return (
     <div className="config-dialog-body nbi-skills-panel">
       <div className="nbi-skills-header">
-        <div className="nbi-skills-title">MCP Servers</div>
+        <div className="nbi-skills-title">Claude MCP</div>
         <div className="nbi-skills-header-actions">
           <button
             className="jp-Dialog-button jp-mod-reject jp-mod-styled"
@@ -272,120 +273,96 @@ function ClaudeMCPAddDialog(props: {
   };
 
   return (
-    <div className="nbi-modal-backdrop" onClick={props.onCancel}>
-      <div
-        className="nbi-modal-card"
-        role="dialog"
-        aria-modal="true"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="nbi-modal-title">Add MCP server</div>
-        <div className="nbi-modal-body">
-          <div className="nbi-form-field">
-            <label>Name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="my-server"
-              autoFocus
-            />
-          </div>
-          <div className="nbi-form-field">
-            <label>Scope</label>
-            <select
-              value={scope}
-              onChange={e => setScope(e.target.value as ClaudeMCPScope)}
-            >
-              {SCOPES.map(s => (
-                <option key={s} value={s}>
-                  {s} — {SCOPE_HINT[s]}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="nbi-form-field">
-            <label>Transport</label>
-            <select
-              value={transport}
-              onChange={e => setTransport(e.target.value as ClaudeMCPTransport)}
-            >
-              {TRANSPORTS.map(t => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="nbi-form-field">
-            <label>{transport === 'stdio' ? 'Command' : 'URL'}</label>
-            <input
-              type="text"
-              value={commandOrUrl}
-              onChange={e => setCommandOrUrl(e.target.value)}
-              placeholder={
-                transport === 'stdio' ? 'npx' : 'https://example.com/mcp'
-              }
-            />
-          </div>
-          {transport === 'stdio' && (
-            <div className="nbi-form-field">
-              <label>Args (one per line)</label>
-              <textarea
-                rows={3}
-                value={argsText}
-                onChange={e => setArgsText(e.target.value)}
-                placeholder={'-y\n@scope/package@latest'}
-              />
-            </div>
-          )}
-          {transport === 'stdio' && (
-            <div className="nbi-form-field">
-              <label>Environment (KEY=value, one per line)</label>
-              <textarea
-                rows={3}
-                value={envText}
-                onChange={e => setEnvText(e.target.value)}
-                placeholder="API_KEY=…"
-              />
-            </div>
-          )}
-          {transport !== 'stdio' && (
-            <div className="nbi-form-field">
-              <label>Headers (Name: value, one per line)</label>
-              <textarea
-                rows={3}
-                value={headersText}
-                onChange={e => setHeadersText(e.target.value)}
-                placeholder="Authorization: Bearer …"
-              />
-            </div>
-          )}
-          {submitError && (
-            <div className="nbi-skills-error" role="alert">
-              {submitError}
-            </div>
-          )}
-        </div>
-        <div className="nbi-modal-actions">
-          <button
-            className="jp-Dialog-button jp-mod-reject jp-mod-styled"
-            onClick={props.onCancel}
-            disabled={submitting}
-          >
-            <div className="jp-Dialog-buttonLabel">Cancel</div>
-          </button>
-          <button
-            className="jp-Dialog-button jp-mod-accept jp-mod-styled"
-            onClick={handleSubmit}
-            disabled={!canSubmit}
-          >
-            <div className="jp-Dialog-buttonLabel">
-              {submitting ? 'Adding…' : 'Add'}
-            </div>
-          </button>
-        </div>
+    <FormDialog
+      title="Add MCP server"
+      submitLabel="Add"
+      submitInProgressLabel="Adding…"
+      canSubmit={Boolean(canSubmit)}
+      submitting={submitting}
+      error={submitError}
+      onCancel={props.onCancel}
+      onSubmit={handleSubmit}
+    >
+      <div className="nbi-form-field">
+        <label>Name</label>
+        <input
+          type="text"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          placeholder="my-server"
+          autoFocus
+        />
       </div>
-    </div>
+      <div className="nbi-form-field">
+        <label>Scope</label>
+        <select
+          value={scope}
+          onChange={e => setScope(e.target.value as ClaudeMCPScope)}
+        >
+          {SCOPES.map(s => (
+            <option key={s} value={s}>
+              {s} — {SCOPE_HINT[s]}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="nbi-form-field">
+        <label>Transport</label>
+        <select
+          value={transport}
+          onChange={e => setTransport(e.target.value as ClaudeMCPTransport)}
+        >
+          {TRANSPORTS.map(t => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="nbi-form-field">
+        <label>{transport === 'stdio' ? 'Command' : 'URL'}</label>
+        <input
+          type="text"
+          value={commandOrUrl}
+          onChange={e => setCommandOrUrl(e.target.value)}
+          placeholder={
+            transport === 'stdio' ? 'npx' : 'https://example.com/mcp'
+          }
+        />
+      </div>
+      {transport === 'stdio' && (
+        <div className="nbi-form-field">
+          <label>Args (one per line)</label>
+          <textarea
+            rows={3}
+            value={argsText}
+            onChange={e => setArgsText(e.target.value)}
+            placeholder={'-y\n@scope/package@latest'}
+          />
+        </div>
+      )}
+      {transport === 'stdio' && (
+        <div className="nbi-form-field">
+          <label>Environment (KEY=value, one per line)</label>
+          <textarea
+            rows={3}
+            value={envText}
+            onChange={e => setEnvText(e.target.value)}
+            placeholder="API_KEY=…"
+          />
+        </div>
+      )}
+      {transport !== 'stdio' && (
+        <div className="nbi-form-field">
+          <label>Headers (Name: value, one per line)</label>
+          <textarea
+            rows={3}
+            value={headersText}
+            onChange={e => setHeadersText(e.target.value)}
+            placeholder="Authorization: Bearer …"
+          />
+        </div>
+      )}
+    </FormDialog>
   );
 }

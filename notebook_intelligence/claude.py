@@ -21,7 +21,7 @@ import logging
 from claude_agent_sdk import AssistantMessage, PermissionResultAllow, PermissionResultDeny, TextBlock, UserMessage, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient, tool
 from anthropic.types.text_block import TextBlock as AnthropicTextBlock
 
-from notebook_intelligence.util import ThreadSafeWebSocketConnector, _emit, get_jupyter_root_dir
+from notebook_intelligence.util import ThreadSafeWebSocketConnector, _emit, get_jupyter_root_dir, resolve_claude_cli_path
 
 log = logging.getLogger(__name__)
 
@@ -1242,7 +1242,7 @@ class ClaudeCodeChatParticipant(BaseChatParticipant):
             env=env,
             max_buffer_size=CLAUDE_CODE_MAX_BUFFER_SIZE,
             continue_conversation=continue_conversation,
-            cli_path=os.getenv("NBI_CLAUDE_CLI_PATH", None)
+            cli_path=resolve_claude_cli_path()
         )
         return client_options
 

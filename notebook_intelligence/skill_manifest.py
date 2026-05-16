@@ -22,7 +22,7 @@ from typing import List, Optional
 
 import yaml
 
-from notebook_intelligence.skill_github_import import _get_github_token
+from notebook_intelligence.util import resolve_github_token
 from notebook_intelligence.skillset import SKILL_NAME_PATTERN
 
 log = logging.getLogger(__name__)
@@ -175,7 +175,7 @@ def _fetch_url(url: str, *, token: Optional[str]) -> str:
     # just work when the user already has a GitHub login.
     effective_token = token
     if not effective_token and _is_github_host(url):
-        effective_token = _get_github_token()
+        effective_token = resolve_github_token()
     if effective_token:
         headers["Authorization"] = f"Bearer {effective_token}"
     req = urllib.request.Request(url, headers=headers)

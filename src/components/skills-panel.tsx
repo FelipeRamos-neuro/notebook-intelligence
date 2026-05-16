@@ -555,8 +555,10 @@ function GitHubImportDialog(props: {
                   placeholder="https://github.com/owner/repo or .../tree/main/path/to/skill"
                 />
                 <div className="nbi-form-hint">
-                  Public repos only. Link to the repo root, a branch, or a
-                  subdirectory containing <code>SKILL.md</code>.
+                  Link to the repo root, a branch, or a subdirectory containing{' '}
+                  <code>SKILL.md</code>. Private repos work if{' '}
+                  <code>GITHUB_TOKEN</code> is set or <code>gh auth login</code>{' '}
+                  is configured on the Jupyter server.
                 </div>
               </div>
               <div className="nbi-form-field">

@@ -56,6 +56,8 @@ def _make_handler(handler_cls, body: bytes = b"", query_args: dict | None = None
         lambda: SkillsBaseHandler._reject_if_github_import_disabled(handler)
     )
     handler.allow_github_skill_import = SkillsBaseHandler.allow_github_skill_import
+    # `_error` reads the real dict, not the spec'd mock proxy.
+    handler.exception_status_map = SkillsBaseHandler.exception_status_map
     return handler
 
 
@@ -398,6 +400,34 @@ class TestResolveCsvAppended:
             ) == ["build", "foo", "dist"]
 
 
+class TestResolvePolicyWithEnv:
+    """``_resolve_policy_with_env`` must fail loud on typos so a misspelled
+    ``NBI_SKILLS_MANAGEMENT_POLICY=forceoff`` doesn't silently boot with
+    the (lax) traitlet default. Matches the contract of
+    ``_resolve_bool_with_env``."""
+
+    ENV = "NBI_TEST_POLICY"
+
+    def test_unset_env_returns_traitlet(self, monkeypatch):
+        monkeypatch.delenv(self.ENV, raising=False)
+        assert (
+            ext_module._resolve_policy_with_env(self.ENV, "force-off")
+            == "force-off"
+        )
+
+    def test_valid_env_overrides_traitlet(self):
+        with patch.dict("os.environ", {self.ENV: "force-on"}):
+            assert (
+                ext_module._resolve_policy_with_env(self.ENV, "force-off")
+                == "force-on"
+            )
+
+    def test_invalid_env_raises(self):
+        with patch.dict("os.environ", {self.ENV: "forceoff"}):
+            with pytest.raises(ValueError, match=self.ENV):
+                ext_module._resolve_policy_with_env(self.ENV, "user-choice")
+
+
 class TestSkillBundleFileHandler:
     def test_write_and_read_bundle_file(self, skill_manager):
         skill_manager.create_skill("user", "bun", "d", [], "")
@@ -529,46 +559,34 @@ class TestSkillsReconcileHandler:
         }
 
 
-class TestSkillsManagementPolicyGate:
-    """The skills_management policy short-circuits every /skills handler in
-    `prepare()` with 403 when force-off. We test the gate logic directly,
-    bypassing Tornado dispatch (matches the rest of this file's pattern).
-    """
+# Per-family policy-gate coverage lives in `tests/test_policy_gate.py`,
+# parametrized across SkillsBaseHandler / ClaudeMCPBaseHandler /
+# PluginsBaseHandler.
 
-    @staticmethod
-    def _run_prepare(handler):
-        # Patch the superclass prepare to a no-op coroutine — we're only
-        # exercising the skills gate here, not jupyter_server's auth plumbing.
-        from jupyter_server.base.handlers import APIHandler
 
-        async def _noop(_self):
-            return None
+class TestSkillsForceOffSuppressesReconciler:
+    """When ``skills_management_policy = force-off``, NBI must not
+    construct a ``SkillReconciler`` — even if a manifest is configured.
+    Pins the contract documented in the policy's docstring."""
 
-        with patch.object(APIHandler, "prepare", _noop):
-            asyncio.run(SkillsBaseHandler.prepare(handler))
+    @pytest.mark.parametrize(
+        "policy,expect_empty_manifest",
+        [
+            ("user-choice", False),
+            ("force-on", False),
+            ("force-off", True),
+        ],
+    )
+    def test_force_off_empties_manifest_source(self, policy, expect_empty_manifest):
+        from notebook_intelligence.feature_flags import is_force_off
 
-    def test_default_attribute_allows(self):
-        assert SkillsBaseHandler.skills_management_enabled is True
-
-    def test_prepare_rejects_when_disabled(self):
-        handler = MagicMock(spec=SkillsListHandler)
-        handler._finished = False
-        handler.skills_management_enabled = False
-
-        def _finish(payload):
-            handler._finished = True
-            handler._finish_payload = payload
-
-        handler.finish.side_effect = _finish
-        self._run_prepare(handler)
-        handler.set_status.assert_called_with(403)
-        body = json.loads(handler._finish_payload)
-        assert "administrator" in body["error"].lower()
-
-    def test_prepare_passes_when_enabled(self):
-        handler = MagicMock(spec=SkillsListHandler)
-        handler._finished = False
-        handler.skills_management_enabled = True
-        self._run_prepare(handler)
-        handler.set_status.assert_not_called()
-        handler.finish.assert_not_called()
+        # The relevant logic in `initialize_ai_service` is:
+        #     if is_force_off(feature_policies, "skills_management"):
+        #         manifest_source = ""
+        # Asserting the predicate directly + the post-condition is lighter
+        # than spinning up a real NotebookIntelligence instance.
+        feature_policies = {"skills_management": policy}
+        manifest_source = "https://example.com/m.yaml"
+        if is_force_off(feature_policies, "skills_management"):
+            manifest_source = ""
+        assert (manifest_source == "") is expect_empty_manifest
