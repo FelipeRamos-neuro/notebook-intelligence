@@ -242,3 +242,98 @@ class TestImageContextInChatHistory:
         image_msg = history[0]
         assert isinstance(image_msg["content"], str)
         assert str(missing) in image_msg["content"]
+
+    def test_workspace_image_drag_reaches_vision_provider(
+        self, _thread, mock_nbi, mock_ai, tmp_path
+    ):
+        # File-browser drag of an image sets isImage=true and isUpload=false
+        # (no temp staging); the backend should still send the multimodal
+        # vision payload so OpenAI-vision providers see the image bytes.
+        mock_nbi.root_dir = str(tmp_path)
+        mock_ai.chat_model = None
+        mock_ai.is_claude_code_mode = False
+
+        image_bytes = b"\x89PNG\r\n\x1a\n" + b"\xfe\xed\xfa\xce" * 8
+        img_file = tmp_path / "diagram.png"
+        img_file.write_bytes(image_bytes)
+
+        ctx = _image_context(img_file)
+        ctx["isUpload"] = False
+        ctx["filePath"] = "diagram.png"  # workspace-relative, as the
+                                         # frontend file-browser handler sends.
+
+        handler = _make_handler()
+        history = _on_message(handler, [ctx])
+
+        image_msg = history[0]
+        assert isinstance(image_msg["content"], list)
+        assert image_msg["content"][1]["type"] == "image_url"
+        b64 = image_msg["content"][1]["image_url"]["url"].split(",", 1)[1]
+        assert base64.b64decode(b64) == image_bytes
+
+    def test_path_traversal_outside_workspace_is_rejected(
+        self, _thread, mock_nbi, mock_ai, tmp_path, caplog
+    ):
+        # A workspace-relative path that escapes via ``..`` must not read
+        # from outside root_dir. Create a sentinel file outside the
+        # workspace and try to attach it.
+        outside = tmp_path.parent / "secret.txt"
+        outside.write_bytes(b"do-not-read")
+
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        mock_nbi.root_dir = str(workspace)
+        mock_ai.chat_model = None
+        mock_ai.is_claude_code_mode = False
+
+        ctx = {
+            "isUpload": False,
+            "isImage": False,
+            "filePath": "../secret.txt",
+            "content": "do-not-read",  # client-provided body is ignored
+                                       # once the path check rejects.
+            "currentCellContents": None,
+            "startLine": 1,
+            "endLine": 1,
+        }
+
+        handler = _make_handler()
+        with caplog.at_level(logging.WARNING):
+            history = _on_message(handler, [ctx])
+
+        # Only the user prompt remains; the traversal context was dropped.
+        assert len(history) == 1
+        assert history[0]["role"] == "user"
+        assert "Rejecting out-of-workspace context path" in caplog.text
+
+    def test_absolute_path_outside_workspace_is_rejected(
+        self, _thread, mock_nbi, mock_ai, tmp_path, caplog
+    ):
+        # path.join silently returns the absolute path when the second
+        # arg is absolute, so a malformed payload could pass an absolute
+        # ``/etc/passwd`` without escaping ``root_dir``. Sandbox catches it.
+        outside = tmp_path.parent / "absolute-secret.txt"
+        outside.write_bytes(b"do-not-read")
+
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        mock_nbi.root_dir = str(workspace)
+        mock_ai.chat_model = None
+        mock_ai.is_claude_code_mode = False
+
+        ctx = {
+            "isUpload": False,
+            "isImage": False,
+            "filePath": str(outside),
+            "content": "do-not-read",
+            "currentCellContents": None,
+            "startLine": 1,
+            "endLine": 1,
+        }
+
+        handler = _make_handler()
+        with caplog.at_level(logging.WARNING):
+            history = _on_message(handler, [ctx])
+
+        assert len(history) == 1
+        assert "Rejecting out-of-workspace context path" in caplog.text

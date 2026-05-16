@@ -10,7 +10,7 @@ import React, {
   useState,
   memo
 } from 'react';
-import { ReactWidget } from '@jupyterlab/apputils';
+import { Notification, ReactWidget } from '@jupyterlab/apputils';
 import { UUID } from '@lumino/coreutils';
 
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js';
@@ -1116,6 +1116,7 @@ function SidebarComponent(props: any) {
     useState(0);
   const promptInputRef = useRef<HTMLTextAreaElement>(null);
   const autocompleteRef = useRef<HTMLDivElement>(null);
+  const sidebarRootRef = useRef<HTMLDivElement>(null);
   const atButtonRef = useRef<HTMLAnchorElement>(null);
   const [promptHistory, setPromptHistory] = useState<string[]>([]);
   // position on prompt history stack
@@ -1679,6 +1680,10 @@ function SidebarComponent(props: any) {
 
       if (newContextFiles.length > 0) {
         setSelectedContextFiles(prev => [...prev, ...newContextFiles]);
+        // Same reason as the lm-drop path: the gesture that initiated this
+        // (HTML5 drop, file dialog, image paste) often leaves focus outside
+        // the chat composer, so the next Enter goes somewhere unintended.
+        promptInputRef.current?.focus();
       }
     } finally {
       setIsUploadingFiles(false);
@@ -1768,6 +1773,189 @@ function SidebarComponent(props: any) {
   useEffect(() => {
     cleanupRemovedToolsFromToolSelections();
   }, [mcpServerEnabledState]);
+
+  // JupyterLab file-browser drag uses Lumino's lm-* CustomEvents (mime
+  // 'application/x-jupyter-icontents' carrying workspace-relative paths),
+  // not native HTML5 drag. We listen at the document level with capture
+  // phase + a containment check so intermediate widgets that
+  // stopPropagation in target phase can't swallow the event.
+  useEffect(() => {
+    const FILE_BROWSER_MIME = 'application/x-jupyter-icontents';
+
+    const isInsideSidebar = (event: Event): boolean => {
+      const root = sidebarRootRef.current;
+      if (!root) {
+        return false;
+      }
+      const target = event.target;
+      return target instanceof Node && root.contains(target);
+    };
+
+    const hasPaths = (event: Event): boolean => {
+      const mimeData = (
+        event as unknown as {
+          mimeData?: { hasData?: (key: string) => boolean };
+        }
+      ).mimeData;
+      return mimeData?.hasData?.(FILE_BROWSER_MIME) === true;
+    };
+
+    const dragEnter = (event: Event) => {
+      if (
+        !NBIAPI.getChatEnabled() ||
+        !hasPaths(event) ||
+        !isInsideSidebar(event)
+      ) {
+        return;
+      }
+      setIsDragOver(true);
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    const dragOver = (event: Event) => {
+      if (
+        !NBIAPI.getChatEnabled() ||
+        !hasPaths(event) ||
+        !isInsideSidebar(event)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      // Mirror the source's proposedAction. The JL file browser starts
+      // its Drag with supportedActions: 'move'; setting dropAction to a
+      // value outside that set falls through validateAction to 'none'
+      // and Lumino skips lm-drop on pointerup.
+      const drag = event as unknown as {
+        proposedAction?: string;
+        dropAction: string;
+      };
+      drag.dropAction = drag.proposedAction || 'move';
+    };
+
+    const dragLeave = (event: Event) => {
+      if (!NBIAPI.getChatEnabled() || !isInsideSidebar(event)) {
+        return;
+      }
+      // Only clear the overlay when the drag genuinely leaves the
+      // sidebar; ignore leaves that cross internal child boundaries.
+      const related = (event as unknown as { relatedTarget?: Node | null })
+        .relatedTarget;
+      if (related && sidebarRootRef.current?.contains(related)) {
+        return;
+      }
+      setIsDragOver(false);
+    };
+
+    const drop = (event: Event) => {
+      if (
+        !NBIAPI.getChatEnabled() ||
+        !hasPaths(event) ||
+        !isInsideSidebar(event)
+      ) {
+        return;
+      }
+      const dragEvent = event as unknown as {
+        mimeData: { getData: (key: string) => unknown };
+        proposedAction?: string;
+        dropAction: string;
+      };
+      const raw = dragEvent.mimeData.getData(FILE_BROWSER_MIME);
+      if (!Array.isArray(raw) || raw.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      dragEvent.dropAction = dragEvent.proposedAction || 'move';
+      setIsDragOver(false);
+      const paths = raw.filter((p): p is string => typeof p === 'string');
+      void attachWorkspacePaths(paths);
+    };
+
+    document.addEventListener('lm-dragenter', dragEnter, true);
+    document.addEventListener('lm-dragover', dragOver, true);
+    document.addEventListener('lm-dragleave', dragLeave, true);
+    document.addEventListener('lm-drop', drop, true);
+    return () => {
+      document.removeEventListener('lm-dragenter', dragEnter, true);
+      document.removeEventListener('lm-dragover', dragOver, true);
+      document.removeEventListener('lm-dragleave', dragLeave, true);
+      document.removeEventListener('lm-drop', drop, true);
+    };
+  }, []);
+
+  // Attach a list of workspace-relative paths (from JL file browser
+  // drag) as chat context. Images are attached as image context (with a
+  // base64 dataURL thumbnail) so the model can see them; text and
+  // notebook files are attached as content context.
+  const attachWorkspacePaths = async (paths: string[]) => {
+    if (paths.length === 0) {
+      return;
+    }
+    const contentsManager = props.getApp().serviceManager.contents;
+    const additions: ISelectedContextFile[] = [];
+    const errors: string[] = [];
+    await Promise.all(
+      paths.map(async path => {
+        try {
+          const model: any = await contentsManager.get(path, { content: true });
+          const mimetype: string = model.mimetype || '';
+          // Image branch: file is already on the server, so build a
+          // data URL from the base64 content for the thumbnail and let
+          // the backend resolve the workspace path. No upload needed.
+          if (model.format === 'base64' && mimetype.startsWith('image/')) {
+            additions.push({
+              content: '',
+              lineCount: 0,
+              path,
+              type: 'file',
+              isImage: true,
+              imageDataUrl: `data:${mimetype};base64,${model.content}`,
+              mimeType: mimetype
+            });
+            return;
+          }
+          const content = serializeWorkspaceFileContent(model);
+          if (content.trim() === '') {
+            throw new Error(`'${path}' has no content to attach.`);
+          }
+          additions.push({
+            content,
+            lineCount: countContentLines(content),
+            path,
+            type: model.type === 'notebook' ? 'notebook' : 'file'
+          });
+        } catch (error: any) {
+          errors.push(error?.message || `Failed to attach '${path}'.`);
+        }
+      })
+    );
+    if (additions.length > 0) {
+      // De-dupe inside the functional updater so it reads the freshest
+      // state. A stale closure on `selectedContextFiles` here would let
+      // the same path land twice when the user drops it a second time.
+      setSelectedContextFiles(previous => {
+        const existing = new Set(previous.map(f => f.path));
+        const fresh = additions.filter(a => !existing.has(a.path));
+        if (fresh.length === 0) {
+          return previous;
+        }
+        return [...previous, ...fresh].sort((lhs, rhs) =>
+          lhs.path.localeCompare(rhs.path)
+        );
+      });
+      // Move keyboard focus into the prompt so the user can immediately
+      // describe what they want done with the attached files.
+      promptInputRef.current?.focus();
+    }
+    if (errors.length > 0) {
+      // Match the terminal-drag error path (Notification toast) instead
+      // of slipping a chat-message-notice into the transcript, which
+      // can scroll out of view.
+      Notification.warning(`Could not attach: ${errors.join('; ')}`);
+    }
+  };
 
   useEffect(() => {
     const handler = () => {
@@ -3340,6 +3528,7 @@ function SidebarComponent(props: any) {
 
   return (
     <div
+      ref={sidebarRootRef}
       className={`sidebar${isDragOver ? ' drag-over' : ''}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}

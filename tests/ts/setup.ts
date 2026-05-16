@@ -11,3 +11,13 @@ if (typeof globalThis.TextDecoder === 'undefined') {
 if (typeof globalThis.TextEncoder === 'undefined') {
   globalThis.TextEncoder = TextEncoder as typeof globalThis.TextEncoder;
 }
+
+// jsdom doesn't expose DragEvent; @lumino/dragdrop references it at module
+// load. A subclass of MouseEvent keeps the `instanceof` chain one-way: a
+// real DragEvent is also a MouseEvent, but a plain MouseEvent isn't a
+// DragEvent, so tests that use `event instanceof DragEvent` to discriminate
+// drag from click still get the right answer.
+if (typeof (globalThis as { DragEvent?: unknown }).DragEvent === 'undefined') {
+  class DragEventShim extends MouseEvent {}
+  (globalThis as { DragEvent: unknown }).DragEvent = DragEventShim;
+}
