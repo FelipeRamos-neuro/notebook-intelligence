@@ -1286,8 +1286,12 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
       label: 'Claude Code',
       caption: 'Resume or start a Claude Code session',
       icon: claudeIcon,
-      isVisible: () =>
-        NBIAPI.config.isInClaudeCodeMode && NBIAPI.config.isClaudeCliAvailable,
+      // The launcher tile opens a Jupyter terminal that runs the
+      // `claude` CLI directly — it doesn't depend on NBI being in
+      // Claude Code chat mode (which gates the chat-sidebar SDK
+      // backend). CLI presence on PATH is the only real prerequisite
+      // (issue #230).
+      isVisible: () => NBIAPI.config.isClaudeCliAvailable,
       execute: async () => {
         class PickerWidget extends ReactWidget {
           getValue(): void {
