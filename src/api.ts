@@ -368,6 +368,10 @@ export class NBIConfig {
     return this.capabilities.github_copilot_cli_available === true;
   }
 
+  get isCodexCliAvailable(): boolean {
+    return this.capabilities.codex_cli_available === true;
+  }
+
   get chatFeedbackEnabled(): boolean {
     return this.capabilities.chat_feedback_enabled === true;
   }

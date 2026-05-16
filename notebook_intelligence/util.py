@@ -61,6 +61,11 @@ def resolve_copilot_cli_path() -> Optional[str]:
     return _resolve_cli_path("copilot", "NBI_GITHUB_COPILOT_CLI_PATH")
 
 
+def resolve_codex_cli_path() -> Optional[str]:
+    """OpenAI Codex CLI. NBI_CODEX_CLI_PATH overrides; else `codex` on PATH."""
+    return _resolve_cli_path("codex", "NBI_CODEX_CLI_PATH")
+
+
 def invalidate_cli_cache(name: Optional[str] = None) -> None:
     """Clear the memoized CLI-path cache. Pass a name to invalidate just one."""
     if name is None:

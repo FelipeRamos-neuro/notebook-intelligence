@@ -61,4 +61,5 @@ export namespace CommandIDs {
   export const openPiLauncher = 'notebook-intelligence:open-pi-launcher';
   export const openGitHubCopilotCliLauncher =
     'notebook-intelligence:open-github-copilot-cli-launcher';
+  export const openCodexLauncher = 'notebook-intelligence:open-codex-launcher';
 }
