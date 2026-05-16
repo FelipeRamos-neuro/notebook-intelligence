@@ -2212,19 +2212,7 @@ function SidebarComponent(props: any) {
     setChatMessages(newList);
 
     if (submitPrompt.startsWith('/clear')) {
-      setChatMessages([]);
-      setPrompt('');
-      setSelectedContextFiles([]);
-      setShowWorkspaceFilePicker(false);
-      resetChatId();
-      resetPrefixSuggestions();
-      setPromptHistory([]);
-      setPromptHistoryIndex(0);
-      NBIAPI.sendWebSocketMessage(
-        UUID.uuid4(),
-        RequestDataType.ClearChatHistory,
-        { chatId }
-      );
+      startNewChatSession();
       return;
     }
 
@@ -3029,6 +3017,72 @@ function SidebarComponent(props: any) {
   );
   const [chatEnabled, setChatEnabled] = useState(NBIAPI.getChatEnabled());
   const [skillsReloadedVisible, setSkillsReloadedVisible] = useState(false);
+  // Visible for a few seconds after the user starts a new chat session
+  // (either via the header button or `/clear`). The aria-live region
+  // below announces it to assistive tech.
+  const [newChatNoticeVisible, setNewChatNoticeVisible] = useState(false);
+  const newChatNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+
+  useEffect(() => {
+    return () => {
+      if (newChatNoticeTimerRef.current) {
+        clearTimeout(newChatNoticeTimerRef.current);
+      }
+    };
+  }, []);
+
+  const startNewChatSession = useCallback(() => {
+    // Reset every piece of per-conversation UI state and tell the server
+    // to drop its conversation history. Functionally equivalent to typing
+    // `/clear`, but reachable from the header button so the user doesn't
+    // have to remember the slash command (issue #237). Also useful when
+    // the Claude SDK client is wedged — restarting the session reconnects
+    // the agent.
+    if (copilotRequestInProgress) {
+      // Cancel any in-flight response before clearing local state. Without
+      // this, stream deltas tied to the old messageId keep arriving against
+      // an empty chat-messages list and silently re-populate it from the
+      // old conversation.
+      NBIAPI.sendWebSocketMessage(
+        lastMessageId.current,
+        RequestDataType.CancelChatRequest,
+        { chatId }
+      );
+      lastMessageId.current = '';
+      setCopilotRequestInProgress(false);
+    }
+    setChatMessages([]);
+    setPrompt('');
+    setSelectedContextFiles([]);
+    setShowWorkspaceFilePicker(false);
+    resetChatId();
+    resetPrefixSuggestions();
+    setPromptHistory([]);
+    setPromptHistoryIndex(0);
+    NBIAPI.sendWebSocketMessage(
+      UUID.uuid4(),
+      RequestDataType.ClearChatHistory,
+      {
+        chatId
+      }
+    );
+    setNewChatNoticeVisible(true);
+    if (newChatNoticeTimerRef.current) {
+      clearTimeout(newChatNoticeTimerRef.current);
+    }
+    newChatNoticeTimerRef.current = setTimeout(() => {
+      setNewChatNoticeVisible(false);
+      newChatNoticeTimerRef.current = null;
+    }, 3000);
+    // Move focus to the prompt textarea so the user can immediately type
+    // their first message in the fresh session. Defer past the React
+    // commit so the input has re-rendered with the cleared prompt value.
+    window.requestAnimationFrame(() => {
+      promptInputRef.current?.focus();
+    });
+  }, [chatId, copilotRequestInProgress, resetChatId, resetPrefixSuggestions]);
 
   useEffect(() => {
     const handler = () => {
@@ -3081,13 +3135,23 @@ function SidebarComponent(props: any) {
       <div className="sidebar-header">
         <div className="sidebar-title">Notebook Intelligence</div>
         {NBIAPI.config.isInClaudeCodeMode && (
-          <div
-            className="user-input-footer-button"
-            onClick={() => setShowClaudeSessionPicker(true)}
-            title="Resume previous Claude session"
-          >
-            <VscHistory />
-          </div>
+          <>
+            <div
+              className="user-input-footer-button"
+              onClick={() => startNewChatSession()}
+              title="Start a new chat session (restarts the Claude client)"
+              aria-label="Start a new chat session"
+            >
+              <VscAdd />
+            </div>
+            <div
+              className="user-input-footer-button"
+              onClick={() => setShowClaudeSessionPicker(true)}
+              title="Resume previous Claude session"
+            >
+              <VscHistory />
+            </div>
+          </>
         )}
         <div
           className="user-input-footer-button"
@@ -3096,11 +3160,14 @@ function SidebarComponent(props: any) {
           <VscSettingsGear />
         </div>
       </div>
-      <div className="nbi-skills-reloaded-banner-live" aria-live="polite">
+      <div className="nbi-status-banner-live" aria-live="polite">
         {skillsReloadedVisible && (
-          <div className="nbi-skills-reloaded-banner">
+          <div className="nbi-status-banner">
             Skills reloaded — applied to the current session.
           </div>
+        )}
+        {newChatNoticeVisible && (
+          <div className="nbi-status-banner">New chat session started.</div>
         )}
       </div>
       {!chatEnabled && !ghLoginRequired && (
