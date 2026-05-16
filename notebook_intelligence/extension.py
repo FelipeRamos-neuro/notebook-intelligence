@@ -199,6 +199,38 @@ def _resolve_bool_with_env(env_var_name: str, fallback: bool | None) -> bool:
     )
 
 
+def _resolve_positive_int_with_env(env_var_name: str, traitlet_value: int) -> int:
+    """Resolve a non-negative int tunable, falling back to the traitlet.
+
+    Unlike ``_resolve_bool_with_env`` this warns-and-clamps rather than
+    raising: int tunables are tuning parameters (size caps, intervals,
+    retention windows), and a typo in one is unambiguously "off-ish"
+    rather than security-gate-flipping. Negative values are clamped to
+    0 with a warning so callers see "feature disabled" rather than
+    silently treating the bad input as a positive cap.
+    """
+    env_value = os.environ.get(env_var_name, "").strip()
+    resolved = traitlet_value
+    if env_value:
+        try:
+            resolved = int(env_value)
+        except ValueError:
+            log.warning(
+                "Ignoring invalid %s=%r: must be a non-negative integer",
+                env_var_name,
+                env_value,
+            )
+            resolved = traitlet_value
+    if resolved < 0:
+        log.warning(
+            "%s resolved to a negative value (%d); clamping to 0",
+            env_var_name,
+            resolved,
+        )
+        return 0
+    return resolved
+
+
 # Single source of truth for the boolean policies. Each entry is
 # ``(policy_name, env_var, traitlet_attr)``. Drives env-var resolution, the
 # capabilities response, and the lock-rejection set in ConfigHandler.
@@ -2243,6 +2275,19 @@ class NotebookIntelligence(ExtensionApp):
         config=True,
     )
 
+    skill_max_archive_mb = Int(
+        default_value=100,
+        help="""
+        Per-archive on-wire size cap (megabytes) for skill bundles fetched
+        from GitHub. Requests exceeding this limit are rejected before
+        the archive is written to disk. Default is 100 MB; raise for
+        repos with sizable attachments (datasets, fixtures) and lower
+        for hardened deployments. Overridden by the
+        NBI_SKILL_MAX_ARCHIVE_MB environment variable.
+        """,
+        config=True,
+    )
+
     def initialize_settings(self):
         pass
 
@@ -2402,6 +2447,18 @@ class NotebookIntelligence(ExtensionApp):
         )
         PluginsBaseHandler.allow_github_plugin_import = _resolve_bool_with_env(
             "NBI_ALLOW_GITHUB_PLUGIN_IMPORT", self.allow_github_plugin_import
+        )
+        # Resolved on-wire cap for skill tarball fetches. The constant
+        # lives in skill_github_import.py because the fetch helper reads
+        # it directly; reassigning the module attribute here lets admins
+        # tune it without forking the import flow.
+        from notebook_intelligence import skill_github_import
+        skill_github_import.MAX_ARCHIVE_BYTES = (
+            _resolve_positive_int_with_env(
+                "NBI_SKILL_MAX_ARCHIVE_MB", self.skill_max_archive_mb
+            )
+            * 1024
+            * 1024
         )
         self._publish_policies(feature_policies, string_overrides)
         NotebookIntelligence.handlers = [

@@ -418,3 +418,95 @@ class TestFetchTarballAuth:
                 assert "not found" in str(exc_info.value)
 
 
+class _FakeSizedResponse:
+    """Mimics urllib's response just enough for _fetch_tarball's read()."""
+
+    def __init__(self, payload: bytes):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, n: int) -> bytes:
+        return self._payload[:n]
+
+
+class TestArchiveSizeCap:
+    """The on-wire cap is overridable via the module attribute (which the
+    extension reassigns from `skill_max_archive_mb` + NBI_SKILL_MAX_ARCHIVE_MB
+    at startup). Default is 100 MB; these tests pin the comparison logic
+    against a small override so we don't have to allocate 100 MB of bytes.
+    """
+
+    def test_default_cap_is_100mb(self):
+        from notebook_intelligence import skill_github_import
+
+        assert skill_github_import.MAX_ARCHIVE_BYTES == 100 * 1024 * 1024
+
+    def test_accepts_payload_at_cap(self):
+        from notebook_intelligence import skill_github_import
+
+        original = skill_github_import.MAX_ARCHIVE_BYTES
+        skill_github_import.MAX_ARCHIVE_BYTES = 1024  # 1 KB for the test
+        try:
+            # _fetch_tarball reads MAX + 1 bytes and rejects if len > MAX.
+            # An exactly-MAX payload yields MAX bytes from the response and
+            # passes the check.
+            payload = b"x" * 1024
+            with patch(
+                "notebook_intelligence.skill_github_import._get_github_token",
+                return_value=None,
+            ):
+                with patch(
+                    "notebook_intelligence.skill_github_import._urlopen_github",
+                    return_value=_FakeSizedResponse(payload),
+                ):
+                    result = _fetch_tarball("owner", "repo", None)
+            assert result == payload
+        finally:
+            skill_github_import.MAX_ARCHIVE_BYTES = original
+
+    def test_rejects_payload_over_cap(self):
+        from notebook_intelligence import skill_github_import
+
+        original = skill_github_import.MAX_ARCHIVE_BYTES
+        skill_github_import.MAX_ARCHIVE_BYTES = 1024
+        try:
+            oversize = b"x" * (1024 + 100)
+            with patch(
+                "notebook_intelligence.skill_github_import._get_github_token",
+                return_value=None,
+            ):
+                with patch(
+                    "notebook_intelligence.skill_github_import._urlopen_github",
+                    return_value=_FakeSizedResponse(oversize),
+                ):
+                    with pytest.raises(ValueError, match="exceeds size limit"):
+                        _fetch_tarball("owner", "repo", None)
+        finally:
+            skill_github_import.MAX_ARCHIVE_BYTES = original
+
+    def test_error_message_reflects_current_cap(self):
+        from notebook_intelligence import skill_github_import
+
+        original = skill_github_import.MAX_ARCHIVE_BYTES
+        skill_github_import.MAX_ARCHIVE_BYTES = 2 * 1024 * 1024  # 2 MB
+        try:
+            oversize = b"x" * (3 * 1024 * 1024)
+            with patch(
+                "notebook_intelligence.skill_github_import._get_github_token",
+                return_value=None,
+            ):
+                with patch(
+                    "notebook_intelligence.skill_github_import._urlopen_github",
+                    return_value=_FakeSizedResponse(oversize),
+                ):
+                    with pytest.raises(ValueError, match=r"\b2 MB\b"):
+                        _fetch_tarball("owner", "repo", None)
+        finally:
+            skill_github_import.MAX_ARCHIVE_BYTES = original
+
+

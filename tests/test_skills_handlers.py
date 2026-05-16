@@ -354,6 +354,40 @@ class TestResolveBoolWithEnv:
         assert ext_module._resolve_bool_with_env("NBI_TEST_FLAG", None) is False
 
 
+class TestResolvePositiveIntWithEnv:
+    def test_unset_env_returns_traitlet(self, monkeypatch):
+        monkeypatch.delenv("NBI_TEST_CAP", raising=False)
+        assert ext_module._resolve_positive_int_with_env("NBI_TEST_CAP", 100) == 100
+
+    def test_valid_env_overrides_traitlet(self):
+        with patch.dict("os.environ", {"NBI_TEST_CAP": "250"}):
+            assert (
+                ext_module._resolve_positive_int_with_env("NBI_TEST_CAP", 100) == 250
+            )
+
+    def test_invalid_env_warns_and_falls_back(self, caplog):
+        with patch.dict("os.environ", {"NBI_TEST_CAP": "huge"}):
+            with caplog.at_level("WARNING"):
+                result = ext_module._resolve_positive_int_with_env(
+                    "NBI_TEST_CAP", 100
+                )
+        assert result == 100
+        assert "Ignoring invalid NBI_TEST_CAP" in caplog.text
+
+    def test_negative_env_clamps_to_zero_with_warning(self, caplog):
+        with patch.dict("os.environ", {"NBI_TEST_CAP": "-5"}):
+            with caplog.at_level("WARNING"):
+                result = ext_module._resolve_positive_int_with_env(
+                    "NBI_TEST_CAP", 100
+                )
+        assert result == 0
+        assert "negative" in caplog.text.lower()
+
+    def test_zero_passes_through(self):
+        with patch.dict("os.environ", {"NBI_TEST_CAP": "0"}):
+            assert ext_module._resolve_positive_int_with_env("NBI_TEST_CAP", 100) == 0
+
+
 class TestResolveCsvAppended:
     """The csv env-var merge for additive list traitlets (e.g.
     ``additional_skipped_workspace_directories``). Env appends to the

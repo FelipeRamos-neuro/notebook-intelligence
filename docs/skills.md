@@ -42,11 +42,12 @@ For organization-wide deployments (e.g., Kubeflow notebooks), NBI can install an
 
 Configure via environment variables (also available as traitlets on `NotebookIntelligence`):
 
-| Variable                       | Description                                                                                        |
-| ------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `NBI_SKILLS_MANIFEST`          | URL (`https://...`) or local filesystem path to the manifest. Empty or unset disables the feature. |
-| `NBI_SKILLS_MANIFEST_INTERVAL` | Seconds between reconciles. Default `86400` (24 hours). Reconciliation also runs once at startup.  |
-| `NBI_MANAGED_SKILLS_TOKEN`     | Optional bearer token used for **all** managed-skills GitHub operations (see below).               |
+| Variable                       | Description                                                                                                                                                                             |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NBI_SKILLS_MANIFEST`          | URL (`https://...`) or local filesystem path to the manifest. Empty or unset disables the feature.                                                                                      |
+| `NBI_SKILLS_MANIFEST_INTERVAL` | Seconds between reconciles. Default `86400` (24 hours). Reconciliation also runs once at startup.                                                                                       |
+| `NBI_MANAGED_SKILLS_TOKEN`     | Optional bearer token used for **all** managed-skills GitHub operations (see below).                                                                                                    |
+| `NBI_SKILL_MAX_ARCHIVE_MB`     | Per-archive on-wire size cap (megabytes) for skill bundles fetched from GitHub. Default `100`. Applies to both user imports and managed-skills tarballs. Set to `0` to disable the cap. |
 
 When set, `NBI_MANAGED_SKILLS_TOKEN` scopes to fetching the manifest, probing commits, and downloading skill tarballs. User-initiated imports (the Import-from-GitHub dialog, `POST /skills/import`) do **not** see this token and continue to use `GITHUB_TOKEN` → `GH_TOKEN` → `gh` CLI auth. When `NBI_MANAGED_SKILLS_TOKEN` is unset, managed operations fall back to that same chain. When it is set and a managed operation fails with an auth error, it fails loudly (no retry with the fallback chain) so misconfigured or expired tokens stay visible to the admin. The minimum required GitHub scope is `contents:read`.
 

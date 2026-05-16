@@ -34,7 +34,9 @@ from notebook_intelligence.util import resolve_github_token
 
 log = logging.getLogger(__name__)
 
-MAX_ARCHIVE_BYTES = 10 * 1024 * 1024  # 10 MB on-wire
+MAX_ARCHIVE_BYTES = 100 * 1024 * 1024  # 100 MB on-wire (overridable via
+# `notebook_intelligence.extension._setup_handlers` reading the
+# `skill_max_archive_mb` traitlet and NBI_SKILL_MAX_ARCHIVE_MB env var).
 MAX_EXTRACTED_BYTES = 20 * 1024 * 1024  # 20 MB after decompression
 FETCH_TIMEOUT_SECONDS = 30
 
