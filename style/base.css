@@ -271,6 +271,25 @@
   color: var(--jp-ui-font-color2);
 }
 
+/* Reset native chrome on the footer buttons that now render as <button>
+   so they line up visually with the older <div onClick> variants. */
+button.user-input-footer-button {
+  background: none;
+  border: none;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The slash-button (mentions and commands) renders text rather than an
+   svg, so size and center the glyph instead of relying on the svg rule. */
+.user-input-footer-slash-button {
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 1;
+}
+
 .user-input-footer-button.tools-button {
   width: auto;
   border: 1px solid var(--jp-border-color0);
