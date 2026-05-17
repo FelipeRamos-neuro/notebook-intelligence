@@ -690,7 +690,7 @@ class ClaudeCodeClient():
                                                     # ToolUseBlock is anomalous (cross-
                                                     # query stragglers, sub-agent
                                                     # results routed through a parent
-                                                    # tool_use_id). A bare "✓ Tool"
+                                                    # tool_use_id). A bare "Tool ✓"
                                                     # without context is more
                                                     # confusing than silence, so we
                                                     # only surface results we can
@@ -701,7 +701,7 @@ class ClaudeCodeClient():
                                                     if label is None:
                                                         continue
                                                     icon = "✗" if block.is_error else "✓"
-                                                    response.stream(ProgressData(f"{icon} {label}"))
+                                                    response.stream(ProgressData(f"{label} {icon}"))
                                     else:
                                         pass
                         except Exception as e:
