@@ -374,6 +374,21 @@ export class NBIConfig {
     return this.capabilities.codex_cli_available === true;
   }
 
+  isCodingAgentLauncherDisabledByPolicy(launcherId: string): boolean {
+    // Fail closed when the field is missing or malformed: an admin denylist
+    // must not silently disappear if capabilities haven't loaded yet or a
+    // backend regression drops the field. The companion `is*CliAvailable`
+    // getters already default to false until capabilities arrive, so on
+    // first paint the tile is hidden regardless; this just ensures the
+    // policy gate stays in effect even if a future change pre-seeds those
+    // flags.
+    const list = this.capabilities.disabled_coding_agent_launchers;
+    if (Array.isArray(list)) {
+      return list.includes(launcherId);
+    }
+    return true;
+  }
+
   get chatFeedbackEnabled(): boolean {
     return this.capabilities.chat_feedback_enabled === true;
   }

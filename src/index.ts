@@ -1275,8 +1275,12 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
       // `claude` CLI directly — it doesn't depend on NBI being in
       // Claude Code chat mode (which gates the chat-sidebar SDK
       // backend). CLI presence on PATH is the only real prerequisite
-      // (issue #230).
-      isVisible: () => NBIAPI.config.isClaudeCliAvailable,
+      // (issue #230). Honor the admin policy on the same gate as the
+      // four CLI-launcher tiles so an admin force-off blocks the
+      // command palette too, not just the launcher tile.
+      isVisible: () =>
+        NBIAPI.config.isClaudeCliAvailable &&
+        !NBIAPI.config.isCodingAgentLauncherDisabledByPolicy('claude-code'),
       execute: async () => {
         class PickerWidget extends ReactWidget {
           getValue(): void {
@@ -1348,7 +1352,9 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
     syncLauncherEntry(
       CommandIDs.openClaudeCodeLauncher,
       { category: 'Coding Agent', rank: -1 },
-      () => NBIAPI.config.isClaudeCliAvailable
+      () =>
+        NBIAPI.config.isClaudeCliAvailable &&
+        !NBIAPI.config.isCodingAgentLauncherDisabledByPolicy('claude-code')
     );
 
     // Additional coding-agent CLIs (issue #260). First-phase scope: detect
@@ -1388,7 +1394,9 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
       caption: 'Start an opencode session in a Jupyter terminal',
       icon: terminalIcon,
       cliCommand: 'opencode',
-      isAvailable: () => NBIAPI.config.isOpenCodeCliAvailable
+      isAvailable: () =>
+        NBIAPI.config.isOpenCodeCliAvailable &&
+        !NBIAPI.config.isCodingAgentLauncherDisabledByPolicy('opencode')
     });
 
     registerAgentCliLauncher({
@@ -1397,7 +1405,9 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
       caption: 'Start a Pi session in a Jupyter terminal',
       icon: terminalIcon,
       cliCommand: 'pi',
-      isAvailable: () => NBIAPI.config.isPiCliAvailable
+      isAvailable: () =>
+        NBIAPI.config.isPiCliAvailable &&
+        !NBIAPI.config.isCodingAgentLauncherDisabledByPolicy('pi')
     });
 
     registerAgentCliLauncher({
@@ -1406,7 +1416,11 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
       caption: 'Start a GitHub Copilot CLI session in a Jupyter terminal',
       icon: githubCopilotIcon,
       cliCommand: 'copilot',
-      isAvailable: () => NBIAPI.config.isGitHubCopilotCliAvailable
+      isAvailable: () =>
+        NBIAPI.config.isGitHubCopilotCliAvailable &&
+        !NBIAPI.config.isCodingAgentLauncherDisabledByPolicy(
+          'github-copilot-cli'
+        )
     });
 
     registerAgentCliLauncher({
@@ -1415,7 +1429,9 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
       caption: 'Start an OpenAI Codex CLI session in a Jupyter terminal',
       icon: terminalIcon,
       cliCommand: 'codex',
-      isAvailable: () => NBIAPI.config.isCodexCliAvailable
+      isAvailable: () =>
+        NBIAPI.config.isCodexCliAvailable &&
+        !NBIAPI.config.isCodingAgentLauncherDisabledByPolicy('codex')
     });
 
     // Refresh the Claude Code command's palette-visibility state when the
