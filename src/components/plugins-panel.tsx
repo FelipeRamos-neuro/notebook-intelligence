@@ -298,7 +298,7 @@ function PluginRow(props: {
     <div className="nbi-skill-row">
       <div className="nbi-skill-row-main">
         <div className="nbi-skill-row-name">
-          {String(plugin.name ?? '(unnamed)')}
+          {String(plugin.id ?? '(unnamed)')}
           {!enabled && <span> — disabled</span>}
         </div>
         {description && (
