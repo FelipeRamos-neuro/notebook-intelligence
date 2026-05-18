@@ -287,6 +287,16 @@ button.user-input-footer-button {
   justify-content: center;
 }
 
+/* Visible focus ring for keyboard users. :focus-visible keeps it from
+   firing on a plain click. The 2px outline + 1px offset mirrors how
+   JupyterLab's own toolbar buttons signal focus. */
+.user-input-footer-button:focus-visible {
+  outline: 2px solid var(--jp-brand-color1, #2196f3);
+  outline-offset: 1px;
+  border-radius: 3px;
+  color: var(--jp-ui-font-color1);
+}
+
 /* The slash-button (mentions and commands) renders text rather than an
    svg, so size and center the glyph instead of relying on the svg rule. */
 .user-input-footer-slash-button {
