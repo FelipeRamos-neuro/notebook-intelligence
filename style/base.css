@@ -277,21 +277,24 @@
 }
 
 /* Reset native chrome on the footer buttons that now render as <button>
-   so they line up visually with the older <div onClick> variants. */
+   so they line up visually with the older <div onClick> variants.
+   `line-height: 1` keeps the tools-button badge from drifting a pixel
+   relative to the icon when rendered inside a button vs a div. */
 button.user-input-footer-button {
   background: none;
   border: none;
   font: inherit;
+  line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
 /* Visible focus ring for keyboard users. :focus-visible keeps it from
-   firing on a plain click. The 2px outline + 1px offset mirrors how
-   JupyterLab's own toolbar buttons signal focus. */
+   firing on a plain click. Matches the brand-color focus indicator
+   the other NBI buttons use elsewhere in this stylesheet. */
 .user-input-footer-button:focus-visible {
-  outline: 2px solid var(--jp-brand-color1, #2196f3);
+  outline: 2px solid var(--jp-brand-color1);
   outline-offset: 1px;
   border-radius: 3px;
   color: var(--jp-ui-font-color1);

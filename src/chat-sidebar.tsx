@@ -3565,8 +3565,8 @@ function SidebarComponent(props: any) {
               type="button"
               className="user-input-footer-button"
               onClick={() => setShowClaudeSessionPicker(true)}
-              title="Resume previous Claude session"
               aria-label="Resume previous Claude session"
+              title="Resume a Claude session you started earlier in this workspace"
             >
               <VscHistory />
             </button>
@@ -3576,8 +3576,8 @@ function SidebarComponent(props: any) {
           type="button"
           className="user-input-footer-button"
           onClick={() => handleSettingsButtonClick()}
-          title="Open Notebook Intelligence settings"
           aria-label="Open Notebook Intelligence settings"
+          title="Configure providers, API keys, MCP servers, and skills"
         >
           <VscSettingsGear />
         </button>
