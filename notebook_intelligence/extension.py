@@ -944,10 +944,16 @@ class ClaudeMCPBaseHandler(PolicyGatedHandler):
         FileNotFoundError: 404,
         TimeoutError: 504,
     }
+    # Set once at startup from the merged (traitlet + env) admin allowlist.
+    # Empty list means no enforcement; consult ``AIServiceManager``.
+    mcp_stdio_command_allowlist: list = []
 
     @property
     def manager(self) -> "ClaudeMCPManager":
-        return ClaudeMCPManager(working_dir=get_jupyter_root_dir() or None)
+        return ClaudeMCPManager(
+            working_dir=get_jupyter_root_dir() or None,
+            stdio_command_allowlist=self.mcp_stdio_command_allowlist,
+        )
 
 
 class ClaudeMCPListHandler(ClaudeMCPBaseHandler):
@@ -2444,6 +2450,40 @@ class NotebookIntelligence(ExtensionApp):
         config=True,
     )
 
+    mcp_stdio_command_allowlist = List(
+        trait=Unicode(),
+        default_value=None,
+        help="""
+        Regex allowlist for the stdio MCP server `command` field. When
+        non-empty, every stdio MCP server (added via Claude `mcp add`
+        and loaded from `mcp.json`) must match at least one pattern;
+        otherwise the admin gate rejects the server. Empty list (the
+        default) means no enforcement.
+
+        Patterns are matched with `re.search`. Anchor with `^...$` to
+        require an exact binary, otherwise `'uv'` matches both `uv` and
+        `uvtool`. Anchor on an absolute path (`'^/usr/local/bin/uv$'`)
+        if you want to defeat PATH-poisoning that points at a different
+        binary with the same basename. The complementary `env` denylist
+        (PATH, LD_PRELOAD, PYTHONPATH, NODE_OPTIONS, etc.) is always
+        applied to stdio servers regardless of this setting.
+
+        Patterns can be added per pod via the
+        `NBI_MCP_STDIO_COMMAND_ALLOWLIST` environment variable (CSV;
+        appends to this list).
+
+        Scope: this gate validates the binary `command` only. `args`
+        flow through unchecked, so an allowlist that permits `npx` will
+        still accept `args: ['-y', 'evil-pkg']`. Admins who need
+        argv-level control should point `command` at a wrapper script
+        they own that bakes the safe argv in.
+
+        Example: ['^uv$', '^uvx$', '^npx$', '^/usr/local/bin/.*']
+        """,
+        allow_none=True,
+        config=True,
+    )
+
     allow_enabling_coding_agent_launchers_with_env = Bool(
         default_value=False,
         help="""
@@ -2842,6 +2882,10 @@ class NotebookIntelligence(ExtensionApp):
                 log.warning(
                     "Ignoring invalid NBI_SKILLS_MANIFEST_INTERVAL=%r", interval_env
                 )
+        mcp_command_allowlist = _resolve_csv_appended(
+            "NBI_MCP_STDIO_COMMAND_ALLOWLIST",
+            self.mcp_stdio_command_allowlist,
+        )
         ai_service_manager = AIServiceManager({
             "server_root_dir": server_root_dir,
             "skills_manifest_sources": manifest_sources,
@@ -2849,6 +2893,7 @@ class NotebookIntelligence(ExtensionApp):
             "managed_skills_token": managed_token,
             "feature_policies": feature_policies,
             "string_overrides": string_overrides,
+            "mcp_stdio_command_allowlist": mcp_command_allowlist,
         })
 
     def initialize_templates(self):
@@ -2970,6 +3015,9 @@ class NotebookIntelligence(ExtensionApp):
         )
         ClaudeMCPBaseHandler.claude_mcp_management_enabled = not is_force_off(
             feature_policies, "claude_mcp_management"
+        )
+        ClaudeMCPBaseHandler.mcp_stdio_command_allowlist = (
+            ai_service_manager.get_mcp_stdio_command_allowlist()
         )
         PluginsBaseHandler.claude_plugins_management_enabled = not is_force_off(
             feature_policies, "claude_plugins_management"
