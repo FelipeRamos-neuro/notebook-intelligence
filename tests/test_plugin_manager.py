@@ -70,6 +70,138 @@ class TestIsGithubMarketplaceSource:
         assert is_github_marketplace_source(source) is False
 
 
+class TestIsGithubMarketplaceSourceEnterprise:
+    """When NBI_GITHUB_ENTERPRISE_HOSTS is configured, the detector treats
+    matching hostnames as GitHub for purposes of the
+    ``allow_github_plugin_import`` policy gate and the GitHub-token
+    injection chain.
+
+    Token semantics (cookie-domain shape):
+      - bare token (``github.acme.com``) -> exact host match only
+      - leading-dot token (``.acme.com``) -> any subdomain of acme.com
+    """
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "https://github.acme.com/owner/repo",
+            "https://github.acme.com/owner/repo.git",
+            "git://github.acme.com/owner/repo",
+            "ssh://git@github.acme.com/owner/repo",
+            "git@github.acme.com:owner/repo",
+            "git@github.acme.com:owner/repo.git",
+            "HTTPS://GitHub.Acme.COM/owner/repo",  # case-insensitive URL
+            "git@GitHub.Acme.COM:owner/repo",  # case-insensitive SCP
+        ],
+    )
+    def test_recognizes_configured_ghe_host(self, source, monkeypatch):
+        monkeypatch.setenv(
+            "NBI_GITHUB_ENTERPRISE_HOSTS", "github.acme.com"
+        )
+        assert is_github_marketplace_source(source) is True
+
+    def test_exact_match_rejects_subdomain_by_default(self, monkeypatch):
+        # Without a leading dot, a token is an EXACT host match. An admin
+        # who lists only ``github.acme.com`` is opting OUT of subdomain
+        # matching; ``ghe.acme.com`` would not pick up the GitHub-token
+        # injection. This is the safer default — broad suffix matching
+        # would silently inject GITHUB_TOKEN into any *.acme.com corp
+        # service the user happened to point marketplace-add at.
+        monkeypatch.setenv("NBI_GITHUB_ENTERPRISE_HOSTS", "github.acme.com")
+        assert is_github_marketplace_source("https://github.acme.com/o/r") is True
+        assert is_github_marketplace_source("https://ghe.acme.com/o/r") is False
+        assert is_github_marketplace_source("https://jira.acme.com/o/r") is False
+
+    def test_leading_dot_opts_into_subdomain_match(self, monkeypatch):
+        # An admin who actually wants the broad behavior writes the apex
+        # with a leading dot, matching the cookie-domain convention.
+        monkeypatch.setenv("NBI_GITHUB_ENTERPRISE_HOSTS", ".acme.com")
+        assert is_github_marketplace_source("https://github.acme.com/o/r") is True
+        assert is_github_marketplace_source("https://ghe.acme.com/o/r") is True
+        # The bare apex is NOT included; admin must list it explicitly
+        # to be sure that's what they want.
+        assert is_github_marketplace_source("https://acme.com/o/r") is False
+
+    def test_lookalike_url_still_rejected(self, monkeypatch):
+        monkeypatch.setenv("NBI_GITHUB_ENTERPRISE_HOSTS", "github.acme.com")
+        assert is_github_marketplace_source("https://example.com/o/r") is False
+        # Attacker-controlled lookalike whose host is NOT the declared
+        # host nor a subdomain via the leading-dot opt-in.
+        assert is_github_marketplace_source("https://github.acme.com.evil.test/x") is False
+
+    def test_lookalike_scp_still_rejected(self, monkeypatch):
+        # Same lookalike-rejection property for the SCP shorthand branch,
+        # which is a separate string-parsing path from the URL branch.
+        monkeypatch.setenv("NBI_GITHUB_ENTERPRISE_HOSTS", "github.acme.com")
+        assert is_github_marketplace_source("git@github.acme.com.evil.test:o/r") is False
+
+    def test_csv_with_multiple_hosts(self, monkeypatch):
+        monkeypatch.setenv(
+            "NBI_GITHUB_ENTERPRISE_HOSTS",
+            "github.acme.com, ghe.example.com ,git.internal",
+        )
+        assert is_github_marketplace_source("https://github.acme.com/o/r") is True
+        assert is_github_marketplace_source("https://ghe.example.com/o/r") is True
+        assert is_github_marketplace_source("ssh://git@git.internal/o/r") is True
+        # Non-listed host still rejected.
+        assert is_github_marketplace_source("https://github.other.test/o/r") is False
+
+    def test_csv_mixing_exact_and_subdomain_tokens(self, monkeypatch):
+        # An admin can mix exact and subdomain tokens in one env value.
+        monkeypatch.setenv(
+            "NBI_GITHUB_ENTERPRISE_HOSTS",
+            "github.acme.com,.example.com",
+        )
+        # Exact match on the first token.
+        assert is_github_marketplace_source("https://github.acme.com/o/r") is True
+        # Subdomain match on the second token.
+        assert is_github_marketplace_source("https://ghe.example.com/o/r") is True
+        # Sibling of the exact-match token is NOT matched (no leading dot).
+        assert is_github_marketplace_source("https://ghe.acme.com/o/r") is False
+
+    def test_empty_env_preserves_default_behavior(self, monkeypatch):
+        # Empty env -> only public github.com is recognized. Pins
+        # backward compatibility: deployments that don't set the env see
+        # no change.
+        monkeypatch.delenv("NBI_GITHUB_ENTERPRISE_HOSTS", raising=False)
+        assert is_github_marketplace_source("https://github.acme.com/o/r") is False
+        assert is_github_marketplace_source("https://github.com/o/r") is True
+
+    def test_trailing_dot_fqdn_still_matches(self, monkeypatch):
+        # urllib.parse.urlparse preserves the trailing dot on
+        # `github.com.`, which would otherwise bypass exact-match
+        # detection. The host-normalize helper strips the trailing dot.
+        monkeypatch.delenv("NBI_GITHUB_ENTERPRISE_HOSTS", raising=False)
+        assert is_github_marketplace_source("https://github.com./o/r") is True
+        monkeypatch.setenv("NBI_GITHUB_ENTERPRISE_HOSTS", "github.acme.com")
+        assert is_github_marketplace_source("https://github.acme.com./o/r") is True
+        assert is_github_marketplace_source("git@github.acme.com.:o/r") is True
+
+    def test_url_with_embedded_userinfo_is_rejected(self, monkeypatch):
+        # `https://user@github.com/o/r` resolves to host=github.com via
+        # urlparse, but a non-`git` userinfo is the lookalike-attack
+        # shape. The detector refuses to authorize token injection on
+        # such URLs even though the host extracted is github.com.
+        monkeypatch.delenv("NBI_GITHUB_ENTERPRISE_HOSTS", raising=False)
+        assert (
+            is_github_marketplace_source(
+                "https://attacker@github.com/owner/repo"
+            )
+            is False
+        )
+        assert (
+            is_github_marketplace_source(
+                "https://user:pw@github.com/owner/repo"
+            )
+            is False
+        )
+        # `git` is the conventional SSH user for git, so ssh://git@...
+        # remains accepted (regression guard for the legitimate path).
+        assert (
+            is_github_marketplace_source("ssh://git@github.com/o/r") is True
+        )
+
+
 class TestIsAcceptableMarketplaceSource:
     @pytest.mark.parametrize(
         "source",
@@ -333,6 +465,50 @@ class TestPluginManagerWrites:
         assert env["GITHUB_TOKEN"] == "ghp_testtoken"
         assert env["GH_TOKEN"] == "ghp_testtoken"
         assert "ghp_testtoken" not in " ".join(captured["argv"])
+
+    def test_add_marketplace_blocks_ghe_url_when_disabled(
+        self, fake_cli, monkeypatch
+    ):
+        # End-to-end pin: the policy gate at add_marketplace -> detector
+        # closes for GHE URLs when allow_github_plugin_import is False.
+        # Without the GHE-aware detector this would silently fall through
+        # to "not GitHub" and reach the CLI shell-out.
+        monkeypatch.setenv("NBI_GITHUB_ENTERPRISE_HOSTS", "github.acme.com")
+        _stub_subprocess(monkeypatch, captured={})
+        manager = PluginManager()
+        with pytest.raises(PermissionError, match="GitHub"):
+            asyncio.run(
+                manager.add_marketplace(
+                    source="https://github.acme.com/owner/repo",
+                    scope="user",
+                    allow_github=False,
+                )
+            )
+
+    def test_add_marketplace_injects_token_for_ghe_source(
+        self, fake_cli, monkeypatch
+    ):
+        # End-to-end pin: GHE URLs go through the token-injection chain
+        # when the host is declared. Without the detector extension,
+        # the env block would be empty and the git auth would fall
+        # through to anonymous (which fails for private GHE).
+        monkeypatch.setenv("NBI_GITHUB_ENTERPRISE_HOSTS", "github.acme.com")
+        captured: dict = {}
+        _stub_subprocess(monkeypatch, captured=captured)
+        monkeypatch.setattr(
+            "notebook_intelligence.plugin_manager.resolve_github_token",
+            lambda: "ghp_ghetoken",
+        )
+        manager = PluginManager()
+        asyncio.run(
+            manager.add_marketplace(
+                source="https://github.acme.com/owner/repo", scope="user"
+            )
+        )
+        env = captured["kwargs"]["env"]
+        assert env["GITHUB_TOKEN"] == "ghp_ghetoken"
+        assert env["GH_TOKEN"] == "ghp_ghetoken"
+        assert "ghp_ghetoken" not in " ".join(captured["argv"])
 
     def test_add_marketplace_skips_token_injection_for_local_source(
         self, fake_cli, monkeypatch

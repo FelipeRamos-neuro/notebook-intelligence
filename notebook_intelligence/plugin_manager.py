@@ -52,6 +52,85 @@ _GITHUB_PREFIX_SCHEMES = ("github:", "git@github.com:")
 _ALLOWED_NON_GITHUB_SCHEMES = ("https://",)
 _LOCAL_PREFIXES = (".", "/", "~")
 
+# Hostnames the admin has declared as additional "is GitHub" hosts. The
+# default detector only matches github.com because plugin marketplace
+# sources hosted on GitHub Enterprise live on customer-controlled
+# hostnames (github.acme.com, ghe.example.com, etc.). Without this
+# extension, a GHE source falls through to anonymous git auth AND
+# bypasses the `allow_github_plugin_import` policy gate, because the
+# detector returns False.
+_GITHUB_ENTERPRISE_HOSTS_ENV = "NBI_GITHUB_ENTERPRISE_HOSTS"
+
+
+def _enterprise_github_hosts() -> tuple[str, ...]:
+    """Parse ``NBI_GITHUB_ENTERPRISE_HOSTS`` into a tuple of lowercased
+    tokens. CSV with whitespace tolerance. Returns () when unset.
+
+    Read on every call so an admin who updates pod env via in-place
+    rotation gets the new list on the next marketplace add; the parse is
+    cheap (small list, infrequent path) and keeping it stateless avoids
+    threading the resolved set through every call site.
+
+    Token shape mirrors cookie-domain semantics: a bare token matches
+    the exact host only; a leading-dot token (``.acme.com``) matches any
+    subdomain of that domain. Broad suffix matching is opt-in because
+    declaring a bare apex like ``acme.com`` and having it match every
+    ``*.acme.com`` corp service would silently ship ``GITHUB_TOKEN``
+    into the env of every marketplace add against jira / artifactory /
+    etc.; admins who actually want that must spell it out.
+    """
+    raw = os.environ.get(_GITHUB_ENTERPRISE_HOSTS_ENV, "")
+    return tuple(
+        h.strip().lower() for h in raw.split(",") if h.strip()
+    )
+
+
+def _normalize_host(host: str) -> str:
+    """Lowercase and strip a trailing dot from a hostname.
+
+    ``urllib.parse.urlparse`` preserves the trailing dot on FQDNs
+    (``github.com.``), and SCP shorthand carries through whatever the
+    user typed. Both surfaces feed into the GHE matcher's exact-equality
+    check, so a trailing dot would silently bypass detection. Normalize
+    once at the entry to ``_is_github_host`` so the rest of the
+    pipeline sees the canonical form.
+    """
+    return (host or "").lower().rstrip(".")
+
+
+def _host_matches_enterprise(host: str) -> bool:
+    """True when ``host`` matches a configured GHE token.
+
+    Token shape:
+      - ``foo.bar.com``   matches exactly ``foo.bar.com``.
+      - ``.bar.com``      matches any subdomain of ``bar.com`` (NOT the
+                          bare ``bar.com`` itself, by design — the admin
+                          must list it explicitly if they want it).
+    """
+    if not host:
+        return False
+    for token in _enterprise_github_hosts():
+        if token.startswith("."):
+            # Leading-dot opt-in: subdomain match only.
+            if host.endswith(token):
+                return True
+        else:
+            if host == token:
+                return True
+    return False
+
+
+def _is_github_host(host: str) -> bool:
+    """True if ``host`` is github.com (or a github.com subdomain), or
+    matches a configured GHE token. Single source of truth for the URL
+    and SCP branches of `is_github_marketplace_source`."""
+    host = _normalize_host(host)
+    if not host:
+        return False
+    if host == "github.com" or host.endswith(".github.com"):
+        return True
+    return _host_matches_enterprise(host)
+
 # Substrings the underlying `git`/`claude` produce when auth is missing
 # or wrong. Used to upgrade an opaque CLI error into a remediation hint
 # pointing the user at GITHUB_TOKEN / `gh auth login`.
@@ -71,15 +150,18 @@ def _looks_like_auth_failure(err: str) -> bool:
 
 
 def is_github_marketplace_source(source: str) -> bool:
-    """Best-effort detector for sources that resolve via GitHub.
+    """Best-effort detector for sources that resolve via GitHub (public
+    github.com or a configured GitHub Enterprise host).
 
     Matches ``github:owner/repo``, ``https://github.com/...``,
     ``http://github.com/...``, ``git://github.com/...``,
     ``ssh://git@github.com/...``, ``git@github.com:owner/repo``, and bare
-    ``owner/repo[.git][/]`` shorthand. Used to gate marketplace-add when
-    an admin sets ``allow_github_plugin_import = False``. Leans toward
-    detection — false positives are a benign UX gate; false negatives
-    bypass the policy.
+    ``owner/repo[.git][/]`` shorthand. Also matches any URL or
+    ``git@HOST:`` shorthand whose host is listed in
+    ``NBI_GITHUB_ENTERPRISE_HOSTS`` (suffix match, so ``acme.com`` covers
+    ``github.acme.com``). Used to gate marketplace-add when an admin sets
+    ``allow_github_plugin_import = False``. Leans toward detection: false
+    positives are a benign UX gate, false negatives bypass the policy.
     """
     s = source.strip()
     if not s:
@@ -87,13 +169,42 @@ def is_github_marketplace_source(source: str) -> bool:
     lower = s.lower()
     if lower.startswith(_GITHUB_PREFIX_SCHEMES):
         return True
+    # `git@HOST:owner/repo` SCP shorthand. The literal `git@github.com:`
+    # form is caught by `_GITHUB_PREFIX_SCHEMES` above; this branch
+    # handles `git@github.acme.com:owner/repo` and other GHE variants.
+    if lower.startswith("git@") and ":" in s:
+        scp_host = s[len("git@"):].split(":", 1)[0].lower()
+        if _is_github_host(scp_host):
+            return True
     # ssh://git@github.com/owner/repo — `hostname` returns "github.com".
     if lower.startswith(_GITHUB_URL_SCHEMES):
-        host = (urllib.parse.urlparse(s).hostname or "").lower()
-        return host == "github.com" or host.endswith(".github.com")
+        parsed = urllib.parse.urlparse(s)
+        # Defense in depth: reject URLs that smuggle userinfo other than
+        # the conventional `git` username on ssh:// (so the embedded-
+        # userinfo lookalike `https://user@github.com/...` cannot reach
+        # a GitHub-token injection decision off of an attacker-supplied
+        # hostname). git/claude downstream would normalize the URL the
+        # same way and refuse, but the policy gate shouldn't depend on
+        # downstream sanitization.
+        if parsed.username and parsed.username != "git":
+            return False
+        if parsed.password:
+            return False
+        return _is_github_host(parsed.hostname or "")
     # owner/repo shorthand. Tolerate trailing slash and `.git` suffix;
-    # reject anything path-like or whitespace-bearing.
-    if "/" in s and not s.startswith(_LOCAL_PREFIXES) and not any(c.isspace() for c in s):
+    # reject anything path-like, whitespace-bearing, or containing SCP
+    # / URL syntax characters (`@`, `:`). Without the `@`/`:` guard, an
+    # unmatched SCP form like `git@evil.test:o/r` would slip through
+    # here (pre-existing behavior caught the form as a one-slash
+    # shorthand which would then inject `GITHUB_TOKEN` into the env of
+    # an add against a non-GitHub host).
+    if (
+        "/" in s
+        and not s.startswith(_LOCAL_PREFIXES)
+        and not any(c.isspace() for c in s)
+        and "@" not in s
+        and ":" not in s
+    ):
         stripped = s.rstrip("/")
         if stripped.endswith(".git"):
             stripped = stripped[: -len(".git")]
