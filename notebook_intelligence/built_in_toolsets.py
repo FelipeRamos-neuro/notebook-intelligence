@@ -559,16 +559,28 @@ async def execute_command(command: str, working_directory: str = ".", **args) ->
 @nbapi.tool
 async def run_command_in_jupyter_terminal(command: str, working_directory: str = ".", **args) -> str:
     """Run a shell command in a Jupyter terminal within working_directory. This can be used to run long running processes like web applications. Returns the output of the command.
-    
+
     Args:
         command: Shell command to execute in the terminal
         working_directory: Directory to execute command in (relative to jupyter_root_dir, default is root)
     """
     try:
         response = args["response"]
+        # Sandbox the cwd the same way execute_command and the embedded-terminal
+        # tool do. The Jupyter terminal opens at any absolute path the user can
+        # read, so without this check an LLM-supplied path of '/etc' would land
+        # a real shell outside the workspace.
+        try:
+            work_dir = _get_safe_path(working_directory)
+        except ValueError as e:
+            return f"Error: {e}"
+        if not work_dir.exists():
+            return f"Directory '{working_directory}' does not exist"
+        if not work_dir.is_dir():
+            return f"'{working_directory}' is not a directory"
         ui_cmd_response = await response.run_ui_command('notebook-intelligence:run-command-in-terminal', {
             'command': command,
-            'cwd': working_directory
+            'cwd': str(work_dir)
         })
         return ui_cmd_response
     except Exception as e:
@@ -577,19 +589,31 @@ async def run_command_in_jupyter_terminal(command: str, working_directory: str =
 @nbapi.tool
 async def run_command_in_embedded_terminal(command: str, working_directory: str = ".", **args) -> str:
     """Run a shell command in an embedded terminal within working_directory. Use this for short running shell commands.
-    
+
     Args:
         command: Shell command to execute in the terminal
         working_directory: Directory to execute command in (relative to jupyter_root_dir, default is root)
     """
     try:
         response = args["response"]
+        # Mirror execute_command's scoping: route working_directory through
+        # _get_safe_path so an LLM-supplied path outside jupyter_root_dir
+        # cannot spawn a subprocess against the host filesystem. The sibling
+        # execute_command already does this; this tool was the outlier.
+        try:
+            work_dir = _get_safe_path(working_directory)
+        except ValueError as e:
+            return f"Error: {e}"
+        if not work_dir.exists():
+            return f"Directory '{working_directory}' does not exist"
+        if not work_dir.is_dir():
+            return f"'{working_directory}' is not a directory"
         # run the command in a bash process and stream the output to the response
         cmd_list = shlex.split(command)
         process = subprocess.Popen(
             cmd_list,
             shell=False,
-            cwd=working_directory,
+            cwd=str(work_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
