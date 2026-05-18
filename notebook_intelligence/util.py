@@ -185,6 +185,68 @@ def is_provider_enabled_in_env(provider_id: str) -> bool:
     enabled_providers = os.environ.get('NBI_ENABLED_PROVIDERS', '')
     return provider_id in enabled_providers.split(',')
 
+
+# Launcher-tile IDs as used by the `disabled_coding_agent_launchers` traitlet
+# and `NBI_ENABLED_CODING_AGENT_LAUNCHERS` env var. Match the kebab-case the
+# capabilities response already uses for `*_cli_available` keys, but with
+# `github-copilot-cli` (not `github-copilot`) so the ID can't collide with
+# the `disabled_providers` value for the Copilot LLM provider — those are
+# different surfaces and should never share a string identifier.
+VALID_CODING_AGENT_LAUNCHERS: tuple[str, ...] = (
+    "claude-code",
+    "opencode",
+    "pi",
+    "github-copilot-cli",
+    "codex",
+)
+
+
+def is_coding_agent_launcher_enabled_in_env(launcher_id: str) -> bool:
+    enabled = os.environ.get('NBI_ENABLED_CODING_AGENT_LAUNCHERS', '')
+    return launcher_id in (token.strip() for token in enabled.split(','))
+
+
+def validate_coding_agent_launcher_ids(disabled) -> None:
+    """Raise ValueError when ``disabled`` (the traitlet value) contains an
+    unknown launcher ID. Empty / None pass silently.
+
+    Pulled out of ``extension.py`` so tests can exercise the real validator
+    rather than re-implementing it inline. Loud-fail-on-typo follows the
+    same pattern as ``_resolve_bool_with_env`` for admin gates: a silent
+    no-op would let a misconfigured policy ship to production with the tile
+    still visible.
+    """
+    unknown = [
+        launcher_id
+        for launcher_id in (disabled or [])
+        if launcher_id not in VALID_CODING_AGENT_LAUNCHERS
+    ]
+    if unknown:
+        raise ValueError(
+            f"Unknown coding-agent launcher ID(s) in "
+            f"disabled_coding_agent_launchers: {unknown!r}; "
+            f"valid IDs are {VALID_CODING_AGENT_LAUNCHERS}"
+        )
+
+
+def compute_effective_disabled_launchers(disabled, allow_enabling_with_env: bool) -> list:
+    """Combine the admin denylist with the per-pod re-enable env var.
+
+    The denylist (``disabled_coding_agent_launchers``) is the floor; an
+    entry leaves the effective set only when both
+    ``allow_enabling_coding_agent_launchers_with_env`` is True and the
+    launcher ID appears in ``NBI_ENABLED_CODING_AGENT_LAUNCHERS``. The
+    frontend gets the resulting list and hides matching tiles.
+    """
+    return [
+        launcher_id
+        for launcher_id in (disabled or [])
+        if not (
+            allow_enabling_with_env
+            and is_coding_agent_launcher_enabled_in_env(launcher_id)
+        )
+    ]
+
 def _emit(signal, payload: dict) -> None:
     if signal is not None:
         signal.emit(payload)

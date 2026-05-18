@@ -194,6 +194,8 @@ c.NotebookIntelligence.claude_jupyter_ui_tools_policy = "force-off"
 
 Per-user preferences (default on for the cell-output features) live in `config.json` as `enable_explain_error`, `enable_output_followup`, `enable_output_toolbar`.
 
+**List-shaped denylists** (LLM providers, built-in tools, coding-agent launcher tiles) use traitlets rather than `*_POLICY` env vars. See [`docs/admin-guide.md`](docs/admin-guide.md#restricting-features-for-managed-deployments) for the `disabled_providers`, `disabled_tools`, and `disabled_coding_agent_launchers` recipes.
+
 **Value-presence locks** for non-boolean settings: setting the env var to a non-empty value pins the control to that value and disables it. Empty/unset = user-choice.
 
 | Env var                                | Pins                                                                         |

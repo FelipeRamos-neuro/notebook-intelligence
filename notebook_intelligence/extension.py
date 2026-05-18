@@ -53,7 +53,7 @@ from notebook_intelligence.claude_sessions import (
 )
 import notebook_intelligence.github_copilot as github_copilot
 from notebook_intelligence.built_in_toolsets import built_in_toolsets
-from notebook_intelligence.util import ThreadSafeWebSocketConnector, get_jupyter_root_dir, set_jupyter_root_dir, is_builtin_tool_enabled_in_env, is_provider_enabled_in_env, resolve_claude_cli_path, resolve_opencode_cli_path, resolve_pi_cli_path, resolve_copilot_cli_path, resolve_codex_cli_path
+from notebook_intelligence.util import ThreadSafeWebSocketConnector, get_jupyter_root_dir, set_jupyter_root_dir, is_builtin_tool_enabled_in_env, is_provider_enabled_in_env, VALID_CODING_AGENT_LAUNCHERS, compute_effective_disabled_launchers, validate_coding_agent_launcher_ids, resolve_claude_cli_path, resolve_opencode_cli_path, resolve_pi_cli_path, resolve_copilot_cli_path, resolve_codex_cli_path
 from notebook_intelligence.context_factory import RuleContextFactory
 from notebook_intelligence.skillset import SKILL_NAME_REGEX
 
@@ -399,6 +399,8 @@ class GetCapabilitiesHandler(APIHandler):
     allow_enabling_tools_with_env = False
     disabled_providers = []
     allow_enabling_providers_with_env = False
+    disabled_coding_agent_launchers = []
+    allow_enabling_coding_agent_launchers_with_env = False
     enable_chat_feedback = False
     additional_skipped_workspace_directories = []
     feature_policies = {}
@@ -418,6 +420,14 @@ class GetCapabilitiesHandler(APIHandler):
                 return True
             return provider_id not in self.disabled_providers or \
                    (self.allow_enabling_providers_with_env and is_provider_enabled_in_env(provider_id))
+        # Frontend gets the resolved set (denylist plus the per-pod re-enable
+        # env, gated by the explicit opt-in flag). Computed once per request
+        # in `util.compute_effective_disabled_launchers` so tests can pin the
+        # contract without re-implementing it.
+        effective_disabled_launchers = compute_effective_disabled_launchers(
+            self.disabled_coding_agent_launchers,
+            self.allow_enabling_coding_agent_launchers_with_env,
+        )
         allowed_builtin_toolsets = [{"id": toolset.id, "name": toolset.name, "description": toolset.description} for toolset in built_in_toolsets.values() if is_tool_enabled(toolset.id)]
         llm_providers = [p for p in ai_service_manager.llm_providers.values() if is_provider_enabled(p.id)]
         mcp_servers = ai_service_manager.get_mcp_servers()
@@ -491,6 +501,7 @@ class GetCapabilitiesHandler(APIHandler):
             "pi_cli_available": resolve_pi_cli_path() is not None,
             "github_copilot_cli_available": resolve_copilot_cli_path() is not None,
             "codex_cli_available": resolve_codex_cli_path() is not None,
+            "disabled_coding_agent_launchers": effective_disabled_launchers,
             "default_chat_mode": nbi_config.default_chat_mode,
             "chat_feedback_enabled": self.enable_chat_feedback,
             # Single source of truth lives on each domain's base handler so
@@ -2198,6 +2209,29 @@ class NotebookIntelligence(ExtensionApp):
         config=True,
     )
 
+    disabled_coding_agent_launchers = List(
+        trait=Unicode(),
+        default_value=None,
+        help=f"""
+        List of coding-agent launcher tiles to hide even when the
+        corresponding CLI is on PATH. Valid IDs: {', '.join(VALID_CODING_AGENT_LAUNCHERS)}.
+
+        Example: ['opencode', 'pi']
+        """,
+        allow_none=True,
+        config=True,
+    )
+
+    allow_enabling_coding_agent_launchers_with_env = Bool(
+        default_value=False,
+        help="""
+        Allow re-enabling disabled coding-agent launcher tiles per pod via
+        the NBI_ENABLED_CODING_AGENT_LAUNCHERS environment variable.
+        """,
+        allow_none=True,
+        config=True,
+    )
+
     allow_enabling_tools_with_env = Bool(
         default_value=False,
         help="""
@@ -2644,6 +2678,15 @@ class NotebookIntelligence(ExtensionApp):
         GetCapabilitiesHandler.allow_enabling_tools_with_env = self.allow_enabling_tools_with_env
         GetCapabilitiesHandler.disabled_providers = self.disabled_providers
         GetCapabilitiesHandler.allow_enabling_providers_with_env = self.allow_enabling_providers_with_env
+        # Validate at startup so a typo fails loudly rather than silently
+        # no-opping at request time. Empty / None passes through.
+        validate_coding_agent_launcher_ids(self.disabled_coding_agent_launchers)
+        GetCapabilitiesHandler.disabled_coding_agent_launchers = (
+            self.disabled_coding_agent_launchers or []
+        )
+        GetCapabilitiesHandler.allow_enabling_coding_agent_launchers_with_env = (
+            self.allow_enabling_coding_agent_launchers_with_env
+        )
         GetCapabilitiesHandler.enable_chat_feedback = self.enable_chat_feedback
         SkillsBaseHandler.allow_github_skill_import = _resolve_bool_with_env(
             "NBI_ALLOW_GITHUB_SKILL_IMPORT", self.allow_github_skill_import
