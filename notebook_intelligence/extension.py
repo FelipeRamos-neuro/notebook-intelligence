@@ -1091,6 +1091,17 @@ class PluginsMarketplaceDetailHandler(PluginsBaseHandler):
             self._error(e)
 
 
+class PluginsMarketplacePluginsHandler(PluginsBaseHandler):
+    @tornado.web.authenticated
+    async def get(self, name):
+        try:
+            plugins = await self.manager.list_marketplace_plugins(name)
+        except (FileNotFoundError, TimeoutError, ValueError) as e:
+            self._error(e)
+            return
+        self.finish(json.dumps({"plugins": plugins}))
+
+
 class SkillsBaseHandler(PolicyGatedHandler):
     """Shared helpers for skills endpoints."""
 
@@ -1266,6 +1277,28 @@ class SkillsReconcileHandler(SkillsBaseHandler):
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, reconciler.reconcile)
         self.finish(json.dumps(result.to_dict()))
+
+
+class SkillsReconcilerStopHandler(APIHandler):
+    """Incident-response kill switch for the managed-skills reconciler.
+
+    Not gated by ``SkillsBaseHandler.policy_enabled_attr`` because the
+    intended use is "stop the background loop regardless of current policy
+    state" — e.g. when a compromised manifest URL or leaked managed token
+    needs to be neutralized before the pod can be restarted.
+    """
+
+    @tornado.web.authenticated
+    async def post(self):
+        reconciler = ai_service_manager.get_skill_reconciler()
+        if reconciler is None:
+            # Already not running. Idempotent: don't 404 / 409 the caller
+            # since the desired end state matches.
+            self.finish(json.dumps({"stopped": True, "was_running": False}))
+            return
+        was_running = reconciler.is_running()
+        reconciler.stop()
+        self.finish(json.dumps({"stopped": True, "was_running": was_running}))
 
 
 class SkillRenameHandler(SkillsBaseHandler):
@@ -2609,6 +2642,9 @@ class NotebookIntelligence(ExtensionApp):
         route_pattern_skills_import_preview = url_path_join(base_url, "notebook-intelligence", "skills", "import", "preview")
         route_pattern_skills_import = url_path_join(base_url, "notebook-intelligence", "skills", "import")
         route_pattern_skills_reconcile = url_path_join(base_url, "notebook-intelligence", "skills", "reconcile")
+        route_pattern_skills_reconciler_stop = url_path_join(
+            base_url, "notebook-intelligence", "skills", "reconciler", "stop"
+        )
         route_pattern_skill_detail = url_path_join(base_url, "notebook-intelligence", "skills", r"(user|project)", skill_name)
         route_pattern_skill_rename = url_path_join(base_url, "notebook-intelligence", "skills", r"(user|project)", skill_name, "rename")
         route_pattern_skill_bundle_file = url_path_join(base_url, "notebook-intelligence", "skills", r"(user|project)", skill_name, "files")
@@ -2626,6 +2662,14 @@ class NotebookIntelligence(ExtensionApp):
         )
         route_pattern_plugins_marketplace = url_path_join(
             base_url, "notebook-intelligence", "plugins", "marketplace"
+        )
+        route_pattern_plugins_marketplace_plugins = url_path_join(
+            base_url,
+            "notebook-intelligence",
+            "plugins",
+            "marketplace",
+            r"([^/]+)",
+            "plugins",
         )
         route_pattern_plugins_marketplace_detail = url_path_join(
             base_url, "notebook-intelligence", "plugins", "marketplace", r"([^/]+)"
@@ -2716,6 +2760,10 @@ class NotebookIntelligence(ExtensionApp):
             (route_pattern_skills_import_preview, SkillsImportPreviewHandler),
             (route_pattern_skills_import, SkillsImportHandler),
             (route_pattern_skills_reconcile, SkillsReconcileHandler),
+            # Deliberately not gated by SkillsBaseHandler — the kill switch
+            # must remain reachable while skills_management_policy=force-off
+            # is the active state. See the handler docstring.
+            (route_pattern_skills_reconciler_stop, SkillsReconcilerStopHandler),
             (route_pattern_skill_bundle_file_rename, SkillBundleFileRenameHandler),
             (route_pattern_skill_bundle_file, SkillBundleFileHandler),
             (route_pattern_skill_rename, SkillRenameHandler),
@@ -2729,6 +2777,10 @@ class NotebookIntelligence(ExtensionApp):
             (route_pattern_claude_mcp, ClaudeMCPListHandler),
             # Plugin routes: marketplace endpoints before the {scope}/{plugin}
             # catch-all so the literal "marketplace" segment isn't eaten.
+            (
+                route_pattern_plugins_marketplace_plugins,
+                PluginsMarketplacePluginsHandler,
+            ),
             (route_pattern_plugins_marketplace_detail, PluginsMarketplaceDetailHandler),
             (route_pattern_plugins_marketplace, PluginsMarketplaceListHandler),
             (route_pattern_plugins_detail, PluginsDetailHandler),
