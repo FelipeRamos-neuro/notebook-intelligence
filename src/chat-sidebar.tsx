@@ -3894,11 +3894,26 @@ function SidebarComponent(props: any) {
             </div>
             <div>
               <button
-                className="jp-Dialog-button jp-mod-accept jp-mod-styled send-button"
+                type="button"
+                className={`jp-Dialog-button jp-mod-styled send-button${
+                  copilotRequestInProgress
+                    ? ' jp-mod-warn send-button-stop'
+                    : ' jp-mod-accept'
+                }`}
                 onClick={() => handleSubmitStopChatButtonClick()}
                 disabled={prompt.length === 0 && !copilotRequestInProgress}
+                aria-label={
+                  copilotRequestInProgress ? 'Stop generating' : 'Send message'
+                }
+                title={
+                  copilotRequestInProgress ? 'Stop generating' : 'Send message'
+                }
               >
-                {copilotRequestInProgress ? <VscStopCircle /> : <VscSend />}
+                {copilotRequestInProgress ? (
+                  <VscStopCircle aria-hidden="true" />
+                ) : (
+                  <VscSend aria-hidden="true" />
+                )}
               </button>
             </div>
           </div>

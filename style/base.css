@@ -1038,6 +1038,22 @@ button.send-button:disabled:active {
   height: 18px;
 }
 
+/* During generation the send action turns into a stop action. The
+   icon switch alone would fail WCAG 3.3.4 (icon shape is a single
+   non-redundant signal); pair it with a warn-tinted background and a
+   border that picks up the warn color so the state is visible to
+   color-blind users too. The accessible name on the <button> swaps to
+   "Stop generating" in lockstep. */
+.send-button.send-button-stop {
+  background-color: var(--jp-warn-color1, #ff9800);
+  border-color: var(--jp-warn-color1, #ff9800);
+  color: white;
+}
+
+.send-button.send-button-stop:hover:enabled {
+  background-color: var(--jp-warn-color0, #f57c00);
+}
+
 .inline-popover {
   width: calc(100% - 6px);
   height: calc(100% - 6px);
