@@ -577,4 +577,20 @@ describe('safeAnchorUri', () => {
       'https://example.com/'
     );
   });
+
+  it('rejects CRLF injection inside an otherwise valid URI', () => {
+    expect(safeAnchorUri('https://example.com/\r\nfoo')).toBeNull();
+    expect(safeAnchorUri('https://example.com/\nfoo')).toBeNull();
+  });
+
+  it('rejects URIs above the 8 KiB length cap', () => {
+    const longPath = 'x'.repeat(8200);
+    expect(safeAnchorUri(`https://example.com/${longPath}`)).toBeNull();
+  });
+
+  it('accepts a URI near but under the length cap', () => {
+    const longPath = 'x'.repeat(8000);
+    const uri = `https://example.com/${longPath}`;
+    expect(safeAnchorUri(uri)).toBe(uri);
+  });
 });

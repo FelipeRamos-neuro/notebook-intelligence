@@ -108,3 +108,25 @@ class TestSafeAnchorUriRejected:
     )
     def test_empty_and_non_string(self, uri):
         assert safe_anchor_uri(uri) == ""
+
+    def test_rejects_crlf_inside_uri(self):
+        # CRLF inside an otherwise valid URI is a classic
+        # log-injection / header-splitting shape and falls in the C0
+        # range. Pin explicitly so a future refactor that switches to a
+        # regex-only check can't silently regress.
+        assert safe_anchor_uri("https://example.com/\r\nfoo") == ""
+        assert safe_anchor_uri("https://example.com/\nfoo") == ""
+
+    def test_rejects_excessive_length(self):
+        # A URI longer than the cap is almost certainly hostile or
+        # malformed, and scanning the whole thing twice on every chat
+        # render is wasted work.
+        long_path = "x" * 8200
+        assert safe_anchor_uri(f"https://example.com/{long_path}") == ""
+
+    def test_accepts_uri_near_length_cap(self):
+        # Just under the cap should still pass. Pins that the cap is an
+        # outer bound, not an arbitrarily-tight one.
+        long_path = "x" * 8000
+        uri = f"https://example.com/{long_path}"
+        assert safe_anchor_uri(uri) == uri

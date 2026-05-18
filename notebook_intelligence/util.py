@@ -193,8 +193,19 @@ def is_provider_enabled_in_env(provider_id: str) -> bool:
 # prevent javascript: execution against the parent origin. Keep this
 # allowlist tight; the frontend re-checks before assigning href as
 # defense in depth.
+#
+# Deliberate non-carve-out: `data:` is not allowed even for `image/*`.
+# `<a href="data:image/svg+xml,...">` navigates the top frame to an
+# attacker SVG that runs script same-origin, which is the exact XSS sink
+# this allowlist exists to close.
 _SAFE_ANCHOR_SCHEMES: frozenset = frozenset({"http", "https", "mailto"})
 _SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
+# Hard cap on URI length to short-circuit pathological inputs. Modern
+# browsers truncate URLs well below this; servers commonly cap at 8 KB.
+# An anchor URI longer than that is almost certainly hostile or
+# malformed, and scanning it codepoint-by-codepoint twice (Python + TS)
+# is wasted work.
+_MAX_ANCHOR_URI_LEN = 8192
 # C0+DEL (0x00 to 0x1F, 0x7F) are stripped from the scheme by some browser URL
 # parsers ahead of evaluation, so "java\tscript:..." would unmask. C1 (0x80
 # to 0x9F) and the Unicode format marks below cannot un-mask a forbidden
@@ -207,7 +218,7 @@ _DISALLOWED_URI_CODEPOINTS = frozenset(
     + [0x0085, 0x00A0, 0x2028, 0x2029, 0xFEFF]
     + list(range(0x200B, 0x2010))          # ZWSP/ZWNJ/ZWJ + LRM/RLM
     + list(range(0x202A, 0x202F))          # LRE/RLE/PDF/LRO/RLO
-    + list(range(0x2066, 0x2070))          # LRI/RLI/FSI/PDI
+    + list(range(0x2066, 0x2070))          # LRI/RLI/FSI/PDI + deprecated
 )
 
 
@@ -218,6 +229,8 @@ def safe_anchor_uri(uri: str) -> str:
     empty return as "do not render as an anchor."
     """
     if not isinstance(uri, str):
+        return ""
+    if len(uri) > _MAX_ANCHOR_URI_LEN:
         return ""
     # Scan the original input — str.strip() treats NEL, NBSP, LS, PS, and
     # other unicode whitespace as trimmable, so checking after stripping

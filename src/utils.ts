@@ -300,6 +300,10 @@ export { shellSingleQuote };
 
 const SAFE_ANCHOR_SCHEMES = new Set(['http', 'https', 'mailto']);
 const SCHEME_RE = /^([A-Za-z][A-Za-z0-9+.-]*):/;
+// Hard cap on URI length to short-circuit pathological inputs. Mirrors
+// the Python side; modern browsers truncate URLs well below this and an
+// anchor URI any longer is almost certainly hostile or malformed.
+const MAX_ANCHOR_URI_LEN = 8192;
 
 function isDisallowedUriCodepoint(code: number): boolean {
   // C0 + DEL are stripped from the scheme by some browser URL parsers
@@ -307,6 +311,8 @@ function isDisallowedUriCodepoint(code: number): boolean {
   // C1 (0x80-0x9F) plus the Unicode format/BiDi/zero-width marks listed
   // below do not un-mask a forbidden scheme in modern browsers, but they
   // can visually impersonate the URI in the title, so reject them too.
+  // Ranges intentionally mirror the Python ``_DISALLOWED_URI_CODEPOINTS``
+  // set so a URI rejected on one side is rejected on the other.
   if (code <= 0x1f || code === 0x7f) {
     return true;
   }
@@ -325,7 +331,7 @@ function isDisallowedUriCodepoint(code: number): boolean {
   if (code >= 0x202a && code <= 0x202e) {
     return true;
   }
-  if (code >= 0x2066 && code <= 0x2069) {
+  if (code >= 0x2066 && code <= 0x206f) {
     return true;
   }
   return false;
@@ -342,6 +348,9 @@ function isDisallowedUriCodepoint(code: number): boolean {
  */
 export function safeAnchorUri(uri: string | undefined | null): string | null {
   if (typeof uri !== 'string') {
+    return null;
+  }
+  if (uri.length > MAX_ANCHOR_URI_LEN) {
     return null;
   }
   // Scan the original input. String.prototype.trim() drops NBSP, NEL, LS,
