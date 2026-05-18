@@ -43,6 +43,10 @@ from notebook_intelligence.feature_flags import (
     resolve_feature_flag,
 )
 from notebook_intelligence._claude_cli import validate_scope
+from notebook_intelligence.mcp_config_validation import (
+    MCPConfigValidationError,
+    validate_mcp_config,
+)
 from notebook_intelligence.claude import ClaudeCodeChatParticipant, fetch_claude_models
 from notebook_intelligence.claude_mcp_manager import ClaudeMCPManager
 from notebook_intelligence.plugin_manager import PluginManager
@@ -671,12 +675,30 @@ class MCPConfigFileHandler(APIHandler):
     def post(self):
         try:
             data = json.loads(self.request.body)
+        except json.JSONDecodeError as exc:
+            # Surface the parse error via 400 rather than crashing
+            # downstream code with a confusing AttributeError when the
+            # JSON loader returns a primitive instead of a dict.
+            self.set_status(400)
+            self.finish(json.dumps({"status": "error", "message": f"Invalid JSON: {exc}"}))
+            return
+        try:
+            validate_mcp_config(data)
+        except MCPConfigValidationError as exc:
+            # Schema rejection: refuse the write entirely so a malformed
+            # payload cannot persist to disk or install destructive
+            # servers on the next reconcile.
+            self.set_status(400)
+            self.finish(json.dumps({"status": "error", "message": str(exc)}))
+            return
+        try:
             ai_service_manager.nbi_config.user_mcp = data
             ai_service_manager.nbi_config.save()
             ai_service_manager.nbi_config.load()
             ai_service_manager.update_mcp_servers()
             self.finish(json.dumps({"status": "ok"}))
         except Exception as e:
+            self.set_status(500)
             self.finish(json.dumps({"status": "error", "message": str(e)}))
             return
 

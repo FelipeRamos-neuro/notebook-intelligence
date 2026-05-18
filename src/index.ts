@@ -9,7 +9,12 @@ import {
 import { IDocumentManager } from '@jupyterlab/docmanager';
 import { DocumentWidget, IDocumentWidget } from '@jupyterlab/docregistry';
 
-import { Dialog, ICommandPalette, MainAreaWidget } from '@jupyterlab/apputils';
+import {
+  Dialog,
+  ICommandPalette,
+  MainAreaWidget,
+  Notification
+} from '@jupyterlab/apputils';
 import { IMainMenu } from '@jupyterlab/mainmenu';
 
 import { IEditorLanguageRegistry } from '@jupyterlab/codemirror';
@@ -770,7 +775,21 @@ class MCPConfigEditor {
 
   private async _onSave() {
     const mcpConfig = this._docWidget.context.model.toJSON();
-    await NBIAPI.setMCPConfigFile(mcpConfig);
+    try {
+      await NBIAPI.setMCPConfigFile(mcpConfig);
+    } catch (reason: any) {
+      // Surface server-side validation rejections (400 from the
+      // shape validator, 500 from a downstream save / reconcile
+      // failure) to the user. Without this, the document model
+      // goes clean on save and the user has no signal that their
+      // edit did not actually persist. ServerConnection.ResponseError
+      // carries the handler's JSON `message` field on reason.message.
+      Notification.error(
+        `Failed to save MCP config: ${reason?.message ?? reason}`,
+        { autoClose: 5000 }
+      );
+      return;
+    }
     await NBIAPI.fetchCapabilities();
   }
 
