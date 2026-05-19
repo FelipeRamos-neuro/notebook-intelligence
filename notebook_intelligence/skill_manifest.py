@@ -1,12 +1,17 @@
-"""Loads the managed-skills manifest (YAML/JSON) from a URL or local file path.
+"""Loads managed-skills manifests (YAML/JSON) from URLs or local file paths.
 
-The manifest describes the set of Claude skills that should be installed on this
-notebook. See the README for the schema; briefly:
+A single manifest describes the set of Claude skills that should be installed
+on this notebook. See the README for the schema; briefly:
 
     skills:
       - url: https://github.com/org/repo/tree/main/skills/data-eda
         name: data-eda        # optional override of the installed skill name
         scope: user           # optional, "user" or "project" (default "user")
+
+A deployment can also point at multiple manifests at once (comma-separated in
+``NBI_SKILLS_MANIFEST`` or the matching traitlet). ``load_manifests`` merges
+them, dedupes by URL and by predicted installed-name, and reports per-source
+fetch failures without aborting the whole reconcile.
 """
 
 from __future__ import annotations
@@ -16,12 +21,13 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
 import yaml
 
+from notebook_intelligence.skill_github_import import parse_github_url
 from notebook_intelligence.util import resolve_github_token
 from notebook_intelligence.skillset import SKILL_NAME_PATTERN
 
@@ -85,11 +91,32 @@ class ManifestEntry:
     url: str
     name: Optional[str] = None
     scope: str = "user"
+    # Manifest URL/path this entry came from. Populated by ``load_manifests``
+    # so dedupe warnings can name both the kept and the ignored manifest.
+    # Empty string means "unknown" (single-manifest legacy path).
+    source: str = ""
 
 
 @dataclass
 class SkillsManifest:
     entries: List[ManifestEntry]
+
+
+@dataclass
+class MergedManifest:
+    """Output of ``load_manifests``: deduped entries plus per-source diagnostics.
+
+    ``errors`` carries fatal failures (a manifest source could not be fetched
+    or parsed) so the reconciler can skip stale-removal that cycle. ``warnings``
+    carries advisory notes (cross-manifest URL dupes) that don't disturb
+    reconciliation but should reach the operator.
+    ``loaded_sources`` records the sources that successfully loaded, which the
+    reconciler uses to decide whether stale removal is safe.
+    """
+    manifest: SkillsManifest
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    loaded_sources: List[str] = field(default_factory=list)
 
 
 def load_manifest(source: str, *, token: Optional[str] = None) -> SkillsManifest:
@@ -118,9 +145,117 @@ def load_manifest(source: str, *, token: Optional[str] = None) -> SkillsManifest
 
     entries: List[ManifestEntry] = []
     for idx, item in enumerate(raw_entries):
-        entries.append(_parse_entry(item, idx))
+        entry = _parse_entry(item, idx)
+        entry.source = source
+        entries.append(entry)
 
     return SkillsManifest(entries=entries)
+
+
+def split_sources(raw: str) -> List[str]:
+    """Split a comma-separated list of manifest sources.
+
+    Empty input or all-whitespace input → empty list. Whitespace around each
+    entry is stripped, empty entries are dropped, so values like
+    ``"a, b,,c "`` and ``", , "`` are handled. URLs containing literal commas
+    are not supported and will split; the operator should rename/relocate
+    such manifests.
+    """
+    if not isinstance(raw, str):
+        return []
+    return [s for s in (part.strip() for part in raw.split(",")) if s]
+
+
+def _predicted_name(entry: ManifestEntry) -> Optional[str]:
+    """Best-effort prediction of the on-disk skill name for dedupe.
+
+    Used by ``load_manifests`` to catch name collisions across different URLs
+    before the reconciler installs them (the reconciler would otherwise
+    silently let the second managed install overwrite the first). Returns
+    ``None`` when the name cannot be predicted, in which case dedupe falls
+    through and the collision is left for the reconciler to handle (or miss,
+    in the rare case where two SKILL.md files declare the same ``name``
+    frontmatter from different repo paths).
+    """
+    if entry.name:
+        return entry.name
+    try:
+        info = parse_github_url(entry.url)
+    except ValueError:
+        return None
+    # Last subpath segment is the skill directory name in the canonical
+    # GitHub layout (e.g. ".../tree/main/skills/data-eda" → "data-eda").
+    # Falls back to the repo name when the skill sits at the repo root.
+    segment = info.subpath.rstrip("/").rsplit("/", 1)[-1] if info.subpath else ""
+    return segment or info.repo
+
+
+def load_manifests(
+    sources: List[str], *, token: Optional[str] = None
+) -> MergedManifest:
+    """Load and merge multiple manifests, deduping entries across sources.
+
+    Dedupe semantics:
+
+    - **By URL**: if two sources list the same ``url:``, the earlier source
+      wins and a warning names both manifests so the operator can fix one
+      of them. The reconciler keeps progressing.
+    - **By installed name**: if two entries from different URLs would resolve
+      to the same on-disk skill name, the second is dropped with an entry in
+      ``errors`` so the install layer never sees the collision. Predicted
+      from ``entry.name`` if set, otherwise from the URL's last subpath
+      segment.
+
+    Partial failure: each source loads independently. A failed source becomes
+    an entry in ``errors`` and excludes itself from ``loaded_sources``. The
+    successful sources still contribute entries so a transient outage on one
+    manifest doesn't stop the rest.
+    """
+    if not sources:
+        return MergedManifest(manifest=SkillsManifest(entries=[]))
+
+    merged: List[ManifestEntry] = []
+    errors: List[str] = []
+    warnings: List[str] = []
+    loaded_sources: List[str] = []
+    seen_urls: dict = {}  # url -> source it was first seen in
+    seen_names: dict = {}  # predicted name -> (source, url) it was first seen in
+
+    for source in sources:
+        try:
+            loaded = load_manifest(source, token=token)
+        except ManifestError as exc:
+            errors.append(f"{source}: {exc}")
+            continue
+        loaded_sources.append(source)
+        for entry in loaded.entries:
+            if entry.url in seen_urls:
+                first_source = seen_urls[entry.url]
+                warnings.append(
+                    f"skills_manifest dupe: {entry.url!r} first seen in "
+                    f"{first_source!r}, ignored in {source!r}"
+                )
+                continue
+            seen_urls[entry.url] = source
+            predicted = _predicted_name(entry)
+            if predicted and predicted in seen_names:
+                first_source, first_url = seen_names[predicted]
+                errors.append(
+                    f"skill {predicted!r}: name collision; first installed "
+                    f"from {first_url!r} ({first_source!r}), skipped "
+                    f"{entry.url!r} ({source!r})"
+                )
+                continue
+            if predicted:
+                seen_names[predicted] = (source, entry.url)
+            merged.append(entry)
+
+    return MergedManifest(
+        manifest=SkillsManifest(entries=merged),
+        errors=errors,
+        warnings=warnings,
+        loaded_sources=loaded_sources,
+    )
 
 
 def _parse_entry(item, index: int) -> ManifestEntry:
