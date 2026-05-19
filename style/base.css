@@ -37,13 +37,26 @@
   align-items: center;
   justify-content: center;
   font-size: 14px;
+
+  /* The wrapper's color is only used by themes that don't reach the
+     inner <span> (e.g. if a future variant omits the chip). The chip
+     itself uses the theme's body text color so contrast against the
+     solid layer background is guaranteed regardless of how the brand
+     color is tuned. */
   color: var(--jp-brand-color1);
   z-index: 100;
   pointer-events: none;
 }
 
 .drop-zone-overlay span {
+  /* WCAG 1.4.3: 4.5:1 against the layer1 background is the minimum the
+     theme commits to via --jp-ui-font-color0; use that for the chip
+     text and lock the chip background to a solid layer color so the
+     parent's 15%-brand wash never bleeds through and softens contrast.
+     The brand-color border keeps the visual identity of the drop
+     affordance without being load-bearing for legibility. */
   background-color: var(--jp-layout-color1);
+  color: var(--jp-ui-font-color0);
   padding: 8px 16px;
   border-radius: 6px;
   border: 1px solid var(--jp-brand-color1);
