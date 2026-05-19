@@ -79,6 +79,8 @@ import {
   IClaudeSessionInfo
 } from './api';
 import { CellOutputHoverToolbar } from './cell-output-toolbar';
+import { attachOpenFileRefreshWatcher } from './open-file-refresh-watcher';
+import { buildRefreshWatcherEnv } from './open-file-refresh-watcher-env';
 import {
   BackendMessageType,
   GITHUB_COPILOT_PROVIDER_ID,
@@ -896,11 +898,23 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
       new NBIInlineCompletionProvider(telemetryEmitter)
     );
 
+    // Snapshot the user's "refresh open files when changed on disk"
+    // toggle. The watcher reads it on every tick so flipping the
+    // setting takes effect without restarting Lab. Default-true so
+    // out-of-box agentic flows pick up file edits automatically;
+    // gated by ISettingRegistry availability (Lab can run without it
+    // in stripped-down embeds).
+    let refreshOnDiskEnabled = true;
     if (settingRegistry) {
       settingRegistry
         .load(plugin.id)
         .then(settings => {
-          //
+          const readToggle = (s: ISettingRegistry.ISettings) =>
+            s.composite['refresh_open_files_on_disk_change'] !== false;
+          refreshOnDiskEnabled = readToggle(settings);
+          settings.changed.connect(s => {
+            refreshOnDiskEnabled = readToggle(s);
+          });
         })
         .catch(reason => {
           console.error(
@@ -909,6 +923,11 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
           );
         });
     }
+
+    attachOpenFileRefreshWatcher({
+      env: buildRefreshWatcherEnv(app, app.serviceManager.contents),
+      isEnabled: () => refreshOnDiskEnabled
+    });
 
     const waitForFileToBeActive = async (
       filePath: string
