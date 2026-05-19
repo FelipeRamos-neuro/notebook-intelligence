@@ -323,10 +323,13 @@ describe('attachOpenFileRefreshWatcher', () => {
     expect(onRevert).not.toHaveBeenCalled();
   });
 
-  it('re-checks dirty between the disk fetch and the revert call', async () => {
-    // TOCTOU: the model is clean at decision time but goes dirty
-    // before revert(). The watcher must observe the second read and
-    // back off, not clobber the in-flight keystroke.
+  it('skips revert when dirty flips during the in-flight disk fetch', async () => {
+    // Property test: when the model goes dirty between the start of
+    // the disk fetch and the decision point, the watcher backs off.
+    // (The initial dirty check inside shouldRevertContext is the
+    // load-bearing guard for this scenario; the post-decision
+    // re-check is documented as defense-in-depth in the production
+    // file. Either guard alone would satisfy this test.)
     const ctx = makeContext();
     let release: (() => void) | null = null;
     const fetchDiskModel = jest.fn().mockImplementation(
@@ -380,14 +383,17 @@ describe('attachOpenFileRefreshWatcher', () => {
     expect(ctx.revert).not.toHaveBeenCalled();
   });
 
-  it('stops polling when the teardown function is invoked', () => {
+  it('clears the interval and no longer runs ticks after teardown', async () => {
     let cleared = false;
+    let tickHandler: (() => void) | null = null;
+    const fetchDiskModel = jest.fn();
     const env: IRefreshWatcherEnv = {
-      iterDocumentWidgets: () => [],
-      fetchDiskModel: async () => {
-        throw new Error('should not be called');
+      iterDocumentWidgets: () => [{ context: makeContext() }],
+      fetchDiskModel,
+      setInterval: handler => {
+        tickHandler = handler;
+        return 'h';
       },
-      setInterval: () => 'h',
       clearInterval: handle => {
         if (handle === 'h') {
           cleared = true;
@@ -400,5 +406,12 @@ describe('attachOpenFileRefreshWatcher', () => {
     });
     teardown();
     expect(cleared).toBe(true);
+    // Invoke the captured tick handler directly to confirm any
+    // straggling timer fire after clearInterval would still be inert.
+    // (clearInterval is best-effort across browsers; the watcher's
+    // post-teardown handler should not stat any contexts.)
+    tickHandler!();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(fetchDiskModel).not.toHaveBeenCalled();
   });
 });

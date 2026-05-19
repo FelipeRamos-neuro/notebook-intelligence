@@ -13,6 +13,13 @@ export interface IRefreshWatcherWidget {
 
 export const DEFAULT_REFRESH_POLL_INTERVAL_MS = 3000;
 
+// Max in-flight Contents.get calls per tick. The Jupyter server runs
+// each request through its own handler thread; with 15 open tabs and
+// unthrottled fan-out we'd pin 15 sockets every poll. Cap at 4 so a
+// heavy-tab user still finishes a tick well under the 3s interval
+// without hammering the server.
+export const DEFAULT_TICK_CONCURRENCY = 4;
+
 /**
  * Inputs the revert decision depends on. Keeping this pure (no
  * JupyterLab types) lets the unit test pin the policy without
@@ -82,6 +89,8 @@ export interface IRefreshWatcherEnv {
 export interface IRefreshWatcherOptions {
   env: IRefreshWatcherEnv;
   intervalMs?: number;
+  /** Cap on concurrent Contents.get calls per tick. Defaults to DEFAULT_TICK_CONCURRENCY. */
+  tickConcurrency?: number;
   /** Re-checked on every tick so a settings toggle takes effect without restart. */
   isEnabled: () => boolean;
   /** Hook for tests / telemetry — fired once per revert (the heavy outcome). */
@@ -110,7 +119,14 @@ export function attachOpenFileRefreshWatcher(
   const intervalMs = options.intervalMs ?? DEFAULT_REFRESH_POLL_INTERVAL_MS;
 
   let inFlight = false;
+  let stopped = false;
   const tick = async (): Promise<void> => {
+    // Defense against the browser firing a stale interval handler
+    // after we've called clearInterval, and against tests that invoke
+    // the captured handler directly post-teardown.
+    if (stopped) {
+      return;
+    }
     if (!options.isEnabled()) {
       return;
     }
@@ -123,7 +139,7 @@ export function attachOpenFileRefreshWatcher(
     inFlight = true;
     try {
       const seen = new Set<string>();
-      const checks: Array<Promise<void>> = [];
+      const targets: DocumentRegistry.Context[] = [];
       for (const widget of options.env.iterDocumentWidgets()) {
         const context = widget.context;
         if (!context || !context.path) {
@@ -136,13 +152,21 @@ export function attachOpenFileRefreshWatcher(
           continue;
         }
         seen.add(context.path);
-        checks.push(checkOneContext(context, options));
+        targets.push(context);
       }
-      // Fan out the per-context checks: each one issues a Contents.get
-      // and (rarely) a revert(); serializing them would multiply the
-      // wall-time cost linearly with open-tab count without any
-      // server-side rate-limit benefit.
-      await Promise.all(checks);
+      // Chunked fan-out: parallelism within a batch (so 4 tabs finish
+      // in one RTT instead of four), serialized across batches (so a
+      // 20-tab user doesn't pin 20 sockets at once). Per-context
+      // errors stay inside checkOneContext via its try/catch, so a
+      // Promise.all on the batch can't reject and tear the loop.
+      const concurrency = Math.max(
+        1,
+        options.tickConcurrency ?? DEFAULT_TICK_CONCURRENCY
+      );
+      for (let i = 0; i < targets.length; i += concurrency) {
+        const batch = targets.slice(i, i + concurrency);
+        await Promise.all(batch.map(ctx => checkOneContext(ctx, options)));
+      }
     } finally {
       inFlight = false;
     }
@@ -155,6 +179,7 @@ export function attachOpenFileRefreshWatcher(
   }, intervalMs);
 
   return () => {
+    stopped = true;
     options.env.clearInterval(handle);
   };
 }
@@ -175,12 +200,14 @@ async function checkOneContext(
     if (!decision) {
       return;
     }
-    // Re-check dirty immediately before reverting. The fetchDiskModel
-    // await above is a yield point: a keystroke that lands in the
-    // intervening millisecond would flip the model dirty after our
-    // initial decision but before revert() commits, silently
-    // clobbering an in-flight character. Cheap second read closes the
-    // TOCTOU window.
+    // Defense in depth: re-read dirty/disposed immediately before the
+    // revert call. Today this is strictly belt-and-suspenders — no
+    // microtask boundary exists between the dirty read inside
+    // shouldRevertContext above and the await on revert() below, so a
+    // keystroke cannot land in that window. The re-check survives a
+    // future refactor that inserts an await (telemetry, an instrument
+    // hook, etc.) between the decision and the revert call without
+    // anyone having to re-derive the safety argument.
     if (context.model.dirty || context.isDisposed) {
       return;
     }

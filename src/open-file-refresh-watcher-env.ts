@@ -12,12 +12,13 @@ import { Contents } from '@jupyterlab/services';
 
 import { IRefreshWatcherEnv } from './open-file-refresh-watcher';
 
-// JL4 added the 'down' split area; a notebook the user dragged below
-// the main editor lives there, not in 'main'. Walk both so the watcher
-// covers split-down editors. Sidebars ('left'/'right') intentionally
-// excluded — almost nothing editable lives there, and including them
-// would polling-stat sidebar widgets we'd never revert.
-const WATCHED_SHELL_AREAS = ['main', 'down'] as const;
+// JL4 hosts editable documents in 'main' (default) and 'down' (the
+// split-down editor pane). Walk the sidebars too: users can drag a
+// notebook to 'left' or 'right' in JL4, and a non-DocumentWidget
+// sitting in a sidebar costs only the instanceof filter check below.
+// 'top'/'header'/'menu'/'bottom' are chrome (toolbars, status bar)
+// and never host documents.
+const WATCHED_SHELL_AREAS = ['main', 'down', 'left', 'right'] as const;
 
 export function buildRefreshWatcherEnv(
   app: JupyterFrontEnd,
