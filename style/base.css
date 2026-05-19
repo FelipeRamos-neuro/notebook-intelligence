@@ -984,6 +984,21 @@ pre:has(.code-block-header) {
   color: var(--jp-ui-font-color3);
 }
 
+/* The session row's project basename rides at the right edge,
+   mirroring the old `time` slot. Keeps long paths from blowing out the
+   row while leaving the full cwd available on hover via the title attr.
+   (Named `-session-project` not `-project` to avoid colliding with the
+   project-grouping header class higher up in this stylesheet.) */
+.nbi-claude-code-picker-session-project {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--jp-ui-font-color3);
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .nbi-claude-code-picker-msg {
   font-size: var(--jp-ui-font-size1);
   color: var(--jp-ui-font-color2);

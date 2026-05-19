@@ -150,6 +150,11 @@ def _read_session_info(path: Path) -> Optional[ClaudeSessionInfo]:
     Returns ``None`` for transcripts that aren't useful to resume: the
     file is unreadable, starts with a sidechain record (subagent probe),
     or contains no user messages at all (snapshot-only).
+
+    The ``cwd`` is sourced from the transcript itself (Claude Code writes
+    a ``cwd`` field on most message envelopes) rather than reverse-
+    engineering from the encoded directory name, which is ambiguous for
+    paths that contain literal dashes (e.g. ``/Users/me/get-noticed``).
     """
     try:
         stat = path.stat()
@@ -160,6 +165,7 @@ def _read_session_info(path: Path) -> Optional[ClaudeSessionInfo]:
     preview = ""
     saw_user_message = False
     first_parsed_obj = True
+    cwd_from_transcript = ""
 
     try:
         with path.open("r", encoding="utf-8") as fh:
@@ -180,13 +186,25 @@ def _read_session_info(path: Path) -> Optional[ClaudeSessionInfo]:
                     first_parsed_obj = False
                     if obj.get("isSidechain") is True:
                         return None
+                # Pick up the cwd as soon as we find a record that
+                # carries one. Most lines do; the first that does wins.
+                if not cwd_from_transcript:
+                    candidate = obj.get("cwd")
+                    if isinstance(candidate, str) and candidate:
+                        cwd_from_transcript = candidate
                 if not _is_user_message(obj):
                     continue
                 saw_user_message = True
                 if _is_skippable_user_message(obj):
                     continue
-                preview = _extract_preview(obj)
-                break
+                if not preview:
+                    preview = _extract_preview(obj)
+                # We need both the preview AND the cwd before we can
+                # stop. Most envelopes carry cwd, so this loop usually
+                # exits within the first few lines; otherwise the
+                # _MAX_LINES_SCANNED cap above provides the upper bound.
+                if cwd_from_transcript:
+                    break
     except OSError as exc:
         log.warning("Could not read Claude session file %s: %s", path, exc)
         return None
@@ -201,6 +219,7 @@ def _read_session_info(path: Path) -> Optional[ClaudeSessionInfo]:
         modified_at=stat.st_mtime,
         created_at=stat.st_ctime,
         preview=preview,
+        cwd=cwd_from_transcript,
     )
 
 
@@ -269,124 +288,118 @@ def _truncate_preview(text: str) -> str:
     return text
 
 
+# Module-level cache: (transcript_path, mtime) -> parsed ClaudeSessionInfo.
+# Avoids re-reading every .jsonl on every list call (D207). Invalidates
+# automatically on mtime change. Capped so a long-running server doesn't
+# unbounded-grow; bumping out the oldest entry is fine since the cache
+# is purely a performance hint.
+_SESSION_INFO_CACHE: "dict[tuple[str, float], Optional[ClaudeSessionInfo]]" = {}
+_SESSION_INFO_CACHE_MAX = 2048
+
+
+def _cached_read_session_info(path: Path) -> Optional[ClaudeSessionInfo]:
+    """``_read_session_info`` with mtime-keyed memoization.
+
+    Returns the cached parse when the file hasn't been touched since the
+    last call, otherwise re-parses. Treats stat failures the same as the
+    underlying function: warn and skip.
+    """
+    try:
+        mtime = path.stat().st_mtime
+    except OSError as exc:
+        log.warning("Could not stat Claude session file %s: %s", path, exc)
+        return None
+    key = (str(path), mtime)
+    cached = _SESSION_INFO_CACHE.get(key)
+    if cached is not None or key in _SESSION_INFO_CACHE:
+        return cached
+    info = _read_session_info(path)
+    # Bound the cache size with a simple FIFO eviction; we're not trying
+    # to be LRU-clever for a few thousand transcripts.
+    if len(_SESSION_INFO_CACHE) >= _SESSION_INFO_CACHE_MAX:
+        try:
+            oldest = next(iter(_SESSION_INFO_CACHE))
+            del _SESSION_INFO_CACHE[oldest]
+        except StopIteration:
+            pass
+    _SESSION_INFO_CACHE[key] = info
+    return info
+
+
+def _decode_cwd_from_dir_name(name: str) -> str:
+    """Best-effort cwd recovery from a Claude project-dir name.
+
+    Used only as a fallback when the transcript itself has no ``cwd``
+    field. Claude encodes path separators as dashes, so ``-Users-me-proj``
+    becomes ``/Users/me/proj``. Paths with literal dashes are ambiguous
+    and will mis-decode; the transcript-derived cwd should be preferred
+    whenever it's available.
+    """
+    if not name:
+        return ""
+    if name.startswith("-"):
+        return "/" + name[1:].replace("-", "/")
+    return name.replace("-", "/")
+
+
 def list_all_sessions(
     cwd: Optional[str] = None,
     claude_home: Optional[str] = None,
 ) -> list[ClaudeSessionInfo]:
-    """List all resumable Claude sessions across all projects, newest first.
+    """List every resumable Claude session on disk, newest first.
 
-    Reads ``~/.claude/history.jsonl`` \u2014 Claude Code writes one entry per
-    prompt, so every session that appears there can actually be resumed.
-    Each session is enriched with its ``cwd`` (project path) so callers
-    can run ``claude --resume <id>`` from the correct directory.
+    Walks ``~/.claude/projects/*/`` directly so the result is the same
+    set of sessions ``claude --resume`` can recover. ``history.jsonl`` is
+    NOT used as a gating source because recent Claude Code versions don't
+    reliably populate it (notably for SDK-driven invocations), and
+    history-first lookups silently dropped real, on-disk sessions.
 
-    If ``cwd`` is provided, sessions from that project directory are also
-    included (e.g. NBI Claude Mode sessions that may not appear in
-    ``history.jsonl``). Results are de-duplicated by session ID.
+    The ``cwd`` is taken from the transcript itself when present (Claude
+    Code writes it on most message envelopes); falls back to a dash-
+    decoded project-dir name when no transcript line carries a cwd.
 
-    Sessions are de-duplicated by session ID and sorted by most recent
-    activity. Only sessions whose ``.jsonl`` transcript file still exists
-    in ``~/.claude/projects/`` are returned.
+    The ``cwd`` argument is retained for backward compatibility; when
+    given it's only used to scope same-cwd sessions whose project dir
+    might not exist yet (e.g. an in-progress NBI Claude Mode session).
+    Cross-project enumeration is unconditional.
+
+    Sessions are de-duplicated by session id and sorted by most recent
+    activity. Per-transcript parse results are mtime-cached so repeated
+    calls don't reparse every file.
     """
     home = Path(claude_home) if claude_home else Path.home() / ".claude"
-    history_path = home / "history.jsonl"
-
-    if not history_path.exists():
-        if cwd:
-            sessions = _list_sessions_in_dir(cwd, claude_home=claude_home)
-            for s in sessions:
-                s.cwd = cwd
-            return sessions
-        return []
-
-    # Build index: session_id -> .jsonl path for existence check.
     projects_dir = home / "projects"
-    session_to_jsonl: dict[str, Path] = {}
+
+    sessions: list[ClaudeSessionInfo] = []
+    seen_ids: set[str] = set()
+
     if projects_dir.is_dir():
         for project_dir in projects_dir.iterdir():
             if not project_dir.is_dir():
                 continue
+            fallback_cwd = _decode_cwd_from_dir_name(project_dir.name)
             for jsonl_file in project_dir.glob("*.jsonl"):
-                session_to_jsonl[jsonl_file.stem] = jsonl_file
-
-    # Read history.jsonl: group entries by session_id, track first/last timestamps.
-    # Structure: {session_id: {"project": str, "first_ts": int, "last_ts": int, "preview": str}}
-    seen: dict[str, dict] = {}
-    try:
-        with history_path.open("r", encoding="utf-8") as fh:
-            for raw in fh:
-                line = raw.strip()
-                if not line:
+                info = _cached_read_session_info(jsonl_file)
+                if info is None or info.session_id in seen_ids:
                     continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                session_id = obj.get("sessionId")
-                if not session_id:
-                    continue
-                project = obj.get("project", "")
-                ts = int(obj.get("timestamp", 0))
-                display = obj.get("display", "")
-                if session_id not in seen:
-                    seen[session_id] = {
-                        "project": project,
-                        "first_ts": ts,
-                        "last_ts": ts,
-                        "preview": display,
-                    }
-                else:
-                    if ts < seen[session_id]["first_ts"]:
-                        seen[session_id]["first_ts"] = ts
-                        seen[session_id]["preview"] = display
-                    if ts > seen[session_id]["last_ts"]:
-                        seen[session_id]["last_ts"] = ts
-    except OSError as exc:
-        log.warning("Could not read Claude history file %s: %s", history_path, exc)
-        if cwd:
-            sessions = _list_sessions_in_dir(cwd, claude_home=claude_home)
-            for s in sessions:
-                s.cwd = cwd
-            return sessions
-        return []
+                # Fall back to the dash-decoded dir name only when the
+                # transcript itself didn't yield a cwd.
+                if not info.cwd:
+                    info.cwd = fallback_cwd
+                sessions.append(info)
+                seen_ids.add(info.session_id)
 
-    sessions: list[ClaudeSessionInfo] = []
-    for session_id, data in seen.items():
-        # Only include sessions whose transcript file still exists.
-        if session_id not in session_to_jsonl:
-            continue
-        jsonl_path = session_to_jsonl[session_id]
-        try:
-            stat = jsonl_path.stat()
-        except OSError:
-            continue
-        preview = data["preview"]
-        # When display is skippable, prefer a transcript-derived preview;
-        # if neither yields anything meaningful, leave preview empty so
-        # the picker UI can show only the session id + timestamp instead
-        # of a literal "/exit"-style row (issues #181, #187).
-        if _is_skippable_text(preview):
-            transcript_info = _read_session_info(jsonl_path)
-            preview = transcript_info.preview if transcript_info else ""
-        preview = _truncate_preview(preview)
-        sessions.append(ClaudeSessionInfo(
-            session_id=session_id,
-            path=str(jsonl_path),
-            modified_at=data["last_ts"] / 1000.0,
-            created_at=stat.st_ctime,
-            preview=preview,
-            cwd=data["project"],
-        ))
-
-    # Merge in cwd-scoped sessions (e.g. NBI Claude Mode sessions that may
-    # not appear in history.jsonl), deduplicating by session_id.
+    # Belt and suspenders: if the caller asked for sessions scoped to a
+    # specific cwd whose project dir doesn't exist yet (e.g. a brand-new
+    # NBI Claude Mode session being recorded), surface them too.
     if cwd:
-        existing_ids = {s.session_id for s in sessions}
         for s in _list_sessions_in_dir(cwd, claude_home=claude_home):
-            if s.session_id not in existing_ids:
+            if s.session_id in seen_ids:
+                continue
+            if not s.cwd:
                 s.cwd = cwd
-                sessions.append(s)
-                existing_ids.add(s.session_id)
+            sessions.append(s)
+            seen_ids.add(s.session_id)
 
     sessions.sort(key=lambda s: s.modified_at, reverse=True)
     return sessions

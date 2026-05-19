@@ -13,6 +13,18 @@ export interface ILauncherPickerProps {
   onSessionSelected: (session: IClaudeSessionInfo) => void;
 }
 
+// Pick a short, glanceable label for a session's project. The basename
+// of the cwd is usually the project's actual name; the full path stays
+// available via the row's `title` attribute on hover.
+function projectLabel(cwd: string | undefined | null): string {
+  if (!cwd) {
+    return '';
+  }
+  const trimmed = cwd.replace(/\/+$/, '');
+  const idx = trimmed.lastIndexOf('/');
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+}
+
 export function LauncherPicker({
   onSessionSelected
 }: ILauncherPickerProps): JSX.Element {
@@ -187,9 +199,28 @@ export function LauncherPicker({
                   <span className="nbi-claude-code-picker-session-id">
                     {session.session_id.slice(0, 8)}
                   </span>
-                  <span className="nbi-claude-code-picker-time">
-                    {session.cwd}
-                  </span>
+                  {/* Render the basename of the project as the inline
+                      label; keep the full path on hover via title so a
+                      user with several similarly-named projects can
+                      disambiguate without losing the path entirely.
+                      Screen readers don't expose `title` on <span>
+                      reliably, so duplicate the full path into
+                      aria-label whenever it differs from the visible
+                      basename. */}
+                  {(() => {
+                    const full = session.cwd ?? '';
+                    const label = projectLabel(full);
+                    const fullDiffersFromLabel = full && full !== label;
+                    return (
+                      <span
+                        className="nbi-claude-code-picker-session-project"
+                        title={full}
+                        aria-label={fullDiffersFromLabel ? full : undefined}
+                      >
+                        {label}
+                      </span>
+                    );
+                  })()}
                 </div>
                 {session.preview && (
                   <div className="nbi-claude-code-picker-msg">

@@ -21,12 +21,15 @@ def _write_jsonl(path: Path, lines: list[dict]) -> None:
             fh.write(json.dumps(obj) + "\n")
 
 
-def _user_line(session_id: str, text: str) -> dict:
-    return {
+def _user_line(session_id: str, text: str, cwd: str = "") -> dict:
+    line = {
         "type": "user",
         "message": {"role": "user", "content": text},
         "sessionId": session_id,
     }
+    if cwd:
+        line["cwd"] = cwd
+    return line
 
 
 def _sidechain_line(session_id: str, content: str = "Warmup") -> dict:
@@ -38,12 +41,31 @@ def _sidechain_line(session_id: str, content: str = "Warmup") -> dict:
     }
 
 
-def _assistant_line(session_id: str) -> dict:
-    return {
+def _assistant_line(session_id: str, cwd: str = "") -> dict:
+    line = {
         "type": "assistant",
         "message": {"role": "assistant", "content": "ok"},
         "sessionId": session_id,
     }
+    if cwd:
+        line["cwd"] = cwd
+    return line
+
+
+@pytest.fixture(autouse=True)
+def _clear_session_cache():
+    """Drop the module-level _SESSION_INFO_CACHE between tests.
+
+    The cache is keyed by (path, mtime), so under tmp_path per-test
+    isolation collisions are theoretical; explicit clearing keeps test
+    ordering, single-test reruns, and future cache-introspection tests
+    deterministic instead of relying on tmp_path entropy.
+    """
+    from notebook_intelligence import claude_sessions
+
+    claude_sessions._SESSION_INFO_CACHE.clear()
+    yield
+    claude_sessions._SESSION_INFO_CACHE.clear()
 
 
 @pytest.fixture
@@ -498,8 +520,11 @@ class TestListAllSessions:
     def test_returns_cwd_sessions_when_history_missing(
         self, fake_claude_home, sessions_dir, project_cwd
     ):
+        # The project-walk path finds the session even when history.jsonl
+        # is absent (the common case on recent Claude Code releases).
         _write_jsonl(
-            sessions_dir / "s1.jsonl", [_user_line("s1", "nbi session")]
+            sessions_dir / "s1.jsonl",
+            [_user_line("s1", "nbi session", cwd=project_cwd)],
         )
         result = list_all_sessions(cwd=project_cwd, claude_home=str(fake_claude_home))
         assert len(result) == 1
@@ -573,31 +598,36 @@ class TestListAllSessions:
         match = next(s for s in result if s.session_id == session_id)
         assert match.preview == ""
 
-    def test_keeps_history_display_when_meaningful(
+    def test_transcript_is_authoritative_for_preview(
         self, fake_claude_home, sessions_dir, project_cwd
     ):
-        # When history.jsonl already has a meaningful display, the
-        # transcript fall-through must not run (and even if it did, the
-        # display value should win — it's what the user actually typed).
+        # The transcript on disk is now the source of truth for the
+        # preview. history.jsonl can drift (Claude Code skipped writing
+        # it for some flows), so listing relies on what's actually in the
+        # transcript file. If history.jsonl says one thing and the
+        # transcript says another, the transcript wins.
         session_id = "good1234"
         jsonl_path = sessions_dir / f"{session_id}.jsonl"
         _write_jsonl(
             jsonl_path,
-            [_user_line(session_id, "transcript-recorded text")],
+            [_user_line(session_id, "transcript-recorded text", cwd=project_cwd)],
         )
 
         _write_history(
             fake_claude_home,
             [
                 _history_line(
-                    session_id, project_cwd, 1_700_000_000_000, "what the user typed"
+                    session_id,
+                    project_cwd,
+                    1_700_000_000_000,
+                    "stale history display",
                 )
             ],
         )
 
         result = list_all_sessions(cwd=project_cwd, claude_home=str(fake_claude_home))
         match = next(s for s in result if s.session_id == session_id)
-        assert match.preview == "what the user typed"
+        assert match.preview == "transcript-recorded text"
 
     def test_deduplicates_sessions_in_both_sources(
         self, fake_claude_home, sessions_dir, project_cwd
@@ -669,3 +699,178 @@ class TestListAllSessions:
 
         assert chat_picker_session.preview == launcher_session.preview
         assert chat_picker_session.preview == "Plot the closing prices for AAPL"
+
+
+class TestCrossSurfaceConsistency:
+    """Pin that NBI's session-listing surfaces converge on the same
+    on-disk set ``claude --resume`` consumes.
+
+    Three surfaces care about session enumeration: the chat sidebar's
+    Resume button (scope=cwd), the Launcher tile picker (scope=all), and
+    Claude Code's own ``/resume`` (external; not shelled out by these
+    tests). The authoritative ground truth all three share is the set
+    of ``.jsonl`` transcripts under ``~/.claude/projects/*/``. These
+    tests assert that NBI's two listing paths enumerate that set, so a
+    user can't see a session in one surface and not the other. Whether
+    Claude Code's own ``/resume`` enumerates the same set is its
+    contract to keep, not ours; a Galata or shell-out integration test
+    that runs ``claude --resume`` and diffs IDs against ours is the
+    cross-binary check, deferred to follow-up.
+    """
+
+    def test_launcher_returns_every_on_disk_session(
+        self, fake_claude_home, project_cwd, tmp_path
+    ):
+        # Three projects, each with a session. The launcher (scope=all)
+        # must enumerate all three regardless of whether history.jsonl
+        # exists or names them.
+        proj_a = project_cwd
+        proj_b = str(tmp_path / "projects" / "second-project")
+        proj_c = str(tmp_path / "projects" / "third-project")
+        Path(proj_b).mkdir(parents=True)
+        Path(proj_c).mkdir(parents=True)
+
+        for sid, cwd in [
+            ("a-sess", proj_a),
+            ("b-sess", proj_b),
+            ("c-sess", proj_c),
+        ]:
+            sdir = get_sessions_dir(cwd, claude_home=str(fake_claude_home))
+            sdir.mkdir(parents=True, exist_ok=True)
+            _write_jsonl(sdir / f"{sid}.jsonl", [_user_line(sid, sid, cwd=cwd)])
+
+        result = list_all_sessions(claude_home=str(fake_claude_home))
+        ids = {s.session_id for s in result}
+        assert ids == {"a-sess", "b-sess", "c-sess"}
+
+    def test_launcher_finds_sessions_without_history_jsonl(
+        self, fake_claude_home, project_cwd
+    ):
+        # /resume inside Claude works whether or not history.jsonl exists,
+        # so the launcher must too. This is the user-reported bug: empty
+        # or stale history.jsonl made cross-project sessions disappear
+        # from the launcher tile.
+        sdir = get_sessions_dir(project_cwd, claude_home=str(fake_claude_home))
+        sdir.mkdir(parents=True)
+        _write_jsonl(
+            sdir / "abc.jsonl",
+            [_user_line("abc", "Find me later", cwd=project_cwd)],
+        )
+
+        # No history.jsonl on disk at all.
+        result = list_all_sessions(claude_home=str(fake_claude_home))
+        assert {s.session_id for s in result} == {"abc"}
+
+    def test_cwd_scope_is_subset_of_all_scope(
+        self, fake_claude_home, project_cwd, tmp_path
+    ):
+        # Whatever the chat-sidebar (cwd-scoped) shows must be a subset of
+        # what the launcher (all-scoped) shows. This is the structural
+        # invariant we never want to violate, regardless of how the picker
+        # filters internally.
+        other_cwd = str(tmp_path / "projects" / "elsewhere")
+        Path(other_cwd).mkdir(parents=True)
+
+        my_dir = get_sessions_dir(project_cwd, claude_home=str(fake_claude_home))
+        my_dir.mkdir(parents=True)
+        _write_jsonl(
+            my_dir / "mine.jsonl",
+            [_user_line("mine", "in my project", cwd=project_cwd)],
+        )
+
+        other_dir = get_sessions_dir(other_cwd, claude_home=str(fake_claude_home))
+        other_dir.mkdir(parents=True)
+        _write_jsonl(
+            other_dir / "theirs.jsonl",
+            [_user_line("theirs", "in another project", cwd=other_cwd)],
+        )
+
+        all_sessions = list_all_sessions(
+            cwd=project_cwd, claude_home=str(fake_claude_home)
+        )
+        cwd_only = [
+            s
+            for s in all_sessions
+            if os.path.realpath(s.cwd) == os.path.realpath(project_cwd)
+        ]
+        all_ids = {s.session_id for s in all_sessions}
+        cwd_ids = {s.session_id for s in cwd_only}
+        assert cwd_ids.issubset(all_ids)
+        assert cwd_ids == {"mine"}
+        assert all_ids == {"mine", "theirs"}
+
+    def test_cross_project_session_carries_its_cwd_for_resume(
+        self, fake_claude_home, tmp_path
+    ):
+        # The launcher tile resumes cross-project sessions by issuing
+        # `cd ${session.cwd} && claude --resume <id>` in a new terminal.
+        # That only works if the cwd field is populated AND accurate.
+        # Pin: every session returned by the project-walk carries the
+        # transcript-recorded cwd.
+        proj = str(tmp_path / "projects" / "real-project")
+        Path(proj).mkdir(parents=True)
+        sdir = get_sessions_dir(proj, claude_home=str(fake_claude_home))
+        sdir.mkdir(parents=True)
+        _write_jsonl(
+            sdir / "sess.jsonl",
+            [_user_line("sess", "prompt", cwd=proj)],
+        )
+
+        result = list_all_sessions(claude_home=str(fake_claude_home))
+        assert len(result) == 1
+        assert result[0].cwd == proj
+
+    def test_dash_decoded_cwd_fallback_when_transcript_omits_cwd(
+        self, fake_claude_home
+    ):
+        # Older transcripts (and synthetic test fixtures) may not carry a
+        # cwd field. The dash-decoded directory name is the fallback. The
+        # decoding is lossy for paths with literal dashes — pin the
+        # mechanical behavior of the fallback (dashes -> slashes,
+        # leading-dash -> root slash) so a regression in the decoder is
+        # surfaced immediately.
+        encoded_dir_name = "-Users-someone-clean"
+        sdir = fake_claude_home / "projects" / encoded_dir_name
+        sdir.mkdir(parents=True)
+        _write_jsonl(
+            sdir / "sess.jsonl",
+            # No cwd in the line — exercises the fallback path.
+            [_user_line("sess", "prompt")],
+        )
+
+        result = list_all_sessions(claude_home=str(fake_claude_home))
+        assert len(result) == 1
+        assert result[0].cwd == "/Users/someone/clean"
+
+    def test_mtime_cache_skips_reparse_on_unchanged_file(
+        self, fake_claude_home, sessions_dir, project_cwd, monkeypatch
+    ):
+        # The project-walk reads every .jsonl on every call by default
+        # (D207). We cache parse results by (path, mtime) so a no-op
+        # refresh doesn't re-open files. Pin: a second list call doesn't
+        # invoke the underlying reader for unchanged transcripts.
+        from notebook_intelligence import claude_sessions
+
+        _write_jsonl(
+            sessions_dir / "cached.jsonl",
+            [_user_line("cached", "prompt", cwd=project_cwd)],
+        )
+
+        first = list_all_sessions(claude_home=str(fake_claude_home))
+        assert len(first) == 1
+
+        # Wrap _read_session_info to count calls on the second pass.
+        call_count = {"n": 0}
+        real_reader = claude_sessions._read_session_info
+
+        def counting_reader(path):
+            call_count["n"] += 1
+            return real_reader(path)
+
+        monkeypatch.setattr(
+            claude_sessions, "_read_session_info", counting_reader
+        )
+
+        second = list_all_sessions(claude_home=str(fake_claude_home))
+        assert len(second) == 1
+        assert call_count["n"] == 0  # served from cache

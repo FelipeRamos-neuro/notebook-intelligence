@@ -55,7 +55,6 @@ from notebook_intelligence.plugin_manager import PluginManager
 from notebook_intelligence.tour_config import load_tour_config
 from notebook_intelligence.claude_sessions import (
     NBI_CONTEXT_PREFIX,
-    get_sessions_dir as get_claude_sessions_dir,
     list_all_sessions as list_all_claude_sessions,
 )
 import notebook_intelligence.github_copilot as github_copilot
@@ -1684,9 +1683,36 @@ class ClaudeSessionsListHandler(APIHandler):
             cwd = get_jupyter_root_dir()
             sessions = list_all_claude_sessions(cwd=cwd)
             if scope == "cwd" and cwd:
-                target = str(get_claude_sessions_dir(cwd))
+                # Compare realpaths so symlinked workspaces (common on
+                # JupyterHub with NFS user dirs) match transcripts that
+                # were written against the resolved path. The old
+                # implementation compared the encoded directory name,
+                # which produced different strings whenever the user's
+                # cwd was a symlink alias.
+                #
+                # `realpath` can be an NFS round trip per call, so cache
+                # per-cwd within this request — many sessions share the
+                # same cwd and re-resolving each time turns a 1k-session
+                # filter into 1k NFS lookups.
+                #
+                # Sessions whose cwd is empty (older transcripts that
+                # carried no cwd field and whose project dir name also
+                # failed the dash-decode fallback) are dropped from
+                # scope=cwd results: they cannot be matched against the
+                # current cwd anyway. They remain visible under
+                # scope=all.
+                target = os.path.realpath(cwd)
+                realpath_cache: dict[str, str] = {}
+
+                def _rp(p: str) -> str:
+                    cached = realpath_cache.get(p)
+                    if cached is None:
+                        cached = os.path.realpath(p)
+                        realpath_cache[p] = cached
+                    return cached
+
                 sessions = [
-                    s for s in sessions if os.path.dirname(s.path) == target
+                    s for s in sessions if s.cwd and _rp(s.cwd) == target
                 ]
             self.finish(json.dumps({
                 "sessions": [asdict(s) for s in sessions],
