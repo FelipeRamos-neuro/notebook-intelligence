@@ -28,7 +28,13 @@ dependencies = [
     "fuzy-jon==0.1.0",
     "tiktoken",
     "cryptography",
-    # 1.83.7 picks up CVE-2026-42203 / CVE-2026-42208 / CVE-2026-42271 fixes.
+    # 1.83.7 picks up CVE-2026-42203 / CVE-2026-42208 / CVE-2026-42271
+    # fixes. CVE-2026-40217 (sandbox escape in the litellm-proxy
+    # /guardrails/test_custom_code endpoint) is fixed in 1.83.10 per
+    # the GHSA-wxxx-gvqv-xp7p advisory, but 1.83.10 has not yet been
+    # released to PyPI. NBI imports litellm as a client library and
+    # does not expose the proxy server endpoints, so the gap is
+    # latent-not-exposed; bump the lower bound when 1.83.10 ships.
     "litellm>=1.83.7",
     "openai",
     "ollama",
@@ -39,6 +45,10 @@ dependencies = [
     # tightly enough on their own.
     "mistune>=3.2.1",  # CVE-2026-33441
     "python-multipart>=0.0.27",  # CVE-2026-42561
+    # urllib3 reaches us via `requests` (tiktoken's dep), which doesn't
+    # cap the upper bound. 2.7.0 picks up CVE-2026-44431 (cross-origin
+    # redirect handling) and CVE-2026-44432 (streaming API).
+    "urllib3>=2.7.0",
     # python-dotenv CVE-2026-28684 (fix: 1.2.2) is NOT pinned here because
     # litellm 1.83.7 hard-pins python-dotenv==1.0.1. Adding a >=1.2.2 lower
     # bound would force pip to fail resolution on fresh installs. Track
