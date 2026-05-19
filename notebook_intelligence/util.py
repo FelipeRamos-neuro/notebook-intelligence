@@ -285,6 +285,17 @@ _DISALLOWED_URI_CODEPOINTS = frozenset(
 )
 
 
+def has_dangerous_text_codepoints(s: str) -> bool:
+    """Return True if ``s`` contains any codepoint in the same set
+    ``safe_anchor_uri`` rejects (C0/DEL/C1, NEL/NBSP/LS/PS/BOM, ZWSP,
+    bidi-override controls). Useful at any boundary that embeds an
+    untrusted string into rendered text or prompt prose where a
+    line-break, visual-impersonation, or bidi-reorder vector would
+    matter.
+    """
+    return any(ord(ch) in _DISALLOWED_URI_CODEPOINTS for ch in s)
+
+
 def safe_anchor_uri(uri: str) -> str:
     """Return ``uri`` when its scheme is in the chat anchor allowlist.
 
@@ -298,9 +309,8 @@ def safe_anchor_uri(uri: str) -> str:
     # Scan the original input — str.strip() treats NEL, NBSP, LS, PS, and
     # other unicode whitespace as trimmable, so checking after stripping
     # would let those codepoints slip past as a trailing edge.
-    for ch in uri:
-        if ord(ch) in _DISALLOWED_URI_CODEPOINTS:
-            return ""
+    if has_dangerous_text_codepoints(uri):
+        return ""
     stripped = uri.strip()
     if not stripped:
         return ""

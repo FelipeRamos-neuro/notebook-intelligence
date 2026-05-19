@@ -59,7 +59,7 @@ from notebook_intelligence.claude_sessions import (
 )
 import notebook_intelligence.github_copilot as github_copilot
 from notebook_intelligence.built_in_toolsets import built_in_toolsets
-from notebook_intelligence.util import ThreadSafeWebSocketConnector, get_jupyter_root_dir, set_jupyter_root_dir, is_builtin_tool_enabled_in_env, is_provider_enabled_in_env, VALID_CODING_AGENT_LAUNCHERS, compute_effective_disabled_launchers, validate_coding_agent_launcher_ids, resolve_claude_cli_path, resolve_opencode_cli_path, resolve_pi_cli_path, resolve_copilot_cli_path, resolve_codex_cli_path, safe_anchor_uri, split_csv
+from notebook_intelligence.util import ThreadSafeWebSocketConnector, get_jupyter_root_dir, set_jupyter_root_dir, is_builtin_tool_enabled_in_env, is_provider_enabled_in_env, VALID_CODING_AGENT_LAUNCHERS, compute_effective_disabled_launchers, validate_coding_agent_launcher_ids, resolve_claude_cli_path, resolve_opencode_cli_path, resolve_pi_cli_path, resolve_copilot_cli_path, resolve_codex_cli_path, safe_anchor_uri, has_dangerous_text_codepoints, split_csv
 from notebook_intelligence.context_factory import RuleContextFactory
 from notebook_intelligence.skillset import SKILL_NAME_REGEX
 
@@ -2172,6 +2172,10 @@ class WebsocketCopilotHandler(WebSocketMixin, websocket.WebSocketHandler, Jupyte
             token_limit = 100 if ai_service_manager.chat_model is None else ai_service_manager.chat_model.context_window
             remaining_token_budget = int(0.8 * token_limit)
 
+            # Resolve once; reused for sandbox containment and for
+            # workspace-relative @-mention path computation below.
+            workspace_root = os.path.realpath(NotebookIntelligence.root_dir)
+
             for context in additionalContext:
                 if remaining_token_budget <= 0:
                     break
@@ -2214,7 +2218,6 @@ class WebsocketCopilotHandler(WebSocketMixin, websocket.WebSocketHandler, Jupyte
                     # resolved path against root_dir before reading.
                     joined = path.join(NotebookIntelligence.root_dir, file_path)
                     resolved = os.path.realpath(joined)
-                    workspace_root = os.path.realpath(NotebookIntelligence.root_dir)
                     try:
                         in_workspace = (
                             os.path.commonpath([resolved, workspace_root])
@@ -2253,6 +2256,84 @@ class WebsocketCopilotHandler(WebSocketMixin, websocket.WebSocketHandler, Jupyte
                             })
                         except Exception as e:
                             log.warning(f"Failed to read pasted image '{file_path}': {e}")
+                    continue
+
+                if is_claude_code_mode:
+                    # Hand the agent an @-mention rather than the file's
+                    # contents: Claude's Read tool handles partial reads,
+                    # notebook cell structure, and binary formats natively,
+                    # and avoids the 80% context-window truncation the
+                    # content-injection path would otherwise apply.
+                    if is_upload:
+                        mention_path = file_path
+                    else:
+                        try:
+                            mention_path = path.relpath(file_path, workspace_root)
+                        except ValueError:
+                            mention_path = file_path
+                    # Defense in depth: the path already passed the
+                    # workspace sandbox above, but a filename containing
+                    # newlines, NEL/LS/PS, bidi-override controls, or
+                    # other text-rendering hazards would split or visually
+                    # impersonate the prose envelope once it reaches the
+                    # agent. Reuse the same codepoint set safe_anchor_uri
+                    # uses for the same threat profile.
+                    if has_dangerous_text_codepoints(mention_path):
+                        log.warning(
+                            "Rejecting attachment with disallowed-codepoint "
+                            "filename (prompt-injection hardening): %r",
+                            context["filePath"],
+                        )
+                        continue
+                    # Preserve the pointer prose the legacy path emits so
+                    # the agent still has a cursor for "this cell" /
+                    # "this code" deictic references; the @-mention alone
+                    # gives the agent the file but not the focus.
+                    # - currentCellContents fires when a notebook cell is
+                    #   active with no text selection (cellOutputAsText
+                    #   already bundles execute_result, stream, AND error
+                    #   traceback into the `output` string).
+                    # - startLine/endLine spans fire when the user has
+                    #   selected a range; pass the range as prose rather
+                    #   than the content so large selections don't burn
+                    #   the token budget.
+                    current_cell_contents = context.get("currentCellContents")
+                    pointer_parts = []
+                    if current_cell_contents is not None:
+                        cell_input = current_cell_contents.get("input", "")
+                        cell_output = current_cell_contents.get("output", "")
+                        pointer_parts.append(
+                            f"This is a Jupyter notebook and currently "
+                            f"selected cell input is: ```{cell_input}``` "
+                            f"and currently selected cell output is: "
+                            f"```{cell_output}```. If user asks a question "
+                            f"about 'this' cell then assume that user is "
+                            f"referring to currently selected cell."
+                        )
+                    else:
+                        start_line = context.get("startLine") or 0
+                        end_line = context.get("endLine") or 0
+                        if end_line > start_line > 0:
+                            pointer_parts.append(
+                                f"Their selection spans lines "
+                                f"{start_line}-{end_line}."
+                            )
+                    context_message = " ".join(
+                        [
+                            f"The user attached @{mention_path}.",
+                            *pointer_parts,
+                            "Read it if relevant to the request.",
+                        ]
+                    )
+                    # NB: when the user's prompt begins with `/`, the
+                    # join logic in claude.py (`query_lines[-1].startswith('/')`)
+                    # drops every prior user-role message, including these
+                    # context lines. Pre-existing behavior, not introduced
+                    # by this branch; documented here so a future reader
+                    # doesn't chase the @-mention silently disappearing
+                    # when paired with a slash-command.
+                    remaining_token_budget -= _token_count(context_message)
+                    chat_history.append({"role": "user", "content": context_message})
                     continue
 
                 start_line = context["startLine"]
