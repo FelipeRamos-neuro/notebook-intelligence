@@ -1681,19 +1681,27 @@ function SidebarComponent(props: any) {
     setWorkspaceFileActionPath(file.path);
 
     try {
-      const contentsManager = props.getApp().serviceManager.contents;
-      const model: any = await contentsManager.get(file.path, {
-        content: true
-      });
-      const content = serializeWorkspaceFileContent(model);
-
-      if (content.trim() === '') {
-        throw new Error('Empty files do not provide useful context.');
+      // In Claude Code mode, the agent reads the file itself via the
+      // server's @-mention path. Skip the contents fetch so binary files
+      // (images, PDFs, notebooks) are picker-eligible and large files
+      // aren't truncated by the client-side content-injection budget.
+      let content = '';
+      let lineCount = 0;
+      if (!NBIAPI.config.isInClaudeCodeMode) {
+        const contentsManager = props.getApp().serviceManager.contents;
+        const model: any = await contentsManager.get(file.path, {
+          content: true
+        });
+        content = serializeWorkspaceFileContent(model);
+        if (content.trim() === '') {
+          throw new Error('Empty files do not provide useful context.');
+        }
+        lineCount = countContentLines(content);
       }
 
       const nextSelectedFile: ISelectedContextFile = {
         content,
-        lineCount: countContentLines(content),
+        lineCount,
         path: file.path,
         type: file.type
       };

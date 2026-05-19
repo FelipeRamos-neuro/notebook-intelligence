@@ -272,3 +272,504 @@ class TestWebsocketHandlerIntegration:
         assert "File contents:" in context_message
         assert 'def greet()' in context_message
         assert 'return "hi"' in context_message
+
+    @patch('notebook_intelligence.extension.ai_service_manager')
+    @patch('notebook_intelligence.extension.NotebookIntelligence')
+    @patch('notebook_intelligence.extension.threading.Thread')
+    def test_on_message_claude_mode_emits_at_mention_not_contents(
+        self, mock_thread, mock_nb_intel, mock_ai_manager
+    ):
+        """In Claude Code mode, workspace file context becomes an @-mention
+        prose message so the agent's Read tool decides how much to read.
+        Pins the issue-326 behavior so a future refactor can't silently
+        regress to client-side content injection (which truncates large
+        files and rejects binary files outright).
+        """
+        mock_nb_intel.root_dir = "/workspace"
+        mock_ai_manager.handle_chat_request = Mock()
+        mock_ai_manager.is_claude_code_mode = True
+        mock_ai_manager.chat_model = Mock()
+        mock_ai_manager.chat_model.context_window = 4096
+
+        mock_factory = Mock(spec=RuleContextFactory)
+        mock_factory.create.return_value = Mock(spec=RuleContext)
+
+        with patch('notebook_intelligence.extension.ThreadSafeWebSocketConnector'):
+            handler = WebsocketCopilotHandler(
+                self._create_mock_application(),
+                self._create_mock_request(),
+                context_factory=mock_factory
+            )
+
+        # Synthesize a 10MB content blob that the non-Claude path would
+        # truncate via _truncate_context_content; the @-mention branch
+        # must not echo it back into the prompt.
+        large_blob = 'x' * (10 * 1024 * 1024)
+        message = {
+            'id': 'test-message-id',
+            'type': 'chat-request',
+            'data': {
+                'chatId': 'test-chat-id',
+                'prompt': 'Summarize the attached file',
+                'language': 'python',
+                'filename': 'notebook.ipynb',
+                'chatMode': 'ask',
+                'toolSelections': {},
+                'additionalContext': [
+                    {
+                        'filePath': 'src/example.py',
+                        'content': large_blob,
+                        'currentCellContents': None,
+                        'startLine': 1,
+                        'endLine': 1
+                    }
+                ]
+            }
+        }
+
+        handler.on_message(json.dumps(message))
+
+        mock_ai_manager.handle_chat_request.assert_called_once()
+        chat_request = mock_ai_manager.handle_chat_request.call_args[0][0]
+
+        assert len(chat_request.chat_history) == 1
+        context_message = chat_request.chat_history[0]["content"]
+        assert "@src/example.py" in context_message
+        assert "File contents:" not in context_message
+        assert large_blob not in context_message
+        # Generous upper bound: the prose envelope is ~80 chars; anything
+        # remotely close to the blob size means content leaked through.
+        assert len(context_message) < 500
+
+    @patch('notebook_intelligence.extension.ai_service_manager')
+    @patch('notebook_intelligence.extension.NotebookIntelligence')
+    @patch('notebook_intelligence.extension.threading.Thread')
+    def test_on_message_claude_mode_image_branch_unchanged(
+        self, mock_thread, mock_nb_intel, mock_ai_manager
+    ):
+        """Pasted images in Claude mode keep the existing path-based
+        message format. The new @-mention branch must not shadow the
+        is_image branch (the latter already does the right thing for
+        pasted-image uploads and changing its wording is out of scope).
+        """
+        mock_nb_intel.root_dir = "/workspace"
+        mock_ai_manager.handle_chat_request = Mock()
+        mock_ai_manager.is_claude_code_mode = True
+        mock_ai_manager.chat_model = Mock()
+        mock_ai_manager.chat_model.context_window = 4096
+
+        mock_factory = Mock(spec=RuleContextFactory)
+        mock_factory.create.return_value = Mock(spec=RuleContext)
+
+        with patch('notebook_intelligence.extension.ThreadSafeWebSocketConnector'):
+            handler = WebsocketCopilotHandler(
+                self._create_mock_application(),
+                self._create_mock_request(),
+                context_factory=mock_factory
+            )
+
+        message = {
+            'id': 'test-message-id',
+            'type': 'chat-request',
+            'data': {
+                'chatId': 'test-chat-id',
+                'prompt': 'What is in this image?',
+                'language': 'python',
+                'filename': 'notebook.ipynb',
+                'chatMode': 'ask',
+                'toolSelections': {},
+                'additionalContext': [
+                    {
+                        'filePath': '/tmp/nbi-uploads-xyz/pasted.png',
+                        'content': '',
+                        'currentCellContents': None,
+                        'startLine': 1,
+                        'endLine': 1,
+                        'isUpload': True,
+                        'isImage': True,
+                        'mimeType': 'image/png'
+                    }
+                ]
+            }
+        }
+
+        handler.on_message(json.dumps(message))
+
+        chat_request = mock_ai_manager.handle_chat_request.call_args[0][0]
+        assert len(chat_request.chat_history) == 1
+        context_message = chat_request.chat_history[0]["content"]
+        assert "The user pasted an image" in context_message
+        assert "/tmp/nbi-uploads-xyz/pasted.png" in context_message
+        # Sanity-check the new @-mention branch didn't intercept this case.
+        assert "@/tmp/nbi-uploads-xyz/pasted.png" not in context_message
+
+    @patch('notebook_intelligence.extension.ai_service_manager')
+    @patch('notebook_intelligence.extension.NotebookIntelligence')
+    @patch('notebook_intelligence.extension.threading.Thread')
+    def test_on_message_claude_mode_rejects_out_of_workspace_path(
+        self, mock_thread, mock_nb_intel, mock_ai_manager
+    ):
+        """The pre-existing sandbox check at extension.py rejects
+        out-of-workspace paths before the new @-mention branch runs. Pin
+        it so a future refactor that reorders the branches can't produce
+        ``@../../etc/passwd`` in the prompt.
+        """
+        mock_nb_intel.root_dir = "/workspace"
+        mock_ai_manager.handle_chat_request = Mock()
+        mock_ai_manager.is_claude_code_mode = True
+        mock_ai_manager.chat_model = Mock()
+        mock_ai_manager.chat_model.context_window = 4096
+
+        mock_factory = Mock(spec=RuleContextFactory)
+        mock_factory.create.return_value = Mock(spec=RuleContext)
+
+        with patch('notebook_intelligence.extension.ThreadSafeWebSocketConnector'):
+            handler = WebsocketCopilotHandler(
+                self._create_mock_application(),
+                self._create_mock_request(),
+                context_factory=mock_factory
+            )
+
+        message = {
+            'id': 'test-message-id',
+            'type': 'chat-request',
+            'data': {
+                'chatId': 'test-chat-id',
+                'prompt': 'Read this file',
+                'language': 'python',
+                'filename': 'notebook.ipynb',
+                'chatMode': 'ask',
+                'toolSelections': {},
+                'additionalContext': [
+                    {
+                        'filePath': '../../etc/passwd',
+                        'content': '',
+                        'currentCellContents': None,
+                        'startLine': 1,
+                        'endLine': 1
+                    }
+                ]
+            }
+        }
+
+        handler.on_message(json.dumps(message))
+
+        chat_request = mock_ai_manager.handle_chat_request.call_args[0][0]
+        # No context message produced; the sandbox rejected the path
+        # before the @-mention branch could format it.
+        assert chat_request.chat_history == []
+
+    @patch('notebook_intelligence.extension.ai_service_manager')
+    @patch('notebook_intelligence.extension.NotebookIntelligence')
+    @patch('notebook_intelligence.extension.threading.Thread')
+    def test_on_message_claude_mode_upload_non_image_uses_absolute_path(
+        self, mock_thread, mock_nb_intel, mock_ai_manager
+    ):
+        """Uploaded text/binary files (non-image) reach the @-mention
+        branch with an absolute path; the relpath-against-workspace
+        computation must not fire for is_upload=True.
+        """
+        mock_nb_intel.root_dir = "/workspace"
+        mock_ai_manager.handle_chat_request = Mock()
+        mock_ai_manager.is_claude_code_mode = True
+        mock_ai_manager.chat_model = Mock()
+        mock_ai_manager.chat_model.context_window = 4096
+
+        mock_factory = Mock(spec=RuleContextFactory)
+        mock_factory.create.return_value = Mock(spec=RuleContext)
+
+        with patch('notebook_intelligence.extension.ThreadSafeWebSocketConnector'):
+            handler = WebsocketCopilotHandler(
+                self._create_mock_application(),
+                self._create_mock_request(),
+                context_factory=mock_factory
+            )
+
+        message = {
+            'id': 'test-message-id',
+            'type': 'chat-request',
+            'data': {
+                'chatId': 'test-chat-id',
+                'prompt': 'What does this PDF say?',
+                'language': 'python',
+                'filename': 'notebook.ipynb',
+                'chatMode': 'ask',
+                'toolSelections': {},
+                'additionalContext': [
+                    {
+                        'filePath': '/tmp/nbi-uploads-abc/report.pdf',
+                        'content': '',
+                        'currentCellContents': None,
+                        'startLine': 1,
+                        'endLine': 1,
+                        'isUpload': True
+                    }
+                ]
+            }
+        }
+
+        handler.on_message(json.dumps(message))
+
+        chat_request = mock_ai_manager.handle_chat_request.call_args[0][0]
+        assert len(chat_request.chat_history) == 1
+        context_message = chat_request.chat_history[0]["content"]
+        assert "@/tmp/nbi-uploads-abc/report.pdf" in context_message
+        assert "Read it if relevant" in context_message
+
+    @patch('notebook_intelligence.extension.ai_service_manager')
+    @patch('notebook_intelligence.extension.NotebookIntelligence')
+    @patch('notebook_intelligence.extension.threading.Thread')
+    def test_on_message_claude_mode_rejects_control_char_filename(
+        self, mock_thread, mock_nb_intel, mock_ai_manager
+    ):
+        """A filename containing newlines / bidi-override controls /
+        other text-rendering hazards is dropped before being embedded
+        in the @-mention prose. Pins the prompt-injection guard so a
+        future refactor can't reintroduce the seam.
+        """
+        mock_nb_intel.root_dir = "/workspace"
+        mock_ai_manager.handle_chat_request = Mock()
+        mock_ai_manager.is_claude_code_mode = True
+        mock_ai_manager.chat_model = Mock()
+        mock_ai_manager.chat_model.context_window = 4096
+
+        mock_factory = Mock(spec=RuleContextFactory)
+        mock_factory.create.return_value = Mock(spec=RuleContext)
+
+        with patch('notebook_intelligence.extension.ThreadSafeWebSocketConnector'):
+            handler = WebsocketCopilotHandler(
+                self._create_mock_application(),
+                self._create_mock_request(),
+                context_factory=mock_factory
+            )
+
+        # Upload path keeps the raw frontend-supplied filePath, so we
+        # don't have to fight the workspace sandbox to exercise the
+        # codepoint guard. Try newline, line-separator, and a bidi
+        # override in sequence; all three must be rejected.
+        hazardous_paths = [
+            "/tmp/nbi-uploads-abc/bad\nname.pdf",
+            "/tmp/nbi-uploads-abc/bad name.pdf",
+            "/tmp/nbi-uploads-abc/bad‮name.pdf",
+        ]
+        for hazardous in hazardous_paths:
+            mock_ai_manager.handle_chat_request.reset_mock()
+            message = {
+                'id': 'test-message-id',
+                'type': 'chat-request',
+                'data': {
+                    'chatId': 'test-chat-id',
+                    'prompt': 'Summarize',
+                    'language': 'python',
+                    'filename': 'notebook.ipynb',
+                    'chatMode': 'ask',
+                    'toolSelections': {},
+                    'additionalContext': [
+                        {
+                            'filePath': hazardous,
+                            'content': '',
+                            'currentCellContents': None,
+                            'startLine': 1,
+                            'endLine': 1,
+                            'isUpload': True
+                        }
+                    ]
+                }
+            }
+
+            handler.on_message(json.dumps(message))
+
+            chat_request = mock_ai_manager.handle_chat_request.call_args[0][0]
+            assert chat_request.chat_history == [], (
+                f"Hazardous path {hazardous!r} produced chat_history "
+                f"entry: {chat_request.chat_history!r}"
+            )
+
+    @patch('notebook_intelligence.extension.ai_service_manager')
+    @patch('notebook_intelligence.extension.NotebookIntelligence')
+    @patch('notebook_intelligence.extension.threading.Thread')
+    def test_on_message_claude_mode_preserves_notebook_cell_pointer(
+        self, mock_thread, mock_nb_intel, mock_ai_manager
+    ):
+        """When a notebook cell is active in Claude mode, the cell's
+        input/output prose must flow through alongside the @-mention so
+        the agent knows which cell the user is asking about. Without
+        this the agent sees only `@notebook.ipynb` and 'this cell'
+        questions lose their referent.
+        """
+        mock_nb_intel.root_dir = "/workspace"
+        mock_ai_manager.handle_chat_request = Mock()
+        mock_ai_manager.is_claude_code_mode = True
+        mock_ai_manager.chat_model = Mock()
+        mock_ai_manager.chat_model.context_window = 4096
+
+        mock_factory = Mock(spec=RuleContextFactory)
+        mock_factory.create.return_value = Mock(spec=RuleContext)
+
+        with patch('notebook_intelligence.extension.ThreadSafeWebSocketConnector'):
+            handler = WebsocketCopilotHandler(
+                self._create_mock_application(),
+                self._create_mock_request(),
+                context_factory=mock_factory
+            )
+
+        message = {
+            'id': 'test-message-id',
+            'type': 'chat-request',
+            'data': {
+                'chatId': 'test-chat-id',
+                'prompt': 'Explain this cell',
+                'language': 'python',
+                'filename': 'analysis.ipynb',
+                'chatMode': 'ask',
+                'toolSelections': {},
+                'additionalContext': [
+                    {
+                        'filePath': 'analysis.ipynb',
+                        'content': '',
+                        'currentCellContents': {
+                            'input': 'df.groupby("col").mean()',
+                            'output': '       col2\ncol\nA    1.5'
+                        },
+                        'cellIndex': 3,
+                        'startLine': 1,
+                        'endLine': 1
+                    }
+                ]
+            }
+        }
+
+        handler.on_message(json.dumps(message))
+
+        chat_request = mock_ai_manager.handle_chat_request.call_args[0][0]
+        assert len(chat_request.chat_history) == 1
+        context_message = chat_request.chat_history[0]["content"]
+        assert "@analysis.ipynb" in context_message
+        assert "currently selected cell input" in context_message
+        assert 'df.groupby("col").mean()' in context_message
+        assert "currently selected cell output" in context_message
+        assert "col2" in context_message
+        assert "'this' cell" in context_message
+
+    @patch('notebook_intelligence.extension.ai_service_manager')
+    @patch('notebook_intelligence.extension.NotebookIntelligence')
+    @patch('notebook_intelligence.extension.threading.Thread')
+    def test_on_message_claude_mode_preserves_selection_line_range(
+        self, mock_thread, mock_nb_intel, mock_ai_manager
+    ):
+        """When the user has a multi-line text selection in Claude mode,
+        the @-mention message gets a 'Their selection spans lines N-M'
+        prose pointer so 'why is this broken' has a referent. The bulk
+        selection text is NOT echoed back — the agent reads the file
+        itself via @-mention and is told where to look.
+        """
+        mock_nb_intel.root_dir = "/workspace"
+        mock_ai_manager.handle_chat_request = Mock()
+        mock_ai_manager.is_claude_code_mode = True
+        mock_ai_manager.chat_model = Mock()
+        mock_ai_manager.chat_model.context_window = 4096
+
+        mock_factory = Mock(spec=RuleContextFactory)
+        mock_factory.create.return_value = Mock(spec=RuleContext)
+
+        with patch('notebook_intelligence.extension.ThreadSafeWebSocketConnector'):
+            handler = WebsocketCopilotHandler(
+                self._create_mock_application(),
+                self._create_mock_request(),
+                context_factory=mock_factory
+            )
+
+        # The frontend passes `content` populated with the selection
+        # text. The Claude branch must ignore the bulk and emit only the
+        # range pointer.
+        selection_text = "def broken():\n    return undefined_thing\n" * 50
+        message = {
+            'id': 'test-message-id',
+            'type': 'chat-request',
+            'data': {
+                'chatId': 'test-chat-id',
+                'prompt': 'Why is this broken?',
+                'language': 'python',
+                'filename': 'src/foo.py',
+                'chatMode': 'ask',
+                'toolSelections': {},
+                'additionalContext': [
+                    {
+                        'filePath': 'src/foo.py',
+                        'content': selection_text,
+                        'currentCellContents': None,
+                        'startLine': 42,
+                        'endLine': 78
+                    }
+                ]
+            }
+        }
+
+        handler.on_message(json.dumps(message))
+
+        chat_request = mock_ai_manager.handle_chat_request.call_args[0][0]
+        assert len(chat_request.chat_history) == 1
+        context_message = chat_request.chat_history[0]["content"]
+        assert "@src/foo.py" in context_message
+        assert "lines 42-78" in context_message
+        # Bulk selection content must NOT have leaked into the message.
+        assert "undefined_thing" not in context_message
+        assert "def broken" not in context_message
+
+    @patch('notebook_intelligence.extension.ai_service_manager')
+    @patch('notebook_intelligence.extension.NotebookIntelligence')
+    @patch('notebook_intelligence.extension.threading.Thread')
+    def test_on_message_claude_mode_no_selection_no_range_pointer(
+        self, mock_thread, mock_nb_intel, mock_ai_manager
+    ):
+        """When the user has the file open with no selection (startLine
+        == endLine), the @-mention message stays clean — no spurious
+        'lines 1-1' pointer that would confuse the agent into thinking
+        the user wants only the first line.
+        """
+        mock_nb_intel.root_dir = "/workspace"
+        mock_ai_manager.handle_chat_request = Mock()
+        mock_ai_manager.is_claude_code_mode = True
+        mock_ai_manager.chat_model = Mock()
+        mock_ai_manager.chat_model.context_window = 4096
+
+        mock_factory = Mock(spec=RuleContextFactory)
+        mock_factory.create.return_value = Mock(spec=RuleContext)
+
+        with patch('notebook_intelligence.extension.ThreadSafeWebSocketConnector'):
+            handler = WebsocketCopilotHandler(
+                self._create_mock_application(),
+                self._create_mock_request(),
+                context_factory=mock_factory
+            )
+
+        message = {
+            'id': 'test-message-id',
+            'type': 'chat-request',
+            'data': {
+                'chatId': 'test-chat-id',
+                'prompt': 'What is this file about?',
+                'language': 'python',
+                'filename': 'src/foo.py',
+                'chatMode': 'ask',
+                'toolSelections': {},
+                'additionalContext': [
+                    {
+                        'filePath': 'src/foo.py',
+                        'content': '',
+                        'currentCellContents': None,
+                        'startLine': 1,
+                        'endLine': 1
+                    }
+                ]
+            }
+        }
+
+        handler.on_message(json.dumps(message))
+
+        chat_request = mock_ai_manager.handle_chat_request.call_args[0][0]
+        assert len(chat_request.chat_history) == 1
+        context_message = chat_request.chat_history[0]["content"]
+        assert "@src/foo.py" in context_message
+        assert "lines" not in context_message
+        assert "selection" not in context_message
