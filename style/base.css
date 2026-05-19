@@ -1685,9 +1685,12 @@ svg.access-token-warning {
 }
 
 /* Distinct hue from Managed so the two states are visually obvious at a
-   glance: managed = org-curated, tracking = user-opted-in. */
+   glance: managed = org-curated, tracking = user-opted-in.
+   `--jp-info-color3` is the closest semantic match in the JupyterLab
+   theme palette and resolves to a visible color in both light and dark
+   themes. */
 .nbi-skill-tracking-badge {
-  background-color: var(--jp-accept-color3, var(--jp-layout-color2));
+  background-color: var(--jp-info-color3, var(--jp-layout-color3));
 }
 
 .nbi-skills-section {
@@ -2386,6 +2389,11 @@ svg.access-token-warning {
   color: var(--jp-error-color1, #d32f2f);
 }
 
+.nbi-icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .nbi-breadcrumb-link:focus-visible,
 .nbi-skill-editor-tab:focus-visible,
 .nbi-skill-editor-tab-add:focus-visible,
@@ -2394,6 +2402,10 @@ svg.access-token-warning {
 .nbi-icon-button:focus-visible {
   outline: 2px solid var(--jp-brand-color1);
   outline-offset: 1px;
+}
+
+.nbi-icon-button:disabled:hover {
+  background-color: transparent;
 }
 
 .config-dialog-body a {

@@ -717,8 +717,8 @@ function GitHubImportDialog(props: {
                     checked={tracksUpstream}
                     onChange={e => setTracksUpstream(e.target.checked)}
                   />
-                  Track upstream — show a Sync button so I can re-pull this
-                  skill from GitHub later
+                  Track upstream. Show a Sync button so I can re-pull this skill
+                  from GitHub later
                 </label>
               </div>
             </>
@@ -1629,7 +1629,7 @@ function SkillEditor(props: {
         </div>
       )}
       {!managed && !effectiveIsNew && skillSource && (
-        <div className="nbi-skills-tracking-row" role="group">
+        <div className="nbi-skills-tracking-row">
           <label className="nbi-checkbox-label">
             <input
               type="checkbox"
@@ -1637,6 +1637,9 @@ function SkillEditor(props: {
               disabled={togglingTracking || saving}
               onChange={async e => {
                 const next = e.target.checked;
+                // Optimistic flip so the checkbox tracks the click while
+                // the PUT is in flight; rolled back on failure below.
+                setTracksUpstream(next);
                 setTogglingTracking(true);
                 setError(null);
                 try {
@@ -1648,6 +1651,9 @@ function SkillEditor(props: {
                   setTracksUpstream(updated.tracksUpstream);
                   setTrackingRef(updated.trackingRef);
                 } catch (err: any) {
+                  // Roll back the optimistic flip so the UI matches the
+                  // server's state (the server kept the prior value).
+                  setTracksUpstream(!next);
                   setError(err?.message ?? String(err));
                 } finally {
                   setTogglingTracking(false);

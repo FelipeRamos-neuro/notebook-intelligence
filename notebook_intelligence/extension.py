@@ -1134,6 +1134,11 @@ class SkillsBaseHandler(PolicyGatedHandler):
     exception_status_map = {
         FileExistsError: 409,
         FileNotFoundError: 404,
+        # RuntimeError is reserved for "upstream unreachable" in the sync
+        # path. 502 reflects the wire reality (we proxied to GitHub and
+        # got nothing usable) rather than the default 400 fallback, which
+        # would mislead clients into thinking the request was malformed.
+        RuntimeError: 502,
     }
 
     @property
@@ -1213,6 +1218,13 @@ class SkillDetailHandler(SkillsBaseHandler):
     def put(self, scope, name):
         data = self._parse_json_body()
         if data is None:
+            return
+        # The `tracks_upstream` toggle opts a skill into a future sync
+        # action, which would phone home to GitHub. `allow_github_skill_import
+        # = False` is the network-egress kill switch: blocking sync without
+        # also blocking the toggle would let the bit get set on disk while
+        # the admin's kill switch is supposed to be in effect.
+        if "tracks_upstream" in data and self._reject_if_github_import_disabled():
             return
         try:
             skill = self.skill_manager.update_skill(
@@ -1323,6 +1335,12 @@ class SkillsSyncAllTrackingHandler(SkillsBaseHandler):
     skill: a single broken upstream doesn't stop the rest of the sync.
     """
 
+    # Bound concurrency on the GitHub commits-API probe to keep a
+    # 10-tracking-skill click from exhausting the unauthenticated 60/hour
+    # rate limit in a single burst. Three keeps the probes civil while
+    # collapsing serial worst-case (N * 15s) to roughly N/3 * 15s.
+    SYNC_CONCURRENCY = 3
+
     @tornado.web.authenticated
     async def post(self):
         if self._reject_if_github_import_disabled():
@@ -1331,26 +1349,37 @@ class SkillsSyncAllTrackingHandler(SkillsBaseHandler):
         skills = await loop.run_in_executor(
             None, self.skill_manager.list_tracking_skills
         )
-        results = []
-        for skill in skills:
-            try:
-                outcome = await loop.run_in_executor(
-                    None,
-                    lambda s=skill: self.skill_manager.sync_tracking_skill(
-                        s.scope, s.name
-                    ),
-                )
-                results.append({
-                    "scope": skill.scope,
-                    "name": skill.name,
-                    **outcome,
-                })
-            except Exception as e:  # noqa: BLE001 — per-skill isolation
-                results.append({
-                    "scope": skill.scope,
-                    "name": skill.name,
-                    "error": str(e),
-                })
+        if not skills:
+            self.finish(json.dumps({"results": []}))
+            return
+
+        sem = asyncio.Semaphore(self.SYNC_CONCURRENCY)
+
+        async def sync_one(skill):
+            async with sem:
+                try:
+                    # `lambda s=skill:` captures the skill at iteration
+                    # time so all coroutines don't share the same loop
+                    # variable.
+                    outcome = await loop.run_in_executor(
+                        None,
+                        lambda s=skill: self.skill_manager.sync_tracking_skill(
+                            s.scope, s.name
+                        ),
+                    )
+                    return {
+                        "scope": skill.scope,
+                        "name": skill.name,
+                        **outcome,
+                    }
+                except Exception as e:  # noqa: BLE001 — per-skill isolation
+                    return {
+                        "scope": skill.scope,
+                        "name": skill.name,
+                        "error": str(e),
+                    }
+
+        results = await asyncio.gather(*(sync_one(s) for s in skills))
         self.finish(json.dumps({"results": results}))
 
 

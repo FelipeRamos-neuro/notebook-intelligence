@@ -711,7 +711,7 @@ class TestTrackUpstream:
 
     def _patch_sha(self, sha):
         return patch(
-            "notebook_intelligence.skill_manager.get_latest_commit_sha",
+            "notebook_intelligence.skill_github_import.get_latest_commit_sha",
             return_value=sha,
         )
 

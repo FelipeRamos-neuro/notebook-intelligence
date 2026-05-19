@@ -1,5 +1,4 @@
 import logging
-import re
 import shutil
 import threading
 from pathlib import Path
@@ -14,8 +13,8 @@ from notebook_intelligence.skillset import (
     serialize_skill_md,
 )
 from notebook_intelligence.skill_github_import import (
-    get_latest_commit_sha,
     parse_github_url,
+    resolve_desired_sha,
     stage_skill_from_github,
 )
 
@@ -473,11 +472,7 @@ class SkillManager:
         # silently re-downloading: the user clicked the button expecting a
         # fresh check, and a probe-then-fetch dance would mask real outages.
         ref_info = parse_github_url(skill.source)
-        desired_sha = ref_info.ref if (
-            ref_info.ref and re.match(r"^[0-9a-f]{40}$", ref_info.ref)
-        ) else get_latest_commit_sha(
-            ref_info.owner, ref_info.repo, ref_info.ref, ref_info.subpath,
-        )
+        desired_sha = resolve_desired_sha(ref_info)
         if desired_sha is None:
             raise RuntimeError(
                 "Could not probe GitHub for the latest commit; the existing "

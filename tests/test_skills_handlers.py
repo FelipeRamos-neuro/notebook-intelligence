@@ -61,6 +61,12 @@ def _make_handler(handler_cls, body: bytes = b"", query_args: dict | None = None
     handler.allow_github_skill_import = SkillsBaseHandler.allow_github_skill_import
     # `_error` reads the real dict, not the spec'd mock proxy.
     handler.exception_status_map = SkillsBaseHandler.exception_status_map
+    # Bind real class attributes from the handler so MagicMock auto-proxies
+    # don't return MagicMock placeholders when handler code reads them
+    # (e.g. SkillsSyncAllTrackingHandler.SYNC_CONCURRENCY).
+    for attr in ("SYNC_CONCURRENCY",):
+        if hasattr(handler_cls, attr):
+            setattr(handler, attr, getattr(handler_cls, attr))
     return handler
 
 
@@ -147,6 +153,89 @@ class TestSkillDetail:
         SkillDetailHandler.put(handler, "user", "x")
         body = _parse_response(handler)
         assert body["skill"]["description"] == "new"
+
+    def test_put_tracks_upstream_on_managed_returns_400(self, skill_manager):
+        # The manager raises ValueError for managed + tracking; the handler
+        # must map that to 400 rather than letting it bubble as a 500.
+        user_dir = skill_manager.scope_dir("user")
+        bundle = user_dir / "m"
+        bundle.mkdir()
+        (bundle / SKILL_ENTRY_FILE).write_text(
+            "---\nname: m\ndescription: d\n"
+            "managed_source: https://github.com/org/repo\n"
+            "managed_ref: sha\n---\nbody",
+            encoding="utf-8",
+        )
+        handler = _make_handler(
+            SkillDetailHandler,
+            body=json.dumps({"tracks_upstream": True}).encode(),
+        )
+        SkillDetailHandler.put(handler, "user", "m")
+        handler.set_status.assert_called_with(400)
+        body = _parse_response(handler)
+        assert "Managed skills" in body["error"]
+
+    def test_put_tracks_upstream_on_no_source_returns_400(self, skill_manager):
+        # A skill with no recorded source URL cannot opt into tracking;
+        # the manager raises ValueError and the handler maps to 400.
+        skill_manager.create_skill("user", "plain", "d", [], "b")
+        handler = _make_handler(
+            SkillDetailHandler,
+            body=json.dumps({"tracks_upstream": True}).encode(),
+        )
+        SkillDetailHandler.put(handler, "user", "plain")
+        handler.set_status.assert_called_with(400)
+        body = _parse_response(handler)
+        assert "no recorded source" in body["error"]
+
+    def test_put_tracks_upstream_blocked_when_github_import_disabled(
+        self, skill_manager
+    ):
+        # The toggle would let an admin's "imports disabled" kill switch
+        # leak: bit gets set, sync still blocked. Reject the toggle when
+        # the policy is off.
+        tar = build_tarball({
+            "repo-x/SKILL.md": "---\nname: x\ndescription: d\n---\nb",
+        })
+        with patch(
+            "notebook_intelligence.skill_github_import._fetch_tarball",
+            return_value=tar,
+        ):
+            skill_manager.import_from_github(
+                "https://github.com/owner/repo", scope="user"
+            )
+        handler = _make_handler(
+            SkillDetailHandler,
+            body=json.dumps({"tracks_upstream": True}).encode(),
+        )
+        handler.allow_github_skill_import = False
+        SkillDetailHandler.put(handler, "user", "x")
+        handler.set_status.assert_called_with(403)
+
+    def test_put_without_tracks_upstream_preserves_current(self, skill_manager):
+        # Regression pin: a PUT body that omits `tracks_upstream` must NOT
+        # silently flip the bit off. The handler passes None for that field
+        # and the manager treats None as "leave unchanged."
+        tar = build_tarball({
+            "repo-x/SKILL.md": "---\nname: x\ndescription: d\n---\nb",
+        })
+        with patch(
+            "notebook_intelligence.skill_github_import._fetch_tarball",
+            return_value=tar,
+        ):
+            skill_manager.import_from_github(
+                "https://github.com/owner/repo",
+                scope="user",
+                tracks_upstream=True,
+            )
+        handler = _make_handler(
+            SkillDetailHandler,
+            body=json.dumps({"description": "new"}).encode(),
+        )
+        SkillDetailHandler.put(handler, "user", "x")
+        body = _parse_response(handler)
+        assert body["skill"]["description"] == "new"
+        assert body["skill"]["tracks_upstream"] is True
 
     def test_update_can_toggle_tracks_upstream(self, skill_manager):
         # Bootstrap a user-imported skill that has a source but isn't
@@ -379,7 +468,7 @@ class TestSkillSyncHandler:
 
     def _patch_sha(self, sha):
         return patch(
-            "notebook_intelligence.skill_manager.get_latest_commit_sha",
+            "notebook_intelligence.skill_github_import.get_latest_commit_sha",
             return_value=sha,
         )
 
@@ -443,6 +532,17 @@ class TestSkillSyncHandler:
         body = _parse_response(handler)
         assert "not tracking upstream" in body["error"]
 
+    def test_sync_probe_failure_maps_to_502(self, skill_manager):
+        # Probe failure raises RuntimeError. The exception_status_map sends
+        # that to 502 (upstream unreachable) rather than the default 400
+        # (which would mislead the client into thinking the request was
+        # malformed).
+        self._bootstrap_tracking_skill(skill_manager)
+        handler = _make_handler(SkillSyncHandler)
+        with self._patch_sha(None):
+            asyncio.run(SkillSyncHandler.post(handler, "user", "tr"))
+        handler.set_status.assert_called_with(502)
+
     def test_sync_returns_403_when_github_import_disabled(self, skill_manager):
         self._bootstrap_tracking_skill(skill_manager)
         handler = _make_handler(SkillSyncHandler)
@@ -454,7 +554,7 @@ class TestSkillSyncHandler:
 class TestSkillsSyncAllTrackingHandler:
     def _patch_sha(self, sha):
         return patch(
-            "notebook_intelligence.skill_manager.get_latest_commit_sha",
+            "notebook_intelligence.skill_github_import.get_latest_commit_sha",
             return_value=sha,
         )
 

@@ -194,7 +194,12 @@ export interface ISkillImportPreview {
   existsInProjectScope: boolean;
 }
 
-function skillFromWire(wire: any): ISkillDetail {
+// Exported for direct testing of the wire-format contract. The snake_case
+// keys it consumes (managed_source, managed_ref, tracks_upstream,
+// tracking_ref, allowed_tools) are the load-bearing JSON shape between
+// the Tornado handlers and the panel; a typo here would silently corrupt
+// user state ("I toggled it on but it didn't stick").
+export function skillFromWire(wire: any): ISkillDetail {
   return {
     scope: wire.scope,
     name: wire.name,
