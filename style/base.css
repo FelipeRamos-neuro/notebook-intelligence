@@ -486,6 +486,15 @@ pre:has(.code-block-header) {
   .generating-pulse {
     animation: none;
   }
+
+  /* The conic-gradient generating border on the chat input and inline-
+     completion editor rotates indefinitely while a response streams in.
+     Pause it for vestibular-sensitive users so the brand-tinted border
+     becomes a static indicator instead of a rotating one. */
+  .sidebar-user-input.generating,
+  .jp-InputArea-editor.generating {
+    animation: none;
+  }
 }
 
 .chat-message-timestamp {
