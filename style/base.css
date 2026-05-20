@@ -3072,7 +3072,7 @@ svg.access-token-warning {
 
 /* Set Codex launcher icon color to OpenAI blue */
 .jp-LauncherCard-icon svg[data-icon='notebook-intelligence:openai-icon'] {
-  color: #0A84FF;
+  color: #0a84ff;
 }
 
 /* Set Claude Code launcher category icon to sparkles.svg */
