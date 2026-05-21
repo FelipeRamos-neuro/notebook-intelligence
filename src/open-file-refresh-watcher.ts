@@ -61,14 +61,30 @@ export interface IRevertDecisionInputs {
  *   2. Skip if the user has unsaved local edits (`isDirty`). Silently
  *      clobbering their work would be hostile; the standard
  *      JupyterLab "newer on disk" prompt will surface on save.
- *   3. Skip if we can't compare timestamps (either side missing).
- *   4. Revert iff disk's `last_modified` is strictly greater than
- *      the context's last-known value. Equal timestamps mean the in-
- *      memory copy is already current (a save we initiated, or a
- *      no-op re-read).
+ *   3. Skip if we can't parse either timestamp (either side missing
+ *      or unparseable).
+ *   4. Revert iff disk's `last_modified` parses to a strictly greater
+ *      epoch ms than the context's last-known value. Equal means
+ *      already current (a save we initiated, or a no-op re-read).
  *
- * Last-modified values arrive as ISO-8601 strings from the Contents
- * API; lexicographic comparison is correct for that grammar.
+ * The comparison is numeric, not lexicographic, because jupyter_server
+ * serializes `last_modified` via Python's `datetime.isoformat()` which
+ * omits the fractional component when `microsecond == 0`. That means
+ * the same instant can arrive as `"...:56Z"` or `"...:56.000000Z"`,
+ * and `"...:56.000000Z" < "...:56Z"` lexicographically (the `.` at
+ * 0x2E sorts below the `Z` at 0x5A at position 19). A string compare
+ * would fire a spurious revert when the two sides happen to land on
+ * different sides of the fractional/non-fractional boundary for the
+ * same mtime. Parsing both through `new Date(s).getTime()` collapses
+ * them to the same epoch ms.
+ *
+ * JupyterLab's own newer-on-disk check (`docregistry/lib/context.js`,
+ * see `lastModifiedCheckMargin`) applies a 500ms tolerance to absorb
+ * filesystem mtime jitter, but that comparison drives a user-facing
+ * "newer on disk, save anyway?" prompt where false-positive is just a
+ * dialog. Our comparison drives a silent revert that could clobber an
+ * agent's edit that landed within the margin of the user's own save;
+ * we deliberately stay strict.
  */
 export function shouldRevertContext({
   diskLastModified,
@@ -86,7 +102,14 @@ export function shouldRevertContext({
   if (!diskLastModified || !contextLastModified) {
     return false;
   }
-  return diskLastModified > contextLastModified;
+  // Match JL's own idiom (docregistry/lib/context.js:625-630) and the
+  // five other `new Date(...).getTime()` call sites in this codebase.
+  // Equivalent to `Date.parse(s)` but consistent with house style.
+  const diskMs = new Date(diskLastModified).getTime();
+  const contextMs = new Date(contextLastModified).getTime();
+  // NaN on either side (unparseable string) makes the comparison
+  // false, so a malformed timestamp degrades safely to "don't revert."
+  return diskMs > contextMs;
 }
 
 /**

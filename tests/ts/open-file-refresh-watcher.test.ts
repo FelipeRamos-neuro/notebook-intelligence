@@ -126,6 +126,75 @@ describe('shouldRevertContext', () => {
       })
     ).toBe(false);
   });
+
+  it('reverts on a sub-second forward movement', () => {
+    // Numeric compare is what makes fractional-second detection
+    // possible; a hypothetical "round to seconds then compare"
+    // regression would still pass the existing 1s-delta test but
+    // would fail this one.
+    expect(
+      shouldRevertContext({
+        ...base,
+        contextLastModified: '2026-01-01T00:00:00.000000Z',
+        diskLastModified: '2026-01-01T00:00:00.500000Z'
+      })
+    ).toBe(true);
+  });
+
+  it('treats "...:56Z" and "...:56.000000Z" as the same instant', () => {
+    // jupyter_server's datetime.isoformat() omits the fractional
+    // component when microsecond == 0, so the same mtime can arrive
+    // as either form across calls. Lexicographic compare puts
+    // "...:56.000000Z" below "...:56Z" (the `.` at 0x2E sorts below
+    // the `Z` at 0x5A), so a string compare would fire a spurious
+    // revert when the context happens to hold the fractional form
+    // and disk reports the bare-second form for the same instant.
+    // Numeric compare via Date.parse collapses both to the same
+    // epoch ms.
+    expect(
+      shouldRevertContext({
+        ...base,
+        contextLastModified: '2026-01-01T00:00:56.000000Z',
+        diskLastModified: '2026-01-01T00:00:56Z'
+      })
+    ).toBe(false);
+    // Symmetric: bare-second context and fractional disk for the
+    // same instant should also not revert.
+    expect(
+      shouldRevertContext({
+        ...base,
+        contextLastModified: '2026-01-01T00:00:56Z',
+        diskLastModified: '2026-01-01T00:00:56.000000Z'
+      })
+    ).toBe(false);
+  });
+
+  it('skips when either timestamp is unparseable', () => {
+    // new Date(unparseable).getTime() returns NaN. NaN > anything is
+    // false, so a malformed timestamp degrades to "don't revert."
+    expect(
+      shouldRevertContext({
+        ...base,
+        diskLastModified: 'not-a-date',
+        contextLastModified: '2026-01-01T00:00:00.000000Z'
+      })
+    ).toBe(false);
+    expect(
+      shouldRevertContext({
+        ...base,
+        diskLastModified: '2026-01-01T00:00:00.000000Z',
+        contextLastModified: 'not-a-date'
+      })
+    ).toBe(false);
+    // Both sides unparseable: NaN > NaN is also false.
+    expect(
+      shouldRevertContext({
+        ...base,
+        diskLastModified: 'not-a-date',
+        contextLastModified: 'also-not-a-date'
+      })
+    ).toBe(false);
+  });
 });
 
 interface IFakeContext {
