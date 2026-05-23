@@ -2,9 +2,9 @@ title: Notebook Intelligence
 description: >-
   A JupyterLab extension for Claude Code, GitHub Copilot, Ollama, and
   OpenAI-compatible models — with MCP, Skills, Plugins, and admin policy.
-url: https://notebook-intelligence.github.io
-baseurl: /notebook-intelligence
-domain: notebook-intelligence.github.io
+url: https://plmbr.dev
+baseurl: /
+domain: plmbr.dev
 
 # Personal social signals; mirrored by jekyll-seo-tag into Twitter cards.
 twitter_username: mbektash
