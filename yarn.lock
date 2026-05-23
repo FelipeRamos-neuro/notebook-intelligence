@@ -3314,9 +3314,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@notebook-intelligence/notebook-intelligence@workspace:.":
+"@plmbr/notebook-intelligence@workspace:.":
   version: 0.0.0-use.local
-  resolution: "@notebook-intelligence/notebook-intelligence@workspace:."
+  resolution: "@plmbr/notebook-intelligence@workspace:."
   dependencies:
     "@codemirror/state": ^6.4.1
     "@codemirror/view": ^6.26.0

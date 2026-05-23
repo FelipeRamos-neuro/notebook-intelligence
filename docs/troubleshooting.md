@@ -8,7 +8,7 @@ After `pip install notebook-intelligence`, restart JupyterLab. If a restart does
 
 ```bash
 jupyter server extension list   # look for "notebook_intelligence  enabled"
-jupyter labextension list       # look for "@notebook-intelligence/notebook-intelligence ... enabled"
+jupyter labextension list       # look for "@plmbr/notebook-intelligence ... enabled"
 ```
 
 If either is disabled or missing:
