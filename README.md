@@ -159,7 +159,7 @@ NBI reloads open document tabs when their files change on disk, so edits an AI a
 
 ## Configuration
 
-Configure your provider, model, and API key from NBI Settings — the gear icon in the chat panel, the `/settings` chat command, or the JupyterLab command palette. For background, see the [provider blog post](https://notebook-intelligence.github.io/notebook-intelligence/blog/2025/03/05/support-for-any-llm-provider.html).
+Configure your provider, model, and API key from NBI Settings — the gear icon in the chat panel, the `/settings` chat command, or the JupyterLab command palette. For background, see the [provider blog post](https://plmbr.dev/blog/archive/support-for-any-llm-provider/).
 
 <img src="media/provider-list.png" alt="Settings dialog" width=500 />
 
@@ -398,10 +398,10 @@ The feedback fires an in-process `telemetry` event. Nothing leaves the process b
 
 ## Further reading
 
-- [Introducing Notebook Intelligence!](https://notebook-intelligence.github.io/notebook-intelligence/blog/2025/01/08/introducing-notebook-intelligence.html)
-- [Building AI Extensions for JupyterLab](https://notebook-intelligence.github.io/notebook-intelligence/blog/2025/02/05/building-ai-extensions-for-jupyterlab.html)
-- [Building AI Agents for JupyterLab](https://notebook-intelligence.github.io/notebook-intelligence/blog/2025/02/09/building-ai-agents-for-jupyterlab.html)
-- [Notebook Intelligence now supports any LLM Provider and AI Model!](https://notebook-intelligence.github.io/notebook-intelligence/blog/2025/03/05/support-for-any-llm-provider.html)
+- [Introducing Notebook Intelligence!](https://plmbr.dev/blog/archive/introducing-notebook-intelligence/)
+- [Building AI Extensions for JupyterLab](https://plmbr.dev/blog/archive/building-ai-extensions-for-jupyterlab/)
+- [Building AI Agents for JupyterLab](https://plmbr.dev/blog/archive/building-ai-agents-for-jupyterlab/)
+- [Notebook Intelligence now supports any LLM Provider and AI Model!](https://plmbr.dev/blog/archive/support-for-any-llm-provider/)
 
 ## Roadmap
 
