@@ -25,14 +25,14 @@ python report.py
 
 ## What it measures
 
-| Metric | Terminal | NBI Chat |
-| - | - | - |
-| TTFT (ms) | From Claude CLI's `result.ttft_ms` | From WebSocket send to first `nbiContent` chunk |
-| Wall time (ms) | subprocess spawn to exit | WebSocket send to `stream-end` |
-| CLI duration (ms) | `result.duration_ms` | n/a |
-| API duration (ms) | `result.duration_api_ms` | n/a |
-| Output tokens | From `result.usage` | n/a |
-| Output chars | From `result.result` text length | From streamed markdown chunks |
+| Metric            | Terminal                           | NBI Chat                                        |
+| ----------------- | ---------------------------------- | ----------------------------------------------- |
+| TTFT (ms)         | From Claude CLI's `result.ttft_ms` | From WebSocket send to first `nbiContent` chunk |
+| Wall time (ms)    | subprocess spawn to exit           | WebSocket send to `stream-end`                  |
+| CLI duration (ms) | `result.duration_ms`               | n/a                                             |
+| API duration (ms) | `result.duration_api_ms`           | n/a                                             |
+| Output tokens     | From `result.usage`                | n/a                                             |
+| Output chars      | From `result.result` text length   | From streamed markdown chunks                   |
 
 ## Methodology notes
 
