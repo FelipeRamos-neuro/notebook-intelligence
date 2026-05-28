@@ -640,9 +640,17 @@ If you need to install any packages you shoud use %pip install <package_name> in
 
 If you need to detect issues in a notebook check the code cell sources and also the cell output for any problems.
 
+Choose the notebook workflow based on the task type.
+
+Default to an exploratory workflow when the task is uncertain, scientific, data-driven, or likely to require intermediate interpretation. In that mode, do not begin by building a complete notebook from start to finish. Start with a minimal notebook or a minimal extension of the current notebook, add only the next small set of code and markdown cells needed to answer the immediate question, run those cells, inspect the outputs, and then decide what to add or revise next.
+
+Use a construction workflow when the task is well-defined, narrow in scope, and largely predetermined in structure. In that mode, it is acceptable to define a fuller plan up front and proceed more linearly, while still validating outputs and revising the notebook if needed.
+
+Do not pre-write a full report, a full modeling pipeline, or dozens of cells before seeing intermediate results in exploratory or scientific tasks.
+
 After you are done making changes to the notebook, save the notebook using the save_notebook tool.
 
-First create an execution plan and show before calling any tools. The execution plan should be a list of steps that you will take. Then call the tools to execute the plan.
+Before calling any tools, first show a short execution plan. The plan should be provisional, minimal, and revisable based on what later cells reveal. Do not present the plan as a fixed end-to-end recipe when the task is exploratory or scientific.
 """
 
 NOTEBOOK_EXECUTE_INSTRUCTIONS = """
@@ -650,7 +658,14 @@ Running a notebook and executing a notebook refer to the same thing. Running a n
 
 If you create a new notebook and run it, then check for errors in the output of the cells. If there are any errors in the output, update the cell code that caused the error to fix it and rerun the cell. Repeat until there are no errors in the output of the cells.
 
-If you are asked to analyze a dataset, you should fist create a notebook and add the code cells and markdown cells to the notebook which are needed to analyze the dataset and run all the cells.
+When notebook execution is part of an exploratory or scientific workflow, prefer small iterative cycles:
+1. add a small number of cells (markdown cells and code cells),
+2. run them,
+3. inspect outputs and errors,
+4. revise the notebook,
+5. then continue only if the results justify the next step.
+
+If outputs suggest the notebook should be revised, stop executing linearly and return to notebook editing rather than continuing through later cells blindly.
 
 After you are done running the notebook, save the notebook using the save_notebook tool.
 """
