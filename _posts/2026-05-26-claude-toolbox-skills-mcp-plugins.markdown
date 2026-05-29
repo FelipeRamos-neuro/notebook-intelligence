@@ -8,7 +8,7 @@ description: "NBI 5.0 promotes Skills, Claude MCP Servers, and Claude Plugins to
 
 [Notebook Intelligence](https://github.com/plmbr/notebook-intelligence) (NBI) is an AI coding assistant and extensible AI framework for JupyterLab.
 
-When you run Claude inside NBI, the agent rarely works with the model alone. It reaches for Skills you have written, MCP servers that expose external data and actions, and plugins that bundle commands and configuration. In NBI 5.0 these three capabilities each became their own top-level Settings tab, with a consistent admin-policy story layered on top. This post walks through what each tab manages, where the underlying configuration lives on disk, the import and marketplace workflows, and how an administrator can pin any of them on or off. Later in this series we look at the [agent-aware chat sidebar]({{site.baseurl}}{% post_url 2026-05-27-agent-aware-chat-sidebar %}) and the [coding-agent launchers and platform work]({{site.baseurl}}{% post_url 2026-05-28-coding-agent-launchers-and-beyond %}).
+When you run Claude inside NBI, the agent rarely works with the model alone. It reaches for Skills you have written, MCP servers that expose external data and actions, and plugins that bundle commands and configuration. In NBI 5.0 these three capabilities each became their own top-level Settings tab, with a consistent admin-policy story layered on top. This post walks through what each tab manages, where the underlying configuration lives on disk, the import and marketplace workflows, and how an administrator can pin any of them on or off. Later in this series we look at the [agent-aware chat sidebar]({% post_url 2026-05-27-agent-aware-chat-sidebar %}) and the [coding-agent launchers and platform work]({% post_url 2026-05-28-coding-agent-launchers-and-beyond %}).
 
 ## Skills
 
@@ -48,8 +48,8 @@ Plugins carry two policies rather than one. `NBI_CLAUDE_PLUGINS_MANAGEMENT_POLIC
 
 The three tabs share a single admin-policy shape. Every policy accepts `force-on`, `force-off`, or `user-choice`. A `force-*` value locks the corresponding control in the UI so users cannot toggle it, while `user-choice` hands the decision back to the user. The policies are parsed strictly: a typo such as `force_on` raises an error at startup rather than silently falling back to a default, so a misconfigured deployment fails loudly instead of behaving in a way you did not intend.
 
-Taken together, Skills, Claude MCP Servers, and Claude Plugins make the agent's toolbox visible and manageable in one place, with consistent controls for both individual users and the administrators who deploy NBI to a team. In the [next post]({{site.baseurl}}{% post_url 2026-05-27-agent-aware-chat-sidebar %}) we turn to how the chat experience itself surfaces what the agent is doing.
+Taken together, Skills, Claude MCP Servers, and Claude Plugins make the agent's toolbox visible and manageable in one place, with consistent controls for both individual users and the administrators who deploy NBI to a team. In the [next post]({% post_url 2026-05-27-agent-aware-chat-sidebar %}) we turn to how the chat experience itself surfaces what the agent is doing.
 
 ---
 
-_This is part 1 of a 3-part look at what is new since NBI 4.8. See also [An agent-aware chat sidebar]({{site.baseurl}}{% post_url 2026-05-27-agent-aware-chat-sidebar %}) and [Coding-agent launchers, Codex, and a hardened platform]({{site.baseurl}}{% post_url 2026-05-28-coding-agent-launchers-and-beyond %})._
+_This is part 1 of a 3-part look at what is new since NBI 4.8. See also [An agent-aware chat sidebar]({% post_url 2026-05-27-agent-aware-chat-sidebar %}) and [Coding-agent launchers, Codex, and a hardened platform]({% post_url 2026-05-28-coding-agent-launchers-and-beyond %})._

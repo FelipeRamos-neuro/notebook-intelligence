@@ -8,7 +8,7 @@ description: "Launch coding-agent CLIs from the JupyterLab launcher, run Codex c
 
 [Notebook Intelligence](https://github.com/plmbr/notebook-intelligence) (NBI) is an AI coding assistant and extensible AI framework for JupyterLab.
 
-This is the final post in a three-part tour of everything that landed since NBI 4.8. The first post covered the new top-level Settings tabs for [Skills, MCP, and Plugins]({{site.baseurl}}{% post_url 2026-05-26-claude-toolbox-skills-mcp-plugins %}). The second walked through the [agent-aware chat sidebar]({{site.baseurl}}{% post_url 2026-05-27-agent-aware-chat-sidebar %}). Here we step outside the sidebar entirely: launching coding agents straight from the JupyterLab launcher, a provider fix that lets Codex models work in chat, dynamic model discovery for GitHub Copilot, an end-to-end accessibility pass, and a round of platform security hardening.
+This is the final post in a three-part tour of everything that landed since NBI 4.8. The first post covered the new top-level Settings tabs for [Skills, MCP, and Plugins]({% post_url 2026-05-26-claude-toolbox-skills-mcp-plugins %}). The second walked through the [agent-aware chat sidebar]({% post_url 2026-05-27-agent-aware-chat-sidebar %}). Here we step outside the sidebar entirely: launching coding agents straight from the JupyterLab launcher, a provider fix that lets Codex models work in chat, dynamic model discovery for GitHub Copilot, an end-to-end accessibility pass, and a round of platform security hardening.
 
 ## Coding-agent launcher tiles
 
@@ -61,4 +61,4 @@ That closes the series. Across these three posts NBI grew a manageable toolbox f
 
 ---
 
-_This is part 3 of a 3-part look at what is new since NBI 4.8. See also [Managing Claude's toolbox: Skills, MCP, and Plugins]({{site.baseurl}}{% post_url 2026-05-26-claude-toolbox-skills-mcp-plugins %}) and [An agent-aware chat sidebar]({{site.baseurl}}{% post_url 2026-05-27-agent-aware-chat-sidebar %})._
+_This is part 3 of a 3-part look at what is new since NBI 4.8. See also [Managing Claude's toolbox: Skills, MCP, and Plugins]({% post_url 2026-05-26-claude-toolbox-skills-mcp-plugins %}) and [An agent-aware chat sidebar]({% post_url 2026-05-27-agent-aware-chat-sidebar %})._

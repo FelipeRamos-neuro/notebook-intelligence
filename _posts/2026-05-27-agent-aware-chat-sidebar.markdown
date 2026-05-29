@@ -6,7 +6,7 @@ permalink: /blog/agent-aware-chat-sidebar/
 description: "How the NBI chat sidebar in 5.0 keeps you in the loop during long Claude turns and keeps your open files in sync with what the agent does on disk."
 ---
 
-[Notebook Intelligence](https://github.com/plmbr/notebook-intelligence) (NBI) is an AI coding assistant and extensible AI framework for JupyterLab. (*This is the second post in a short series on what shipped in NBI 5.0. The first post covered [managing Claude's toolbox of Skills, MCP servers, and Plugins]({{site.baseurl}}{% post_url 2026-05-26-claude-toolbox-skills-mcp-plugins %}), and the next one looks at [coding-agent launchers and the wider platform work]({{site.baseurl}}{% post_url 2026-05-28-coding-agent-launchers-and-beyond %}).*)
+[Notebook Intelligence](https://github.com/plmbr/notebook-intelligence) (NBI) is an AI coding assistant and extensible AI framework for JupyterLab. (*This is the second post in a short series on what shipped in NBI 5.0. The first post covered [managing Claude's toolbox of Skills, MCP servers, and Plugins]({% post_url 2026-05-26-claude-toolbox-skills-mcp-plugins %}), and the next one looks at [coding-agent launchers and the wider platform work]({% post_url 2026-05-28-coding-agent-launchers-and-beyond %}).*)
 
 When the assistant in the sidebar is a long-running agent rather than a single-shot chat model, the surface around it has to change. An agent works for tens of seconds at a stretch, calls tools, and writes files on disk. A sidebar built for quick question-and-answer turns will look hung while that happens, and your editor tabs will quietly fall out of date. NBI 5.0 reworks the chat sidebar to be agent-aware: it reflects what the agent is doing while it does it, and it keeps your workspace in sync with the changes the agent makes.
 
@@ -42,4 +42,4 @@ Taken together, these changes make the sidebar a faithful window onto the agent:
 
 ---
 
-_This is part 2 of a 3-part look at what is new since NBI 4.8. See also [Managing Claude's toolbox: Skills, MCP, and Plugins]({{site.baseurl}}{% post_url 2026-05-26-claude-toolbox-skills-mcp-plugins %}) and [Coding-agent launchers, Codex, and a hardened platform]({{site.baseurl}}{% post_url 2026-05-28-coding-agent-launchers-and-beyond %})._
+_This is part 2 of a 3-part look at what is new since NBI 4.8. See also [Managing Claude's toolbox: Skills, MCP, and Plugins]({% post_url 2026-05-26-claude-toolbox-skills-mcp-plugins %}) and [Coding-agent launchers, Codex, and a hardened platform]({% post_url 2026-05-28-coding-agent-launchers-and-beyond %})._
