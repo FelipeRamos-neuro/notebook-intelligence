@@ -998,9 +998,9 @@ function ChatResponse(props: any) {
                   });
                 }
               }}
-              aria-label="Rate as helpful"
+              aria-label="Rate response as good"
               aria-pressed={msg.feedback === 'positive'}
-              title="Helpful"
+              title="Good response"
             >
               {msg.feedback === 'positive' ? (
                 <VscThumbsupFilled />
@@ -1026,9 +1026,9 @@ function ChatResponse(props: any) {
                   });
                 }
               }}
-              aria-label="Rate as unhelpful"
+              aria-label="Rate response as bad"
               aria-pressed={msg.feedback === 'negative'}
-              title="Not helpful"
+              title="Bad response"
             >
               {msg.feedback === 'negative' ? (
                 <VscThumbsdownFilled />
