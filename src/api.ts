@@ -435,6 +435,10 @@ export class NBIConfig {
     return this.capabilities.chat_feedback_enabled === true;
   }
 
+  get chatFeedbackAlwaysVisible(): boolean {
+    return this.capabilities.chat_feedback_always_visible === true;
+  }
+
   // Admin-supplied tour-copy overrides, served from the capabilities
   // response after server-side validation. Returns the raw dict; the
   // tour module decides how to apply it. Defaults to a shared frozen

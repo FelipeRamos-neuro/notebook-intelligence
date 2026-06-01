@@ -383,6 +383,12 @@ jupyter lab --NotebookIntelligence.enable_chat_feedback=true
 
 The feedback fires an in-process `telemetry` event. Nothing leaves the process by default — see the [admin guide](docs/admin-guide.md#chat-feedback-event-hook) for how to wire it into your observability stack.
 
+The thumbs buttons reveal on hover by default. To keep them always visible, enable:
+
+```python
+c.NotebookIntelligence.enable_chat_feedback_always_visible = True
+```
+
 <img src="media/chat-feedback.png" alt="Chat feedback" width=500 />
 
 ## Documentation
