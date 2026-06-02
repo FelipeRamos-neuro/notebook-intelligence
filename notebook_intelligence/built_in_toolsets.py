@@ -26,7 +26,9 @@ log = logging.getLogger(__name__)
 
 APPROX_BYTES_PER_OUTPUT_TOKEN = 4
 DEFAULT_READ_FILE_MAX_OUTPUT_TOKENS = 10_000
-READ_FILE_TRUNCATION_MARKER = "\n[output truncated]"
+READ_FILE_TRUNCATION_MARKER_TEMPLATE = (
+    "\n[output truncated within line {line} column {column}]"
+)
 
 
 def _truncate_utf8_to_byte_budget(text: str, byte_budget: int) -> str:
@@ -39,12 +41,41 @@ def _truncate_utf8_to_byte_budget(text: str, byte_budget: int) -> str:
     return encoded[:byte_budget].decode("utf-8", errors="ignore")
 
 
+def _read_position_after_content(
+    start_line: int,
+    content: str,
+) -> tuple[int, int]:
+    """Return the next unread 1-based line/column after ``content``."""
+    if not content:
+        return start_line, 1
+
+    newline_count = content.count("\n")
+    line = start_line + newline_count
+
+    last_newline = content.rfind("\n")
+    if last_newline == -1:
+        column = len(content) + 1
+    else:
+        column = len(content) - last_newline
+
+    return line, column
+
+
+def _read_file_truncation_marker(start_line: int, content: str) -> str:
+    line, column = _read_position_after_content(start_line, content)
+    return READ_FILE_TRUNCATION_MARKER_TEMPLATE.format(
+        line=line,
+        column=column,
+    )
+
+
 def _truncate_read_file_output(
     prefix: str,
     content: str,
+    start_line: int,
     max_output_tokens: int,
 ) -> str:
-    """Apply the read-file output cap using the 4 UTF-8 bytes ~= 1 token rule."""
+    """Apply the read-file output cap to prefix+content only; marker is extra."""
     byte_budget = max(0, max_output_tokens) * APPROX_BYTES_PER_OUTPUT_TOKEN
     prefix_bytes = len(prefix.encode("utf-8"))
     content_bytes = len(content.encode("utf-8"))
@@ -52,22 +83,15 @@ def _truncate_read_file_output(
     if prefix_bytes + content_bytes <= byte_budget:
         return prefix + content
 
-    marker_bytes = len(READ_FILE_TRUNCATION_MARKER.encode("utf-8"))
     if byte_budget <= prefix_bytes:
-        if byte_budget <= marker_bytes:
-            return _truncate_utf8_to_byte_budget(
-                READ_FILE_TRUNCATION_MARKER,
-                byte_budget,
-            )
-        truncated_prefix = _truncate_utf8_to_byte_budget(
-            prefix,
-            max(0, byte_budget - marker_bytes),
-        )
-        return truncated_prefix + READ_FILE_TRUNCATION_MARKER
+        truncated_prefix = _truncate_utf8_to_byte_budget(prefix, byte_budget)
+        marker = _read_file_truncation_marker(start_line, "")
+        return truncated_prefix + marker
 
-    content_budget = max(0, byte_budget - prefix_bytes - marker_bytes)
+    content_budget = byte_budget - prefix_bytes
     truncated_content = _truncate_utf8_to_byte_budget(content, content_budget)
-    return prefix + truncated_content + READ_FILE_TRUNCATION_MARKER
+    marker = _read_file_truncation_marker(start_line, truncated_content)
+    return prefix + truncated_content + marker
 
 
 @nbapi.auto_approve
@@ -450,7 +474,6 @@ async def read_file(
     file_path: str,
     start_line: int = 1,
     end_line: int = -1,
-    max_output_tokens: int = DEFAULT_READ_FILE_MAX_OUTPUT_TOKENS,
     **args,
 ) -> str:
     """Read lines from a file within jupyter_root_dir between start_line and end_line (inclusive).
@@ -459,8 +482,6 @@ async def read_file(
         file_path: Path to the file (relative to jupyter_root_dir)
         start_line: 1-based line number to start reading from (default = 1)
         end_line: 1-based line number to stop reading at (inclusive, default = -1 for end of file)
-        max_output_tokens: Approximate output cap. Uses 4 UTF-8 bytes ~= 1 token
-            and defaults to 10000. Truncated output ends with [output truncated].
     """
     try:
         target_file = _get_safe_path(file_path)
@@ -484,7 +505,12 @@ async def read_file(
         content_lines = lines[start_line-1:end_line]
         content = "".join(content_lines)
         prefix = f"Content of '{file_path}' (lines {start_line}-{end_line}):\n"
-        return _truncate_read_file_output(prefix, content, max_output_tokens)
+        return _truncate_read_file_output(
+            prefix,
+            content,
+            start_line,
+            DEFAULT_READ_FILE_MAX_OUTPUT_TOKENS,
+        )
     except UnicodeDecodeError:
         return f"Error: File '{file_path}' is not a text file or uses an unsupported encoding"
     except Exception as e:
