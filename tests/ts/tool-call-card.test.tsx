@@ -1,6 +1,23 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { ToolCallCard } from '../../src/components/tool-call-card';
+
+const editToolCall = {
+  id: 'e1',
+  title: 'Editing file',
+  kind: 'edit',
+  status: 'completed',
+  diffs: [
+    {
+      path: 'src/a.py',
+      lines: [
+        { type: 'remove', content: 'x = 1' },
+        { type: 'add', content: 'x = 2' }
+      ],
+      truncated: false
+    }
+  ]
+};
 
 describe('ToolCallCard', () => {
   it('renders the title and an in-progress status', () => {
@@ -110,5 +127,54 @@ describe('ToolCallCard', () => {
     // Icons are decorative; status reaches screen readers via the sr-only text.
     expect(kindIcon).toHaveAttribute('aria-hidden', 'true');
     expect(statusIcon).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('renders an inline diff with add/remove lines and the path', () => {
+    const { container } = render(<ToolCallCard toolCall={editToolCall} />);
+    expect(screen.getByText('src/a.py')).toBeInTheDocument();
+    expect(container.querySelector('.nbi-diff-remove')).toHaveTextContent(
+      'x = 1'
+    );
+    expect(container.querySelector('.nbi-diff-add')).toHaveTextContent('x = 2');
+  });
+
+  it('collapses and expands the diff via the toggle', () => {
+    const { container } = render(<ToolCallCard toolCall={editToolCall} />);
+    // Default expanded.
+    expect(container.querySelector('.nbi-tool-call-diffs')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide diff' }));
+    expect(
+      container.querySelector('.nbi-tool-call-diffs')
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show diff' }));
+    expect(container.querySelector('.nbi-tool-call-diffs')).toBeInTheDocument();
+  });
+
+  it('shows a truncation marker when the diff was truncated', () => {
+    render(
+      <ToolCallCard
+        toolCall={{
+          ...editToolCall,
+          diffs: [{ ...editToolCall.diffs[0], truncated: true }]
+        }}
+      />
+    );
+    expect(screen.getByText('diff truncated')).toBeInTheDocument();
+  });
+
+  it('shows no diff toggle when there are no diffs', () => {
+    render(
+      <ToolCallCard
+        toolCall={{
+          id: 'r',
+          title: 'Reading file',
+          kind: 'read',
+          status: 'completed'
+        }}
+      />
+    );
+    expect(
+      screen.queryByRole('button', { name: /diff/ })
+    ).not.toBeInTheDocument();
   });
 });

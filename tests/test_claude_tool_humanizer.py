@@ -19,7 +19,11 @@ at the integration level rather than here.
 """
 
 from notebook_intelligence.api import ResponseStreamDataType, ToolCallData
-from notebook_intelligence.claude import claude_tool_kind, humanize_claude_tool_name
+from notebook_intelligence.claude import (
+    claude_tool_kind,
+    extract_tool_diffs,
+    humanize_claude_tool_name,
+)
 
 
 class TestHumanizeClaudeToolName:
@@ -106,6 +110,91 @@ class TestClaudeToolKind:
     def test_unrecognized_tool_falls_back_to_other(self):
         assert claude_tool_kind("frobnicate") == "other"
         assert claude_tool_kind("") == "other"
+
+
+class TestExtractToolDiffs:
+    def test_edit_yields_remove_and_add_lines(self):
+        diffs = extract_tool_diffs(
+            "Edit",
+            {"file_path": "a.py", "old_string": "x = 1", "new_string": "x = 2"},
+        )
+        assert len(diffs) == 1
+        assert diffs[0]["path"] == "a.py"
+        types = {line["type"] for line in diffs[0]["lines"]}
+        assert "remove" in types and "add" in types
+        assert diffs[0]["truncated"] is False
+
+    def test_write_is_all_additions(self):
+        diffs = extract_tool_diffs(
+            "Write", {"file_path": "new.py", "content": "line1\nline2"}
+        )
+        assert len(diffs) == 1
+        assert [line["type"] for line in diffs[0]["lines"]] == ["add", "add"]
+        assert [line["content"] for line in diffs[0]["lines"]] == ["line1", "line2"]
+
+    def test_multiedit_yields_one_diff_per_edit(self):
+        diffs = extract_tool_diffs(
+            "MultiEdit",
+            {
+                "file_path": "a.py",
+                "edits": [
+                    {"old_string": "a", "new_string": "b"},
+                    {"old_string": "c", "new_string": "d"},
+                ],
+            },
+        )
+        assert len(diffs) == 2
+        assert all(d["path"] == "a.py" for d in diffs)
+
+    def test_mcp_wrapped_edit_is_unwrapped(self):
+        diffs = extract_tool_diffs(
+            "mcp__srv__Edit",
+            {"file_path": "a.py", "old_string": "a", "new_string": "b"},
+        )
+        assert len(diffs) == 1
+
+    def test_non_edit_tool_has_no_diffs(self):
+        assert extract_tool_diffs("Read", {"file_path": "a.py"}) == []
+        assert extract_tool_diffs("Bash", {"command": "ls"}) == []
+
+    def test_non_dict_input_is_safe(self):
+        assert extract_tool_diffs("Edit", None) == []
+        assert extract_tool_diffs("Edit", "not a dict") == []
+
+    def test_large_edit_is_truncated(self):
+        big = "\n".join(f"line {i}" for i in range(500))
+        diffs = extract_tool_diffs(
+            "Write", {"file_path": "big.py", "content": big}
+        )
+        assert diffs[0]["truncated"] is True
+        assert len(diffs[0]["lines"]) <= 60
+
+    def test_context_lines_are_classified_and_stripped(self):
+        # A change surrounded by shared lines yields context lines whose
+        # content must not keep the diff's leading marker space.
+        diffs = extract_tool_diffs(
+            "Edit",
+            {"file_path": "a.py", "old_string": "a\nx\nc", "new_string": "a\ny\nc"},
+        )
+        lines = diffs[0]["lines"]
+        context = [ln for ln in lines if ln["type"] == "context"]
+        assert context, "expected at least one context line"
+        assert all(not ln["content"].startswith(" ") for ln in context)
+        assert {"a", "c"} <= {ln["content"] for ln in context}
+
+    def test_total_diff_lines_capped_across_multiedit(self):
+        # Many edits, each large: the cap is across the whole card, not per edit.
+        big = "\n".join(f"x{i}" for i in range(100))
+        diffs = extract_tool_diffs(
+            "MultiEdit",
+            {
+                "file_path": "a.py",
+                "edits": [{"old_string": "", "new_string": big} for _ in range(5)],
+            },
+        )
+        total = sum(len(d["lines"]) for d in diffs)
+        assert total <= 60
+        assert diffs[-1]["truncated"] is True
 
 
 class TestToolCallData:

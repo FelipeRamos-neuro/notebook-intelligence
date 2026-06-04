@@ -51,6 +51,44 @@ describe('upsertToolCallContent', () => {
     expect(contents.map(c => c.content.id)).toEqual(['a', 'b']);
   });
 
+  it('preserves diffs carried on the completed emission', () => {
+    // The merge replaces content wholesale, so the backend must re-emit diffs
+    // on completion; this pins that contract from the frontend side.
+    const contents: IToolCallStreamItem[] = [];
+    const diffs = [
+      {
+        path: 'a.py',
+        lines: [{ type: 'add', content: 'x = 2' }],
+        truncated: false
+      }
+    ];
+    upsertToolCallContent(
+      contents,
+      {
+        id: 'a',
+        title: 'Editing file',
+        kind: 'edit',
+        status: 'in_progress',
+        diffs
+      },
+      created
+    );
+    upsertToolCallContent(
+      contents,
+      {
+        id: 'a',
+        title: 'Editing file',
+        kind: 'edit',
+        status: 'completed',
+        diffs
+      },
+      created
+    );
+    expect(contents).toHaveLength(1);
+    expect(contents[0].content.status).toBe('completed');
+    expect(contents[0].content.diffs).toEqual(diffs);
+  });
+
   it('does not merge into a non-tool-call item that shares the id', () => {
     // A Markdown item that happens to carry a matching id must not be treated
     // as the tool call's card; the type guard prevents that.
