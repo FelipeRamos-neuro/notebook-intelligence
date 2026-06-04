@@ -643,6 +643,7 @@ pre:has(.code-block-header) {
 
 .chat-message-feedback:focus-within,
 .chat-message-feedback:has(.selected),
+.chat-message-feedback.always-visible,
 .chat-message:hover .chat-message-feedback {
   opacity: 1;
 }

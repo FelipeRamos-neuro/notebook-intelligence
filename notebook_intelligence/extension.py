@@ -435,6 +435,7 @@ class GetCapabilitiesHandler(APIHandler):
     disabled_coding_agent_launchers = []
     allow_enabling_coding_agent_launchers_with_env = False
     enable_chat_feedback = False
+    enable_chat_feedback_always_visible = False
     additional_skipped_workspace_directories = []
     feature_policies = {}
     string_overrides = {}
@@ -540,6 +541,7 @@ class GetCapabilitiesHandler(APIHandler):
             "disabled_coding_agent_launchers": effective_disabled_launchers,
             "default_chat_mode": nbi_config.default_chat_mode,
             "chat_feedback_enabled": self.enable_chat_feedback,
+            "chat_feedback_always_visible": self.enable_chat_feedback_always_visible,
             # Single source of truth lives on each domain's base handler so
             # `_setup_handlers` only writes one site per flag.
             "allow_github_skill_import": SkillsBaseHandler.allow_github_skill_import,
@@ -2674,6 +2676,18 @@ class NotebookIntelligence(ExtensionApp):
         config=True,
     )
 
+    enable_chat_feedback_always_visible = Bool(
+        default_value=False,
+        help="""
+        Show chat feedback (thumb up/down) buttons at full opacity for every
+        assistant reply, instead of revealing them only on hover. Has no
+        effect unless `enable_chat_feedback` is also True. Use this to drive
+        higher feedback engagement when the hover affordance is being missed.
+        """,
+        allow_none=True,
+        config=True,
+    )
+
     allow_github_skill_import = Bool(
         default_value=True,
         help="""
@@ -3158,6 +3172,9 @@ class NotebookIntelligence(ExtensionApp):
             self.allow_enabling_coding_agent_launchers_with_env
         )
         GetCapabilitiesHandler.enable_chat_feedback = self.enable_chat_feedback
+        GetCapabilitiesHandler.enable_chat_feedback_always_visible = (
+            self.enable_chat_feedback_always_visible
+        )
         # Tour copy overrides: env var wins if set, otherwise fall back to
         # the traitlet. Pre-resolve here so the handler doesn't have to
         # re-check os.environ on every call.
