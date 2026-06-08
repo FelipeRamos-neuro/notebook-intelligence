@@ -12,6 +12,7 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) is a small, well-
 - **In-lab management.** A dedicated panel in Settings lists every MCP server, transport (stdio, SSE, HTTP), and status. Add a new one without dropping to a terminal.
 - **Per-server enable/disable.** Toggle a server off without uninstalling it, useful when iterating on a flaky local server.
 - **HTTPS-only for remote.** SSE and HTTP transports require `https://` URLs; flag-smuggling guards reject malformed env / header inputs at add-time.
+- **Admin command allowlist.** Managed deployments can pin which binaries may back a stdio server with the `mcp_stdio_command_allowlist` traitlet (or `NBI_MCP_STDIO_COMMAND_ALLOWLIST`); a non-matching `command` is rejected at add-time and on `mcp.json` load. See the [admin guide](https://github.com/plmbr/notebook-intelligence/blob/main/docs/admin-guide.md#restricting-mcp-stdio-commands).
 
 ## Add a server
 
