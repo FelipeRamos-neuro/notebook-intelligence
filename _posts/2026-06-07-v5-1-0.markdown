@@ -80,3 +80,5 @@ pip install --upgrade notebook-intelligence
 ```
 
 Then restart JupyterLab. Full release notes are in the [5.1.0 CHANGELOG](https://github.com/plmbr/notebook-intelligence/blob/main/CHANGELOG.md#510---unreleased).
+
+**Upgrading from before the rename?** If you see two Notebook Intelligence icons in the sidebar after upgrading, an old labextension from before the `@plmbr` scope rename is still installed next to the new one, and JupyterLab is loading both. Run `jupyter labextension list`; if both `@notebook-intelligence/notebook-intelligence` and `@plmbr/notebook-intelligence` show as enabled, remove the stale `@notebook-intelligence` one. Steps are in [troubleshooting](https://github.com/plmbr/notebook-intelligence/blob/main/docs/troubleshooting.md#two-notebook-intelligence-icons-in-the-sidebar).
