@@ -1,7 +1,7 @@
 // Copyright (c) Mehmet Bektas <mbektasgh@outlook.com>
 
 import React, { useEffect, useRef, useState } from 'react';
-import { VscCheck, VscShield, VscWarning } from '../icons';
+import { VscCheck, VscEdit, VscEye, VscShield, VscWarning } from '../icons';
 
 export const BYPASS_PERMISSIONS_MODE = 'bypassPermissions';
 
@@ -19,6 +19,42 @@ function labelFor(mode: string): string {
   return mode === BYPASS_PERMISSIONS_MODE ? 'Bypass Permissions' : 'Default';
 }
 
+/**
+ * Resolve the selector mode after a server permission-mode notification.
+ *
+ * A `reset` notification (a fresh SDK session: skills reload, config change,
+ * restart) must retire bypass but must NOT clobber an explicit non-bypass
+ * selection the user already made, so a mid-session reconnect doesn't snap the
+ * selector back to default (issue #377). A non-reset notification is an
+ * authoritative server-driven switch (plan approval, the slash aliases) and
+ * applies unconditionally.
+ */
+export function nextPermissionModeOnNotification(
+  current: string,
+  notification: { mode: string; reset: boolean }
+): string {
+  if (notification.reset) {
+    return current === BYPASS_PERMISSIONS_MODE ? notification.mode : current;
+  }
+  return notification.mode;
+}
+
+// A distinct glyph per mode so the active selection reads at a glance in the
+// compact footer (no room for a text label there), addressing #377. Bypass
+// keeps the red warning glyph as its persistent, non-color-only indicator.
+function iconFor(mode: string): JSX.Element {
+  switch (mode) {
+    case BYPASS_PERMISSIONS_MODE:
+      return <VscWarning aria-hidden="true" />;
+    case 'acceptEdits':
+      return <VscEdit aria-hidden="true" />;
+    case 'plan':
+      return <VscEye aria-hidden="true" />;
+    default:
+      return <VscShield aria-hidden="true" />;
+  }
+}
+
 export interface IPermissionModeSelectProps {
   value: string;
   bypassAllowed: boolean;
@@ -29,11 +65,14 @@ export interface IPermissionModeSelectProps {
  * Permission-mode picker for Claude mode (issue #359).
  *
  * A compact footer icon button that opens a menu of modes rather than a
- * wide dropdown, to keep the input footer uncluttered. Default / Accept
- * Edits / Plan switch immediately. Bypass Permissions is listed only when
- * the admin policy allows it and never switches on the first click:
- * choosing it opens a confirm-to-arm step. While armed, the button renders
- * a red warning glyph as a persistent (non-color-only) indicator.
+ * wide dropdown, to keep the narrow input footer uncluttered. Each mode has
+ * a distinct glyph (shield / edit / eye / warning) so the active selection
+ * reads at a glance, and the menu echoes the same glyphs (#359, #377).
+ * Default / Accept Edits / Plan switch immediately. Bypass Permissions is
+ * listed only when the admin policy allows it and never switches on the
+ * first click: choosing it opens a confirm-to-arm step. While armed, the
+ * button shows a red warning glyph as a persistent (non-color-only)
+ * indicator.
  */
 export function PermissionModeSelect(
   props: IPermissionModeSelectProps
@@ -206,6 +245,9 @@ export function PermissionModeSelect(
                 <span className="permission-mode-menu-check">
                   {selected && <VscCheck aria-hidden="true" />}
                 </span>
+                <span className="permission-mode-menu-icon">
+                  {iconFor(mode)}
+                </span>
                 {label}
               </button>
             );
@@ -232,7 +274,7 @@ export function PermissionModeSelect(
         }
         onClick={() => setOpen(o => !o)}
       >
-        {bypassActive ? <VscWarning /> : <VscShield />}
+        {iconFor(props.value)}
       </button>
     </div>
   );

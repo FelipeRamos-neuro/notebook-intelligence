@@ -2,12 +2,41 @@ import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import {
   BYPASS_PERMISSIONS_MODE,
+  nextPermissionModeOnNotification,
   PermissionModeSelect
 } from '../../src/components/permission-mode-select';
 
 function openMenu() {
   fireEvent.click(screen.getByRole('button', { name: /Permission mode/ }));
 }
+
+describe('nextPermissionModeOnNotification', () => {
+  it('drops bypass on a reset (a fresh session never keeps bypass)', () => {
+    expect(
+      nextPermissionModeOnNotification(BYPASS_PERMISSIONS_MODE, {
+        mode: 'default',
+        reset: true
+      })
+    ).toBe('default');
+  });
+
+  it('keeps an explicit non-bypass selection on a reset (#377)', () => {
+    // The reconnect must not clobber the user's chosen mode.
+    expect(
+      nextPermissionModeOnNotification('plan', { mode: 'default', reset: true })
+    ).toBe('plan');
+  });
+
+  it('applies a non-reset switch unconditionally', () => {
+    // Server-driven switches (plan approval, slash aliases) are authoritative.
+    expect(
+      nextPermissionModeOnNotification('plan', {
+        mode: 'acceptEdits',
+        reset: false
+      })
+    ).toBe('acceptEdits');
+  });
+});
 
 describe('PermissionModeSelect', () => {
   it('shows the current mode on the trigger button', () => {
@@ -21,6 +50,32 @@ describe('PermissionModeSelect', () => {
     expect(
       screen.getByRole('button', { name: 'Permission mode: Plan' })
     ).toBeInTheDocument();
+  });
+
+  it('shows a distinct glyph per mode on the trigger', () => {
+    const { rerender, container } = render(
+      <PermissionModeSelect
+        value="default"
+        bypassAllowed={true}
+        onModeChange={jest.fn()}
+      />
+    );
+    const glyphFor = (value: string) => {
+      rerender(
+        <PermissionModeSelect
+          value={value}
+          bypassAllowed={true}
+          onModeChange={jest.fn()}
+        />
+      );
+      return container.querySelector('.permission-mode-button svg')?.outerHTML;
+    };
+    const glyphs = new Set(
+      ['default', 'acceptEdits', 'plan', BYPASS_PERMISSIONS_MODE].map(glyphFor)
+    );
+    // Every mode renders a different glyph, so the icon-only button indicates
+    // the selection (issue #377).
+    expect(glyphs.size).toBe(4);
   });
 
   it('lists the three normal modes and hides bypass when not allowed', () => {

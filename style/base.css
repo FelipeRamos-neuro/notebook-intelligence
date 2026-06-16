@@ -404,6 +404,13 @@
   flex-shrink: 0;
 }
 
+/* Echo the trigger glyph next to each mode in the menu so the icon-only
+   footer button is learnable (issue #377). */
+.permission-mode-menu-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
 .permission-mode-confirm {
   position: absolute;
   bottom: 32px;
@@ -431,6 +438,18 @@
   display: flex;
   justify-content: flex-end;
   gap: 6px;
+}
+
+/* Shrink the confirm-to-arm actions: the default jp-Dialog-button sizing is
+   oversized for this inline popover. 4px vertical padding keeps each target
+   >=24px tall (WCAG 2.5.8) while staying compact (issue #377). */
+.permission-mode-confirm-buttons .jp-Dialog-button {
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  padding: 4px 10px;
+  font-size: var(--jp-ui-font-size1);
+  line-height: 1.4;
 }
 
 .user-input-footer-button {

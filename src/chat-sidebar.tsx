@@ -82,6 +82,7 @@ import { AskUserQuestion } from './components/ask-user-question';
 import { ClaudeSessionPicker } from './components/claude-session-picker';
 import {
   BYPASS_PERMISSIONS_MODE,
+  nextPermissionModeOnNotification,
   PermissionModeSelect
 } from './components/permission-mode-select';
 import { ToolCallGroup } from './components/tool-call-group';
@@ -2355,8 +2356,13 @@ function SidebarComponent(props: any) {
         );
       }
     };
-    const modeHandler = (_: unknown, mode: string) => {
-      setPermissionMode(mode);
+    const modeHandler = (
+      _: unknown,
+      notification: { mode: string; reset: boolean }
+    ) => {
+      setPermissionMode(current =>
+        nextPermissionModeOnNotification(current, notification)
+      );
     };
     NBIAPI.configChanged.connect(configHandler);
     NBIAPI.claudePermissionModeChanged.connect(modeHandler);

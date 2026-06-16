@@ -385,13 +385,13 @@ def get_current_permission_mode() -> str:
     return _current_permission_mode
 
 
-def _notify_permission_mode(mode: str):
+def _notify_permission_mode(mode: str, reset: bool = False):
     if _permission_mode_notifier is None:
         return
     try:
         _permission_mode_notifier.write_message({
             "type": BackendMessageType.ClaudePermissionModeChange,
-            "data": {"mode": mode}
+            "data": {"mode": mode, "reset": reset}
         })
     except Exception as e:
         log.error(f"Error occurred while sending permission mode change to websocket: {str(e)}")
@@ -400,16 +400,20 @@ def _notify_permission_mode(mode: str):
 def reset_permission_mode_tracking():
     """A fresh SDK client starts in default mode; realign tracking and the UI.
 
-    The notification carries the selector's *starting* value, which honors
-    managed settings' defaultMode; the next request applies it. Bypass never
-    survives a reset, even as a managed default: re-arming is always manual.
+    The notification is flagged ``reset`` and carries the selector's
+    *starting* value, which honors managed settings' defaultMode. The UI
+    applies it only to retire bypass (which never survives a reset, even as
+    a managed default: re-arming is always manual) and otherwise keeps the
+    user's explicit selection, so a mid-session reconnect (skills reload, a
+    config change) doesn't clobber the chosen mode (issue #377). The next
+    request applies whatever the selector then shows.
     """
     global _current_permission_mode
     _current_permission_mode = DEFAULT_PERMISSION_MODE
     starting = claude_managed_default_permission_mode() or DEFAULT_PERMISSION_MODE
     if starting == CLAUDE_BYPASS_PERMISSION_MODE:
         starting = DEFAULT_PERMISSION_MODE
-    _notify_permission_mode(starting)
+    _notify_permission_mode(starting, reset=True)
 
 
 async def apply_permission_mode(sdk_client: ClaudeSDKClient, mode: str) -> bool:
@@ -419,15 +423,28 @@ async def apply_permission_mode(sdk_client: ClaudeSDKClient, mode: str) -> bool:
     slash aliases, and the plan-approval reset) so the tracked mode and the
     UI notification can't drift from what the SDK was actually told.
 
-    This does NOT re-check the bypass policy: callers must pass a mode that
-    was already clamped by ``resolve_permission_mode`` at the request
-    boundary, or a hardcoded non-bypass literal. Bypass must never reach
-    here unclamped.
+    Bypass is realized in NBI's own ``custom_permission_handler`` rather than
+    the CLI's ``bypassPermissions`` mode: the CLI refuses that mode unless the
+    session was launched with ``--dangerously-skip-permissions``, and that flag
+    skips ALL permission prompts for the whole session (it can't be scoped to
+    the bypass turns only), which would silently un-gate default / acceptEdits
+    / plan too (issue #377). Instead bypass keeps the CLI in ``default`` and the
+    handler auto-allows every tool while ``_current_permission_mode`` is bypass,
+    so the gate stays fully under NBI's control.
+
+    This does NOT re-check the bypass policy: callers must pass a mode that was
+    already clamped by ``resolve_permission_mode`` at the request boundary, or a
+    hardcoded non-bypass literal.
     """
     global _current_permission_mode
     if mode not in CLAUDE_PERMISSION_MODES or mode == _current_permission_mode:
         return False
-    await sdk_client.set_permission_mode(mode)
+    cli_mode = (
+        DEFAULT_PERMISSION_MODE
+        if mode == CLAUDE_BYPASS_PERMISSION_MODE
+        else mode
+    )
+    await sdk_client.set_permission_mode(cli_mode)
     _current_permission_mode = mode
     _notify_permission_mode(mode)
     return True
@@ -1522,6 +1539,13 @@ async def custom_permission_handler(
     global _approved_tools_for_response
 
     log.debug(f"Custom permission handler called for tool {tool_name} with input {input_data} and context {context}")
+
+    # Bypass Permissions: auto-allow every tool without prompting. NBI realizes
+    # bypass here rather than via the CLI's bypassPermissions mode (which needs
+    # an un-scopable launch flag); the mode only reaches here clamped against
+    # the policy at the request boundary (issue #377).
+    if get_current_permission_mode() == CLAUDE_BYPASS_PERMISSION_MODE:
+        return PermissionResultAllow()
 
     response = get_current_response()
     callback_id = str(uuid.uuid4())

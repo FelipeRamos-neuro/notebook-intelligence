@@ -16,10 +16,12 @@ from notebook_intelligence.claude import (
     apply_permission_mode,
     claude_bypass_disabled_by_managed_settings,
     claude_managed_default_permission_mode,
+    custom_permission_handler,
     reset_permission_mode_tracking,
     resolve_permission_mode,
     set_permission_mode_notifier,
 )
+from claude_agent_sdk import PermissionResultAllow
 from notebook_intelligence.extension import (
     FEATURE_POLICY_DEFAULTS,
     _build_feature_policies_response,
@@ -145,7 +147,8 @@ class TestApplyPermissionMode:
         asyncio.run(apply_permission_mode(client, "acceptEdits"))
         notifier.write_message.assert_called_once()
         payload = notifier.write_message.call_args.args[0]
-        assert payload["data"] == {"mode": "acceptEdits"}
+        # A real mode switch is not a reset: the UI applies it unconditionally.
+        assert payload["data"] == {"mode": "acceptEdits", "reset": False}
 
 
 class TestResetPermissionModeTracking:
@@ -156,7 +159,9 @@ class TestResetPermissionModeTracking:
         reset_permission_mode_tracking()
         assert claude_module.get_current_permission_mode() == DEFAULT_PERMISSION_MODE
         payload = notifier.write_message.call_args.args[0]
-        assert payload["data"] == {"mode": DEFAULT_PERMISSION_MODE}
+        # Flagged reset so the UI only retires bypass and keeps an explicit
+        # non-bypass selection (issue #377).
+        assert payload["data"] == {"mode": DEFAULT_PERMISSION_MODE, "reset": True}
 
     def test_reset_notification_honors_managed_default(self, _no_managed_settings):
         _no_managed_settings.write_text(
@@ -169,7 +174,7 @@ class TestResetPermissionModeTracking:
         # default); the notification carries the selector's starting value.
         assert claude_module.get_current_permission_mode() == DEFAULT_PERMISSION_MODE
         payload = notifier.write_message.call_args.args[0]
-        assert payload["data"] == {"mode": "plan"}
+        assert payload["data"] == {"mode": "plan", "reset": True}
 
     def test_managed_bypass_default_never_arms_on_reset(self, _no_managed_settings):
         _no_managed_settings.write_text(
@@ -181,7 +186,69 @@ class TestResetPermissionModeTracking:
         set_permission_mode_notifier(notifier)
         reset_permission_mode_tracking()
         payload = notifier.write_message.call_args.args[0]
-        assert payload["data"] == {"mode": DEFAULT_PERMISSION_MODE}
+        assert payload["data"] == {"mode": DEFAULT_PERMISSION_MODE, "reset": True}
+
+
+class TestBypassViaHandler:
+    """Bypass is realized in NBI's handler, not the CLI's bypass mode (#377).
+
+    The CLI refuses ``set_permission_mode("bypassPermissions")`` unless the
+    session was launched with ``--dangerously-skip-permissions``, and that flag
+    skips every permission prompt for the whole session (it can't be scoped to
+    just the bypass turns). So bypass keeps the CLI in ``default`` and the
+    permission handler auto-allows every tool while the tracked mode is bypass.
+    """
+
+    def _sdk_client(self):
+        client = MagicMock()
+        client.set_permission_mode = AsyncMock()
+        return client
+
+    def test_bypass_keeps_cli_in_default_but_tracks_bypass(self):
+        client = self._sdk_client()
+        notifier = MagicMock()
+        set_permission_mode_notifier(notifier)
+        changed = asyncio.run(
+            apply_permission_mode(client, CLAUDE_BYPASS_PERMISSION_MODE)
+        )
+        assert changed is True
+        # The CLI never enters bypassPermissions; it stays in default while NBI
+        # tracks bypass for the handler and tells the UI bypass is active.
+        client.set_permission_mode.assert_awaited_once_with(DEFAULT_PERMISSION_MODE)
+        assert (
+            claude_module.get_current_permission_mode()
+            == CLAUDE_BYPASS_PERMISSION_MODE
+        )
+        payload = notifier.write_message.call_args.args[0]
+        assert payload["data"] == {
+            "mode": CLAUDE_BYPASS_PERMISSION_MODE,
+            "reset": False,
+        }
+
+    def test_non_bypass_modes_pass_through_to_cli(self):
+        client = self._sdk_client()
+        asyncio.run(apply_permission_mode(client, "plan"))
+        client.set_permission_mode.assert_awaited_once_with("plan")
+        assert claude_module.get_current_permission_mode() == "plan"
+
+    def test_reapplying_bypass_is_a_noop(self):
+        # Already in bypass: no redundant CLI call, no re-notify.
+        claude_module._current_permission_mode = CLAUDE_BYPASS_PERMISSION_MODE
+        client = self._sdk_client()
+        changed = asyncio.run(
+            apply_permission_mode(client, CLAUDE_BYPASS_PERMISSION_MODE)
+        )
+        assert changed is False
+        client.set_permission_mode.assert_not_awaited()
+
+    def test_handler_auto_allows_every_tool_in_bypass(self):
+        # Even a destructive command is allowed without a confirmation round
+        # trip while bypass is the tracked mode.
+        claude_module._current_permission_mode = CLAUDE_BYPASS_PERMISSION_MODE
+        result = asyncio.run(
+            custom_permission_handler("Bash", {"command": "rm -rf /tmp/x"}, {})
+        )
+        assert isinstance(result, PermissionResultAllow)
 
 
 class TestPolicyWiring:

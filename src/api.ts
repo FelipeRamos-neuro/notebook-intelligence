@@ -590,7 +590,10 @@ export class NBIAPI {
   // The chat sidebar uses it to drive the "Generating" indicator's pulse
   // and to swap to a "server may be slow" copy when the gap stretches.
   static claudeCodeHeartbeat = new Signal<unknown, void>(this);
-  static claudePermissionModeChanged = new Signal<unknown, string>(this);
+  static claudePermissionModeChanged = new Signal<
+    unknown,
+    { mode: string; reset: boolean }
+  >(this);
 
   static async initialize() {
     await this.fetchCapabilities();
@@ -622,7 +625,10 @@ export class NBIAPI {
       } else if (msg.type === BackendMessageType.ClaudeCodeHeartbeat) {
         this.claudeCodeHeartbeat.emit();
       } else if (msg.type === BackendMessageType.ClaudePermissionModeChange) {
-        this.claudePermissionModeChanged.emit(msg.data?.mode ?? 'default');
+        this.claudePermissionModeChanged.emit({
+          mode: msg.data?.mode ?? 'default',
+          reset: msg.data?.reset ?? false
+        });
       }
     });
   }
