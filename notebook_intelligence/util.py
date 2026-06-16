@@ -26,6 +26,20 @@ log = logging.getLogger(__name__)
 _jupyter_root_dir: str = None
 _enabled_tools: Set[str] = None
 
+def import_litellm():
+    """Import litellm on first use instead of at server-extension import.
+
+    litellm is over a second of import time (the largest single chunk of
+    NBI's startup) and, by default, fetches its model-cost map over HTTP at
+    import, which can stall on proxied networks. Defaulting
+    LITELLM_LOCAL_MODEL_COST_MAP to true makes it read the map bundled with
+    the installed litellm instead; set the env var to false to restore the
+    remote fetch.
+    """
+    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+    import litellm
+    return litellm
+
 def set_jupyter_root_dir(root_dir: str):
     global _jupyter_root_dir
     _jupyter_root_dir = root_dir

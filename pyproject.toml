@@ -92,6 +92,14 @@ test = ["pytest>=7.0,<9", "pytest-timeout>=2.3.0", "psutil", "pyyaml"]
 # job. Other tests in the suite run in milliseconds, so 30s is
 # generous headroom rather than a target.
 timeout = 30
+# Make `from tests.conftest import ...` resolvable on its own. Without
+# this, those imports only worked because the eager `import litellm`
+# pulled in litellm/proxy/proxy_cli.py, which calls
+# sys.path.append(os.getcwd()) at import time; deferring the litellm
+# import (#370) removed that accidental path entry and broke collection
+# under a non-editable install (editable installs already put the repo
+# root on sys.path, which is why local runs never noticed).
+pythonpath = ["."]
 
 [tool.hatch.version]
 source = "nodejs"

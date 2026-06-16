@@ -10,20 +10,21 @@ from pathlib import Path
 from queue import Queue
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 import uuid
 import re
 from anyio.abc import Process
-from anthropic import Anthropic
 from notebook_intelligence.api import AskUserQuestionData, BackendMessageType, CancelToken, ChatCommand, ChatModel, ChatRequest, ChatResponse, ClaudeToolType, CompletionContext, ConfirmationData, Host, InlineCompletionModel, MarkdownData, ProgressData, SignalImpl, ToolCallData
 from notebook_intelligence.base_chat_participant import BaseChatParticipant
 from notebook_intelligence._version import __version__ as NBI_VERSION
 import base64
 import logging
 from claude_agent_sdk import AssistantMessage, PermissionResultAllow, PermissionResultDeny, TextBlock, ToolResultBlock, ToolUseBlock, UserMessage, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient, tool
-from anthropic.types.text_block import TextBlock as AnthropicTextBlock
 
-from notebook_intelligence.util import ThreadSafeWebSocketConnector, _emit, get_jupyter_root_dir, resolve_claude_cli_path, safe_jupyter_path, terminate_process_tree
+from notebook_intelligence.util import ThreadSafeWebSocketConnector, _emit, get_jupyter_root_dir, import_litellm, resolve_claude_cli_path, safe_jupyter_path, terminate_process_tree
+
+if TYPE_CHECKING:
+    from anthropic import Anthropic
 
 log = logging.getLogger(__name__)
 
@@ -345,7 +346,7 @@ def get_claude_models() -> list[dict]:
 def _get_context_window(model_id: str) -> int:
     """Get context window size for a model using litellm's model database."""
     try:
-        import litellm
+        litellm = import_litellm()
         info = litellm.get_model_info(model_id)
         return info.get("max_input_tokens", 200000)
     except Exception:
@@ -364,8 +365,9 @@ def _normalize_anthropic_credential(value: Any) -> str | None:
     return value.strip() or None
 
 
-def _create_anthropic_client(api_key: str = None, base_url: str = None) -> Anthropic:
+def _create_anthropic_client(api_key: str = None, base_url: str = None) -> "Anthropic":
     """Create an Anthropic client with normalized credentials and default headers."""
+    from anthropic import Anthropic
     api_key = _normalize_anthropic_credential(api_key)
     base_url = _normalize_anthropic_credential(base_url)
     return Anthropic(
@@ -543,6 +545,8 @@ class ClaudeCodeInlineCompletionModel(InlineCompletionModel):
     def inline_completions(self, prefix, suffix, language, filename, context: CompletionContext, cancel_token: CancelToken) -> str:
         if cancel_token.is_cancel_requested:
             return ''
+
+        from anthropic.types.text_block import TextBlock as AnthropicTextBlock
 
         message = self._client.messages.create(
             model=self._model_id,

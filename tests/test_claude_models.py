@@ -78,7 +78,7 @@ class TestFetchClaudeModels:
         return m
 
     @patch("notebook_intelligence.claude._get_context_window", return_value=200000)
-    @patch("notebook_intelligence.claude.Anthropic")
+    @patch("anthropic.Anthropic")
     def test_fetches_and_caches_models(self, mock_anthropic_cls, mock_ctx_window):
         from notebook_intelligence.claude import fetch_claude_models, get_claude_models
 
@@ -98,7 +98,7 @@ class TestFetchClaudeModels:
         assert len(get_claude_models()) == 2
 
     @patch("notebook_intelligence.claude._get_context_window", return_value=150000)
-    @patch("notebook_intelligence.claude.Anthropic")
+    @patch("anthropic.Anthropic")
     def test_uses_litellm_context_window(self, mock_anthropic_cls, mock_ctx_window):
         from notebook_intelligence.claude import fetch_claude_models
 
@@ -112,7 +112,7 @@ class TestFetchClaudeModels:
         mock_ctx_window.assert_called_once_with("claude-sonnet-4-6")
 
     @patch("notebook_intelligence.claude._get_context_window", return_value=200000)
-    @patch("notebook_intelligence.claude.Anthropic")
+    @patch("anthropic.Anthropic")
     def test_cache_is_mutated_in_place(self, mock_anthropic_cls, mock_ctx_window):
         """Verify the cache list is mutated, not replaced, so importers keep a valid reference."""
         from notebook_intelligence.claude import fetch_claude_models, _claude_models_cache
@@ -129,7 +129,7 @@ class TestFetchClaudeModels:
         assert len(original_list) == 1
 
     @patch("notebook_intelligence.claude._get_context_window", return_value=200000)
-    @patch("notebook_intelligence.claude.Anthropic")
+    @patch("anthropic.Anthropic")
     def test_clears_old_cache_on_refresh(self, mock_anthropic_cls, mock_ctx_window):
         from notebook_intelligence.claude import fetch_claude_models, get_claude_models, _claude_models_cache
 
@@ -147,7 +147,7 @@ class TestFetchClaudeModels:
         assert len(models) == 1
         assert models[0]["id"] == "new-model"
 
-    @patch("notebook_intelligence.claude.Anthropic")
+    @patch("anthropic.Anthropic")
     def test_returns_existing_cache_on_api_failure(self, mock_anthropic_cls):
         from notebook_intelligence.claude import fetch_claude_models, get_claude_models, _claude_models_cache
 
@@ -162,7 +162,7 @@ class TestFetchClaudeModels:
         assert result[0]["id"] == "cached-model"
 
     @patch("notebook_intelligence.claude._get_context_window", return_value=200000)
-    @patch("notebook_intelligence.claude.Anthropic")
+    @patch("anthropic.Anthropic")
     def test_empty_api_key_passed_as_none(self, mock_anthropic_cls, mock_ctx_window):
         from notebook_intelligence.claude import fetch_claude_models
 
