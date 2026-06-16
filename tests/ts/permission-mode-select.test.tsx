@@ -250,6 +250,53 @@ describe('PermissionModeSelect', () => {
     expect(screen.getByText('Cancel')).toHaveFocus();
   });
 
+  it('marks the confirm dialog modal and traps Tab within it', () => {
+    render(
+      <PermissionModeSelect
+        value="default"
+        bypassAllowed={true}
+        onModeChange={jest.fn()}
+      />
+    );
+    openMenu();
+    fireEvent.click(
+      screen.getByRole('menuitemradio', { name: 'Bypass Permissions' })
+    );
+    const dialog = screen.getByRole('alertdialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+
+    const cancel = screen.getByText('Cancel');
+    const arm = screen.getByText('Bypass permissions');
+    // Tab off the last control wraps to the first; Shift+Tab off the first
+    // wraps to the last, so focus can't escape into the shell behind it.
+    arm.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(cancel).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    expect(arm).toHaveFocus();
+  });
+
+  it('gives the menu a single Tab stop via roving tabindex', () => {
+    render(
+      <PermissionModeSelect
+        value="acceptEdits"
+        bypassAllowed={false}
+        onModeChange={jest.fn()}
+      />
+    );
+    openMenu();
+    expect(
+      screen.getByRole('menuitemradio', { name: 'Accept Edits' })
+    ).toHaveAttribute('tabindex', '0');
+    expect(
+      screen.getByRole('menuitemradio', { name: 'Default' })
+    ).toHaveAttribute('tabindex', '-1');
+    expect(screen.getByRole('menuitemradio', { name: 'Plan' })).toHaveAttribute(
+      'tabindex',
+      '-1'
+    );
+  });
+
   it('shows the armed indicator and aria-label while bypass is active', () => {
     render(
       <PermissionModeSelect

@@ -101,7 +101,7 @@ In Claude mode the chat input footer shows a shield-icon button (to the left of 
 
 Default, Accept Edits, and Plan switch the moment you pick them. The selected mode travels with each message you send and is applied to the agent before the turn runs; switching mid-conversation takes effect on your next message.
 
-The mode does not persist across sessions: starting a **New chat session** (or `/clear`) resets the selector to its starting mode, and a fresh Claude client always begins in Default.
+Bypass Permissions never persists: starting a **New chat session** (or `/clear`) always drops it and it has to be re-armed manually. The other modes carry over across a reset, and a fresh Claude client's starting mode is Default (or an administrator's managed `permissions.defaultMode`).
 
 Choosing **Bypass Permissions** does not arm it immediately. It opens a confirmation step; only after you confirm does bypass take effect, and while it is active the shield turns into a red warning icon as a persistent indicator. Bypass must be re-armed each session: starting a new chat or restarting the Claude client drops back to Default. And because the server re-checks the requested mode on every message, an armed bypass can never outlive a policy that an administrator has since turned off.
 

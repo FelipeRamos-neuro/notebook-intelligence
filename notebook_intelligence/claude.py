@@ -1090,6 +1090,16 @@ class ClaudeCodeClient():
                         except Exception as e:
                             log.error(f"Error occurred while clearing chat history: {str(e)}")
                         finally:
+                            # A new session must not inherit an armed bypass:
+                            # realign permission tracking to default and tell the
+                            # UI, mirroring a fresh client connect. Without this,
+                            # /clear leaves _current_permission_mode at bypass and
+                            # the handler keeps auto-allowing every tool in the
+                            # supposedly fresh session (issue #377). Refresh the
+                            # notifier first since the connector goes stale across
+                            # a page reload while this thread persists.
+                            set_permission_mode_notifier(self._websocket_connector)
+                            reset_permission_mode_tracking()
                             _emit(signal, {"id": event_id, "data": "chat history cleared"})
                     elif event_type == ClaudeAgentEventType.StopClient:
                         _emit(signal, {"id": event_id, "data": "stopped"})

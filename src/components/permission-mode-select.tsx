@@ -90,6 +90,7 @@ export function PermissionModeSelect(
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const confirmRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
   // Close the menu on an outside click, matching the @-autocomplete and
@@ -199,13 +200,38 @@ export function PermissionModeSelect(
           <div
             className="permission-mode-confirm"
             style={confirmStyle}
+            ref={confirmRef}
             role="alertdialog"
+            aria-modal="true"
             aria-label="Confirm Bypass Permissions"
             aria-describedby="permission-mode-confirm-message"
             onKeyDown={event => {
               if (event.key === 'Escape') {
                 event.stopPropagation();
                 dismissConfirm();
+                return;
+              }
+              // Trap Tab within the dialog: it's portaled to <body> after the
+              // trigger, so without this, Tab would walk into the JupyterLab
+              // shell behind this security-gating alertdialog (issue #377).
+              if (event.key === 'Tab') {
+                const buttons = Array.from(
+                  confirmRef.current?.querySelectorAll<HTMLButtonElement>(
+                    'button'
+                  ) ?? []
+                );
+                if (buttons.length === 0) {
+                  return;
+                }
+                const first = buttons[0];
+                const last = buttons[buttons.length - 1];
+                if (event.shiftKey && document.activeElement === first) {
+                  event.preventDefault();
+                  last.focus();
+                } else if (!event.shiftKey && document.activeElement === last) {
+                  event.preventDefault();
+                  first.focus();
+                }
               }
             }}
           >
@@ -279,6 +305,9 @@ export function PermissionModeSelect(
                 key={mode}
                 role="menuitemradio"
                 aria-checked={selected}
+                // Roving tabindex: the menu is a single Tab stop (focus opens
+                // on the checked item; Arrow keys move between items).
+                tabIndex={selected ? 0 : -1}
                 className={`permission-mode-menu-item${
                   mode === BYPASS_PERMISSIONS_MODE
                     ? ' permission-mode-menu-item-bypass'

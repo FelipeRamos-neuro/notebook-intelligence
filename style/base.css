@@ -440,11 +440,12 @@
 }
 
 /* Shrink the confirm-to-arm actions: the default jp-Dialog-button sizing is
-   oversized for this inline popover. 4px vertical padding keeps each target
-   >=24px tall (WCAG 2.5.8) while staying compact (issue #377). */
+   oversized for this inline popover. The 24px floor keeps each target tall
+   enough (WCAG 2.5.8) even if a dense theme shrinks the UI font, while the
+   compact padding keeps it from looking like a full dialog button (#377). */
 .permission-mode-confirm-buttons .jp-Dialog-button {
   min-width: 0;
-  min-height: 0;
+  min-height: 24px;
   height: auto;
   padding: 4px 10px;
   font-size: var(--jp-ui-font-size1);
