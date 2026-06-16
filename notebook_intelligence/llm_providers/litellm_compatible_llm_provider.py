@@ -3,7 +3,7 @@
 import json
 from typing import Any
 from notebook_intelligence.api import ChatModel, EmbeddingModel, InlineCompletionModel, LLMProvider, CancelToken, ChatResponse, CompletionContext, LLMProviderProperty
-import litellm
+from notebook_intelligence.util import import_litellm
 
 DEFAULT_CONTEXT_WINDOW = 4096
 
@@ -37,6 +37,7 @@ class LiteLLMCompatibleChatModel(ChatModel):
             return DEFAULT_CONTEXT_WINDOW
 
     def completions(self, messages: list[dict], tools: list[dict] = None, response: ChatResponse = None, cancel_token: CancelToken = None, options: dict = {}) -> Any:
+        litellm = import_litellm()
         stream = response is not None
         model_id = self.get_property("model_id").value
         base_url = self.get_property("base_url").value
@@ -111,6 +112,7 @@ class LiteLLMCompatibleInlineCompletionModel(InlineCompletionModel):
             return DEFAULT_CONTEXT_WINDOW
 
     def inline_completions(self, prefix, suffix, language, filename, context: CompletionContext, cancel_token: CancelToken) -> str:
+        litellm = import_litellm()
         model_id = self.get_property("model_id").value
         base_url = self.get_property("base_url").value
         api_key_prop = self.get_property("api_key")

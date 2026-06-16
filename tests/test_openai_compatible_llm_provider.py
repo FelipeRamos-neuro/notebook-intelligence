@@ -25,7 +25,7 @@ def test_sanitize_tools_for_openai_compatible_removes_function_strict_without_mu
     assert tools[0]["function"]["strict"] is True
 
 
-@patch("notebook_intelligence.llm_providers.openai_compatible_llm_provider.OpenAI")
+@patch("openai.OpenAI")
 def test_openai_compatible_chat_model_drops_strict_before_request(mock_openai_cls):
     provider = OpenAICompatibleLLMProvider()
     model = provider.chat_models[0]

@@ -3,7 +3,6 @@
 import json
 from typing import Any
 from notebook_intelligence.api import ChatModel, EmbeddingModel, InlineCompletionModel, LLMProvider, CancelToken, ChatResponse, CompletionContext
-import ollama
 import logging
 
 from notebook_intelligence.util import extract_llm_generated_code
@@ -37,6 +36,7 @@ class OllamaChatModel(ChatModel):
         return self._context_window
 
     def completions(self, messages: list[dict], tools: list[dict] = None, response: ChatResponse = None, cancel_token: CancelToken = None, options: dict = {}) -> Any:
+        import ollama
         stream = response is not None
         completion_args = {
             "model": self._model_id, 
@@ -102,6 +102,7 @@ class OllamaInlineCompletionModel(InlineCompletionModel):
         return self._context_window
 
     def inline_completions(self, prefix, suffix, language, filename, context: CompletionContext, cancel_token: CancelToken) -> str:
+        import ollama
         has_suffix = suffix.strip() != ""
         if has_suffix:
             prompt = self._prompt_template.format(prefix=prefix, suffix=suffix.strip())
@@ -171,6 +172,7 @@ class OllamaLLMProvider(LLMProvider):
     
     def update_chat_model_list(self):
         try:
+            import ollama
             response = ollama.list()
             models = response.models
             self._chat_models = []

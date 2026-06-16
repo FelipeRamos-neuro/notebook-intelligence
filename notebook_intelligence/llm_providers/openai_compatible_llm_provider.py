@@ -5,7 +5,6 @@ import json
 import re
 from typing import Any
 from notebook_intelligence.api import ChatModel, EmbeddingModel, InlineCompletionModel, LLMProvider, CancelToken, ChatResponse, CompletionContext, LLMProviderProperty
-from openai import OpenAI, omit
 
 INLINE_COMPLETION_SYSTEM_PROMPT = """You are a code completion assistant. Your task is to generate intelligent autocomplete suggestions for the code at the cursor position for given language and active file type. This is not an interactive session, don't ask for clarifying questions, always generate a suggestion. Don't include any explanations for your response, just generate the code. Don't return any thinking or reasoning, just generate the code. You are given a code snippet with a prefix and a suffix. You need to generate a suggestion for the code that fits best in place of <CURSOR/>. You should return only the code that fits best in place of <CURSOR/>. You should provide multiline code if needed. Enclose the code in triple backticks, just return the code in language. You should not return any other text, just the code. DO NOT INCLUDE THE PREFIX OR SUFFIX IN THE RESPONSE. .ipynb files are Jupyter notebook files and for notebook files, you generate suggestions for a cell within the notebook. A cell can be a code cell with code or a markdown cell with markdown text. If the language is markdown, only return markdown text. If you need to install a Python package within a notebook cell code (for .ipynb files), use %pip install <package_name> instead of !pip install <package_name>. Follow the tags very carefully for proper spacing and indentations."""
 
@@ -55,6 +54,7 @@ class OpenAICompatibleChatModel(ChatModel):
             return DEFAULT_CONTEXT_WINDOW
 
     def completions(self, messages: list[dict], tools: list[dict] = None, response: ChatResponse = None, cancel_token: CancelToken = None, options: dict = {}) -> Any:
+        from openai import OpenAI, omit
         stream = response is not None
         model_id = self.get_property("model_id").value
         base_url_prop = self.get_property("base_url")
@@ -151,6 +151,8 @@ class OpenAICompatibleInlineCompletionModel(InlineCompletionModel):
     def inline_completions(self, prefix, suffix, language, filename, context: CompletionContext, cancel_token: CancelToken) -> str:
         if cancel_token.is_cancel_requested:
             return ''
+
+        from openai import OpenAI
 
         model_id = self.get_property("model_id").value
         base_url_prop = self.get_property("base_url")
