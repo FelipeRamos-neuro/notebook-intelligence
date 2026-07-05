@@ -36,14 +36,14 @@ def _result(**overrides) -> ResultMessage:
 class TestFormatResultUsage:
     def test_formats_duration_tokens_and_cost(self):
         line = format_result_usage(_result())
-        assert line == "*12.3s · 45.2K in (38.1K cached) / 1.2K out · $0.0842*"
+        assert line == "\n\n*12.3s · 45.2K in (38.1K cached) / 1.2K out · $0.0842*"
 
     def test_error_results_produce_no_footer(self):
         assert format_result_usage(_result(is_error=True)) is None
 
     def test_missing_usage_and_cost_produce_duration_only(self):
         line = format_result_usage(_result(usage=None, total_cost_usd=None))
-        assert line == "*12.3s*"
+        assert line == "\n\n*12.3s*"
 
     def test_nothing_meaningful_returns_none(self):
         result = _result(duration_ms=0, usage=None, total_cost_usd=None)
@@ -82,7 +82,7 @@ class TestFormatResultUsage:
             )
         )
         # Falls back to just the duration rather than crashing the turn.
-        assert line == "*12.3s*"
+        assert line == "\n\n*12.3s*"
 
     def test_million_scale_token_formatting(self):
         line = format_result_usage(
@@ -94,3 +94,13 @@ class TestFormatResultUsage:
             )
         )
         assert "1.5M in" in line
+
+
+    def test_footer_starts_with_a_paragraph_break(self):
+        # The footer is streamed right after the turn's final text block;
+        # without a separator it concatenates onto prose that doesn't end
+        # in a blank line ("Done.*12.3s ...*") and breaks the emphasis
+        # markup.
+        line = format_result_usage(_result())
+        assert line.startswith("\n\n*")
+        assert ("Done." + line).splitlines()[-1].startswith("*")

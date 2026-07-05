@@ -204,9 +204,13 @@ def format_result_usage(result: ResultMessage) -> Optional[str]:
     The SDK ends every turn with a ``ResultMessage`` carrying duration,
     token usage, and cost; NBI used to drop it on the floor, leaving
     users no signal of what a turn cost short of typing ``/cost``.
-    Returns a small italic markdown line, or ``None`` when there is
-    nothing meaningful to show (error results, missing usage) so the
-    caller can skip the footer entirely.
+    Returns a small italic markdown line prefixed with a paragraph
+    break — the footer is streamed right after the turn's final text
+    block, and without the separator it would concatenate onto prose
+    that doesn't end in a blank line (``Done.*12.3s · ...*``), breaking
+    the emphasis markup. Returns ``None`` when there is nothing
+    meaningful to show (error results, missing usage) so the caller can
+    skip the footer entirely.
     """
     if getattr(result, "is_error", False):
         return None
@@ -241,7 +245,7 @@ def format_result_usage(result: ResultMessage) -> Optional[str]:
 
     if not parts:
         return None
-    return f"*{' · '.join(parts)}*"
+    return f"\n\n*{' · '.join(parts)}*"
 
 
 # Cap the diff lines surfaced per tool-call card so a large edit doesn't bloat
