@@ -552,6 +552,17 @@ def _endpoint_identity(api_key: str = None, base_url: str = None) -> tuple:
     )
 
 
+def _model_version_key(model_id: str) -> tuple:
+    """Sort key ordering model ids by their numeric version components.
+
+    Plain lexicographic order gets version-like ids wrong —
+    ``claude-sonnet-4-6`` sorts *after* ``claude-sonnet-4-10``. Compare
+    the extracted number sequences instead ([4, 6] < [4, 10] < [5]),
+    with the id itself as a deterministic tiebreak.
+    """
+    return ([int(part) for part in re.findall(r"\d+", model_id)], model_id)
+
+
 def resolve_default_model(preferred: str, tier_prefix: str, api_key: str = None, base_url: str = None) -> str:
     """Pick a default model id, validated against the fetched model list.
 
@@ -563,20 +574,39 @@ def resolve_default_model(preferred: str, tier_prefix: str, api_key: str = None,
     (``claude-sonnet``/``claude-haiku`` prefix), then to the first
     listed model. When the cache is empty — or was fetched from a
     *different* endpoint (credentials changed, refresh still in flight)
-    — trust the constant rather than another endpoint's catalog.
+    — trust the constant rather than another endpoint's catalog, and
+    trigger a background refresh so later resolutions converge on this
+    endpoint's catalog.
     """
     models = get_claude_models()
-    if not models:
-        return preferred
-    if _claude_models_cache_endpoint != _endpoint_identity(api_key, base_url):
+    endpoint_matches = _claude_models_cache_endpoint == _endpoint_identity(api_key, base_url)
+    if not models or not endpoint_matches:
+        if not endpoint_matches and _claude_models_cache_endpoint is not None:
+            # The cache demonstrably belongs to another endpoint (the
+            # credentials changed): kick off a background refresh so
+            # subsequent resolutions see this endpoint's catalog. A
+            # never-stamped cache is left to the startup fetch that
+            # update_models_from_config already fires. The single-flight
+            # lock inside fetch_claude_models dedupes concurrent
+            # attempts; failures leave the cache as-is. Deliberately
+            # never block on the network here — this runs in model
+            # constructors on the request path, and a slow or dead
+            # custom endpoint must degrade to one possibly-failing
+            # request, not a hung chat turn.
+            threading.Thread(
+                target=fetch_claude_models,
+                kwargs={"api_key": api_key, "base_url": base_url},
+                name="nbi-claude-models-refresh",
+                daemon=True,
+            ).start()
         return preferred
     ids = [m["id"] for m in models if isinstance(m.get("id"), str)]
     if preferred in ids:
         return preferred
-    tier_matches = sorted(i for i in ids if i.startswith(tier_prefix))
+    tier_matches = sorted(
+        (i for i in ids if i.startswith(tier_prefix)), key=_model_version_key
+    )
     if tier_matches:
-        # Anthropic ids sort by recency within a tier well enough for a
-        # fallback ('claude-sonnet-5' > 'claude-sonnet-4-5').
         fallback = tier_matches[-1]
     elif ids:
         fallback = ids[0]

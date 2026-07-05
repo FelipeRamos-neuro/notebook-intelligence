@@ -355,10 +355,14 @@ class TestResolveDefaultModel:
             [{"id": "endpoint-a-only-model", "name": "A", "context_window": 128000}],
             base_url="https://endpoint-a.example.com",
         )
-        resolved = resolve_default_model(
-            "claude-sonnet-5", "claude-sonnet",
-            base_url="https://endpoint-b.example.com",
-        )
+        # The stale-cache path spawns a background catalog refresh;
+        # patch it so the test doesn't leak a real network thread that
+        # holds the single-flight lock into later tests.
+        with patch("notebook_intelligence.claude.threading.Thread"):
+            resolved = resolve_default_model(
+                "claude-sonnet-5", "claude-sonnet",
+                base_url="https://endpoint-b.example.com",
+            )
         assert resolved == "claude-sonnet-5"
 
     def test_credential_normalization_applies_to_identity(self):
@@ -405,3 +409,84 @@ class TestResolveDefaultModel:
         assert claude_module._claude_models_cache_endpoint == (
             "key-a", "https://a.example.com"
         )
+
+
+class TestResolveDefaultModelRefreshAndOrdering:
+    def _fill_cache(self, models, api_key=None, base_url=None):
+        import notebook_intelligence.claude as claude_module
+        claude_module._claude_models_cache.extend(models)
+        claude_module._claude_models_cache_endpoint = (
+            claude_module._endpoint_identity(api_key, base_url)
+        )
+
+    def test_foreign_endpoint_triggers_background_refresh(self):
+        from notebook_intelligence.claude import resolve_default_model
+        self._fill_cache(
+            [{"id": "endpoint-a-model", "name": "A", "context_window": 128000}],
+            base_url="https://endpoint-a.example.com",
+        )
+        with patch("notebook_intelligence.claude.threading.Thread") as mock_thread:
+            resolved = resolve_default_model(
+                "claude-sonnet-5", "claude-sonnet",
+                base_url="https://endpoint-b.example.com",
+            )
+        assert resolved == "claude-sonnet-5"
+        mock_thread.assert_called_once()
+        kwargs = mock_thread.call_args.kwargs
+        assert kwargs["kwargs"] == {
+            "api_key": None, "base_url": "https://endpoint-b.example.com"
+        }
+        mock_thread.return_value.start.assert_called_once()
+
+    def test_matching_endpoint_triggers_no_refresh(self):
+        from notebook_intelligence.claude import resolve_default_model
+        self._fill_cache(
+            [{"id": "claude-sonnet-5", "name": "S", "context_window": 1000000}]
+        )
+        with patch("notebook_intelligence.claude.threading.Thread") as mock_thread:
+            resolve_default_model("claude-sonnet-5", "claude-sonnet")
+        mock_thread.assert_not_called()
+
+    def test_empty_cache_with_matching_identity_triggers_no_refresh(self):
+        import notebook_intelligence.claude as claude_module
+        from notebook_intelligence.claude import resolve_default_model
+        claude_module._claude_models_cache_endpoint = (
+            claude_module._endpoint_identity(None, None)
+        )
+        with patch("notebook_intelligence.claude.threading.Thread") as mock_thread:
+            resolved = resolve_default_model("claude-sonnet-5", "claude-sonnet")
+        assert resolved == "claude-sonnet-5"
+        mock_thread.assert_not_called()
+
+    def test_never_stamped_cache_triggers_no_refresh(self):
+        # Nothing fetched yet at all (marker is None): the startup fetch
+        # that update_models_from_config fires owns that case. Spawning
+        # here too would make every model constructor a network call in
+        # fresh processes (and in tests).
+        from notebook_intelligence.claude import resolve_default_model
+        with patch("notebook_intelligence.claude.threading.Thread") as mock_thread:
+            resolved = resolve_default_model(
+                "claude-haiku-4-5", "claude-haiku", api_key="test-key"
+            )
+        assert resolved == "claude-haiku-4-5"
+        mock_thread.assert_not_called()
+
+    def test_tier_fallback_orders_versions_numerically(self):
+        # Lexicographic order would pick 4-6 over 4-10; numeric version
+        # comparison must pick 4-10 (and a bare 5 over both).
+        from notebook_intelligence.claude import resolve_default_model
+        self._fill_cache([
+            {"id": "claude-sonnet-4-10", "name": "S", "context_window": 200000},
+            {"id": "claude-sonnet-4-6", "name": "S", "context_window": 200000},
+        ])
+        assert resolve_default_model("claude-sonnet-9", "claude-sonnet") == "claude-sonnet-4-10"
+
+    def test_bare_major_version_beats_dated_snapshot(self):
+        from notebook_intelligence.claude import _model_version_key
+        ordered = sorted(
+            ["claude-sonnet-4-5-20250929", "claude-sonnet-5", "claude-sonnet-4-10"],
+            key=_model_version_key,
+        )
+        assert ordered == [
+            "claude-sonnet-4-5-20250929", "claude-sonnet-4-10", "claude-sonnet-5"
+        ]
