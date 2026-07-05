@@ -175,3 +175,90 @@ class TestFetchClaudeModels:
         mock_anthropic_cls.assert_called_once_with(
             api_key=None, base_url=None, default_headers=ANY
         )
+
+
+class TestModelDefaults:
+    """Pin the fallback model choices. Chat falls back to the current
+    Sonnet tier; autocomplete falls back to the fastest/cheapest tier —
+    a suggestion has to beat the user's next keystroke, and it fires on
+    every pause in typing."""
+
+    def test_default_chat_model_is_current_sonnet(self):
+        from notebook_intelligence.claude import CLAUDE_DEFAULT_CHAT_MODEL
+        assert CLAUDE_DEFAULT_CHAT_MODEL == "claude-sonnet-5"
+
+    def test_default_inline_completion_model_is_haiku(self):
+        from notebook_intelligence.claude import CLAUDE_DEFAULT_INLINE_COMPLETION_MODEL
+        assert CLAUDE_DEFAULT_INLINE_COMPLETION_MODEL == "claude-haiku-4-5"
+
+    def test_inline_completion_max_tokens_is_bounded(self):
+        # Autocomplete output is a few dozen lines at most; the old
+        # 10K-token ceiling let a rambling response generate for many
+        # seconds before extraction threw most of it away.
+        from notebook_intelligence.claude import CLAUDE_INLINE_COMPLETION_MAX_TOKENS
+        assert 0 < CLAUDE_INLINE_COMPLETION_MAX_TOKENS <= 4096
+
+    @patch("anthropic.Anthropic")
+    def test_inline_completion_request_uses_bounded_max_tokens(self, mock_anthropic_cls):
+        from notebook_intelligence.claude import (
+            CLAUDE_INLINE_COMPLETION_MAX_TOKENS,
+            ClaudeCodeInlineCompletionModel,
+        )
+
+        mock_message = Mock()
+        mock_message.content = []
+        mock_anthropic_cls.return_value.messages.create.return_value = mock_message
+
+        model = ClaudeCodeInlineCompletionModel("", api_key="test-key")
+        assert model.id == "claude-haiku-4-5"
+
+        cancel_token = Mock()
+        cancel_token.is_cancel_requested = False
+        model.inline_completions("prefix", "suffix", "python", "nb.ipynb", None, cancel_token)
+
+        kwargs = mock_anthropic_cls.return_value.messages.create.call_args.kwargs
+        assert kwargs["max_tokens"] == CLAUDE_INLINE_COMPLETION_MAX_TOKENS
+        assert kwargs["model"] == "claude-haiku-4-5"
+
+
+class TestFetchClaudeModelsContextWindow:
+    def _make_mock_model(self, model_id, display_name, max_input_tokens=None):
+        m = Mock()
+        m.id = model_id
+        m.display_name = display_name
+        m.max_input_tokens = max_input_tokens
+        return m
+
+    @patch("notebook_intelligence.claude._get_context_window", return_value=150000)
+    @patch("anthropic.Anthropic")
+    def test_prefers_models_api_context_window(self, mock_anthropic_cls, mock_ctx_window):
+        """When the Models API reports max_input_tokens, litellm's static
+        database (which lags new releases) must not be consulted."""
+        from notebook_intelligence.claude import fetch_claude_models
+
+        mock_page = Mock()
+        mock_page.data = [
+            self._make_mock_model("claude-sonnet-5", "Claude Sonnet 5", max_input_tokens=1000000)
+        ]
+        mock_anthropic_cls.return_value.models.list.return_value = mock_page
+
+        result = fetch_claude_models(api_key="test-key")
+
+        assert result[0]["context_window"] == 1000000
+        mock_ctx_window.assert_not_called()
+
+    @patch("notebook_intelligence.claude._get_context_window", return_value=150000)
+    @patch("anthropic.Anthropic")
+    def test_falls_back_to_litellm_when_api_omits_window(self, mock_anthropic_cls, mock_ctx_window):
+        from notebook_intelligence.claude import fetch_claude_models
+
+        mock_page = Mock()
+        mock_page.data = [
+            self._make_mock_model("claude-sonnet-4-6", "Claude Sonnet 4.6", max_input_tokens=None)
+        ]
+        mock_anthropic_cls.return_value.models.list.return_value = mock_page
+
+        result = fetch_claude_models(api_key="test-key")
+
+        assert result[0]["context_window"] == 150000
+        mock_ctx_window.assert_called_once_with("claude-sonnet-4-6")
