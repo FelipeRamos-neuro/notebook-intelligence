@@ -1592,7 +1592,7 @@ function SettingsPanelComponentClaude(props: any) {
                   <CheckBoxItem
                     header={true}
                     label="Show usage after each turn (time / tokens / cost)"
-                    title="Adds a small footer under each reply. Cost is shown only when a direct API key is set; it reflects public list prices and won't match subscription or enterprise billing."
+                    title="Adds a small footer under each reply."
                     checked={showTurnUsage}
                     onClick={() => {
                       setShowTurnUsage(!showTurnUsage);
