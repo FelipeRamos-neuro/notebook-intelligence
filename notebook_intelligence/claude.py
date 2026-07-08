@@ -604,17 +604,43 @@ def _is_first_party_anthropic_endpoint(base_url: Any) -> bool:
     return (urlparse(normalized).hostname or "").lower() == "api.anthropic.com"
 
 
+def _resolve_effective_credential(settings_value: Any, env_var: str) -> str | None:
+    """Resolve a credential the way the Claude Code subprocess does.
+
+    NBI only overlays ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_BASE_URL`` onto
+    the CLI's environment when the corresponding ``claude_settings`` field
+    is non-empty; that env is merged over the server process's own
+    ``os.environ``, so a blank setting falls through to whatever the
+    process already had. Mirror that precedence — setting wins, else the
+    ambient variable — so the cost gate reflects the endpoint/key the CLI
+    actually uses, not just what the settings panel shows.
+    """
+    resolved = _normalize_anthropic_credential(settings_value)
+    if resolved is not None:
+        return resolved
+    return _normalize_anthropic_credential(os.environ.get(env_var))
+
+
 def _should_show_turn_cost(claude_settings: dict) -> bool:
     """Whether the per-turn footer's ``$`` cost can be trusted.
 
     Requires both a direct API key (subscription logins report a
     meaningless notional cost) and Anthropic's own endpoint (custom
-    ``base_url`` targets bill differently). Either condition failing
-    suppresses the dollar figure while duration/tokens still render.
+    ``base_url`` targets bill differently). Credentials are resolved
+    against the environment the CLI inherits, not just the settings
+    panel, so an env-provided key or a custom ``ANTHROPIC_BASE_URL`` is
+    honored. Either condition failing suppresses the dollar figure while
+    duration/tokens still render.
     """
-    if _normalize_anthropic_credential(claude_settings.get('api_key')) is None:
+    api_key = _resolve_effective_credential(
+        claude_settings.get('api_key'), 'ANTHROPIC_API_KEY'
+    )
+    if api_key is None:
         return False
-    return _is_first_party_anthropic_endpoint(claude_settings.get('base_url'))
+    base_url = _resolve_effective_credential(
+        claude_settings.get('base_url'), 'ANTHROPIC_BASE_URL'
+    )
+    return _is_first_party_anthropic_endpoint(base_url)
 
 
 def _create_anthropic_client(api_key: str = None, base_url: str = None) -> "Anthropic":

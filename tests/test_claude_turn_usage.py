@@ -8,12 +8,21 @@ branch, leaving users no signal of what a turn cost short of typing
 /cost.
 """
 
+import pytest
 from claude_agent_sdk import ResultMessage
 
 from notebook_intelligence.claude import (
     format_result_usage,
     _should_show_turn_cost,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_anthropic_env(monkeypatch):
+    """Keep the cost-gate tests hermetic: the resolver now consults the
+    process ANTHROPIC_* env vars, so clear them unless a test sets them."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
 
 
 def _result(**overrides) -> ResultMessage:
@@ -134,6 +143,39 @@ class TestShouldShowTurnCost:
     def test_no_api_key_suppresses_cost(self):
         # Subscription login: no key -> notional cost only.
         assert _should_show_turn_cost({"api_key": ""}) is False
+        assert _should_show_turn_cost({}) is False
+
+
+class TestShouldShowTurnCostEnvResolution:
+    """The CLI subprocess inherits the server's ANTHROPIC_* env vars when the
+    settings fields are blank, so the cost gate must consult them too."""
+
+    def test_env_api_key_default_endpoint_shows_cost(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        assert _should_show_turn_cost({}) is True
+
+    def test_env_custom_base_url_suppresses_cost(self, monkeypatch):
+        # Key in settings, but a custom endpoint via env -> proxy billing,
+        # so the SDK's list-price cost can't be trusted.
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.com")
+        assert (
+            _should_show_turn_cost({"api_key": "sk-ant-xyz"}) is False
+        )
+
+    def test_settings_base_url_overrides_env(self, monkeypatch):
+        # Settings win over env: a custom setting suppresses cost even when
+        # the env points at the first-party endpoint.
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+        assert (
+            _should_show_turn_cost(
+                {"api_key": "sk-ant-xyz", "base_url": "https://proxy.example.com"}
+            )
+            is False
+        )
+
+    def test_no_key_anywhere_suppresses_cost(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         assert _should_show_turn_cost({}) is False
 
 
