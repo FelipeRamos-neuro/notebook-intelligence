@@ -151,6 +151,7 @@ class TestWebsocketHandlerIntegration:
                 'suffix': '',
                 'existingCode': '',
                 'language': 'python',
+                'kernelName': 'python3',
                 'filename': 'script.py'
             }
         }
@@ -162,6 +163,7 @@ class TestWebsocketHandlerIntegration:
         mock_factory.create.assert_called_once_with(
             filename='script.py',
             language='python',
+            kernel_name='python3',
             chat_mode_id='inline-chat',  # GenerateCode uses inline-chat mode for rule matching
             root_dir='/workspace'
         )
@@ -170,6 +172,7 @@ class TestWebsocketHandlerIntegration:
         mock_thread.assert_called_once()
         chat_request = mock_ai_manager.handle_chat_request.call_args[0][0]
         assert chat_request.language == 'python'
+        assert chat_request.kernel_name == 'python3'
     
     @patch('notebook_intelligence.extension.ai_service_manager')
     @patch('notebook_intelligence.extension.NotebookIntelligence')

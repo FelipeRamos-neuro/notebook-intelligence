@@ -2202,6 +2202,7 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
         prefix: prefix,
         suffix: suffix,
         language: ActiveDocumentWatcher.activeDocumentInfo.language,
+        kernelName: ActiveDocumentWatcher.activeDocumentInfo.kernelName,
         filename: ActiveDocumentWatcher.activeDocumentInfo.filePath,
         onRequestSubmitted: (prompt: string) => {
           userPrompt = prompt;
@@ -2321,6 +2322,7 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
           prefix: promptOptions.prefix,
           suffix: promptOptions.suffix,
           language: promptOptions.language,
+          kernelName: promptOptions.kernelName,
           filename: promptOptions.filename,
           onUpdatedCodeChange: promptOptions.onUpdatedCodeChange,
           onUpdatedCodeAccepted: promptOptions.onUpdatedCodeAccepted,

@@ -172,6 +172,7 @@ export interface IInlinePromptWidgetOptions {
   prefix: string;
   suffix: string;
   language?: string;
+  kernelName?: string;
   filename?: string;
   onRequestSubmitted: (prompt: string) => void;
   onRequestCancelled: () => void;
@@ -297,6 +298,9 @@ export class InlinePromptWidget extends ReactWidget {
         onResponseEmit={this._onResponse.bind(this)}
         prefix={this._options.prefix}
         suffix={this._options.suffix}
+        language={this._options.language}
+        kernelName={this._options.kernelName}
+        filename={this._options.filename}
         onUpdatedCodeChange={this._options.onUpdatedCodeChange}
         onUpdatedCodeAccepted={this._options.onUpdatedCodeAccepted}
       />
@@ -1226,6 +1230,7 @@ async function submitCompletionRequest(
         request.suffix || '',
         request.existingCode || '',
         request.language || 'python',
+        request.kernelName || '',
         request.filename || '',
         responseEmitter
       );
@@ -4994,6 +4999,7 @@ function InlinePromptComponent(props: any) {
         type: RunChatCompletionType.GenerateCode,
         content: prompt,
         language: props.language || 'python',
+        kernelName: props.kernelName || '',
         filename: props.filename || '',
         prefix: props.prefix,
         suffix: props.suffix,

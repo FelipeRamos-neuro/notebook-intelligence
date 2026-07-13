@@ -2601,6 +2601,7 @@ class WebsocketCopilotHandler(WebSocketMixin, websocket.WebSocketHandler, Jupyte
             rule_context = self._context_factory.create(
                 filename=filename,
                 language=language,
+                kernel_name=kernel_name,
                 chat_mode_id='inline-chat',
                 root_dir=NotebookIntelligence.root_dir
             )

@@ -1309,6 +1309,7 @@ export class NBIAPI {
     suffix: string,
     existingCode: string,
     language: string,
+    kernelName: string,
     filename: string,
     responseEmitter: IChatCompletionResponseEmitter
   ) {
@@ -1324,6 +1325,7 @@ export class NBIAPI {
           suffix,
           existingCode,
           language,
+          kernelName,
           filename
         }
       })
