@@ -72,8 +72,7 @@ export function findKernelProfile(
       }
     }
   }
-
-  if (requestedLanguage === DEFAULT_NOTEBOOK_KERNEL.language) {
+  if (!specs && requestedLanguage === DEFAULT_NOTEBOOK_KERNEL.language) {
     return DEFAULT_NOTEBOOK_KERNEL;
   }
 
