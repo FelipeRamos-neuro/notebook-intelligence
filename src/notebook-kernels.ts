@@ -47,8 +47,11 @@ export function findKernelProfile(
   options?: { language?: string; kernelName?: string }
 ): INotebookKernelProfile {
   const requestedKernelName = (options?.kernelName ?? '').trim();
-  if (requestedKernelName && specs?.[requestedKernelName]) {
-    const spec = specs[requestedKernelName];
+  if (requestedKernelName) {
+    const spec = specs?.[requestedKernelName];
+    if (!spec) {
+      throw new NotebookKernelNotFoundError(options);
+    }
     return {
       language: normalizeNotebookLanguage(spec.language),
       kernelName: spec.name,
