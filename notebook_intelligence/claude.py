@@ -20,7 +20,7 @@ from notebook_intelligence.claude_sessions import CONTROL_SLASH_COMMANDS
 from notebook_intelligence._version import __version__ as NBI_VERSION
 import base64
 import logging
-from claude_agent_sdk import AssistantMessage, PermissionResultAllow, PermissionResultDeny, TextBlock, ToolResultBlock, ToolUseBlock, UserMessage, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient, tool
+from claude_agent_sdk import AssistantMessage, PermissionResultAllow, PermissionResultDeny, ResultMessage, TextBlock, ToolResultBlock, ToolUseBlock, UserMessage, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient, tool
 
 from notebook_intelligence.util import ThreadSafeWebSocketConnector, _emit, get_jupyter_root_dir, import_litellm, resolve_claude_cli_path, safe_jupyter_path, terminate_process_tree
 
@@ -260,6 +260,75 @@ def claude_tool_kind(name: str) -> str:
                  "view", "open", "show", "find"}:
         return "read"
     return "other"
+
+
+def _format_token_count(count: int) -> str:
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1_000:
+        return f"{count / 1_000:.1f}K"
+    return str(count)
+
+
+def format_result_usage(result: ResultMessage, show_cost: bool = True) -> Optional[str]:
+    """One-line usage footer for a completed Claude Code turn.
+
+    The SDK ends every turn with a ``ResultMessage`` carrying duration,
+    token usage, and cost; NBI used to drop it on the floor, leaving
+    users no signal of what a turn cost short of typing ``/cost``.
+    Returns a small italic markdown line prefixed with a paragraph
+    break — the footer is streamed right after the turn's final text
+    block, and without the separator it would concatenate onto prose
+    that doesn't end in a blank line (``Done.*12.3s · ...*``), breaking
+    the emphasis markup. Returns ``None`` when there is nothing
+    meaningful to show (error results, missing usage) so the caller can
+    skip the footer entirely.
+
+    ``show_cost`` gates the ``$`` segment. The SDK's ``total_cost_usd``
+    is priced from the CLI's built-in public list rates, so it is only
+    trustworthy for a direct first-party API key; on a subscription
+    login the marginal cost is really $0, and enterprise/cloud-endpoint
+    pricing differs. The caller passes ``False`` unless NBI is running
+    against a direct API key on Anthropic's own endpoint (see
+    ``_should_show_turn_cost``) so we omit a figure we can't stand
+    behind, while still showing the always-accurate duration and token
+    counts.
+    """
+    if getattr(result, "is_error", False):
+        return None
+    usage = getattr(result, "usage", None) or {}
+    parts: list[str] = []
+
+    duration_ms = getattr(result, "duration_ms", None)
+    if isinstance(duration_ms, (int, float)) and duration_ms > 0:
+        parts.append(f"{duration_ms / 1000:.1f}s")
+
+    def _count(key: str) -> int:
+        value = usage.get(key, 0)
+        return value if isinstance(value, int) and value > 0 else 0
+
+    total_in = (
+        _count("input_tokens")
+        + _count("cache_read_input_tokens")
+        + _count("cache_creation_input_tokens")
+    )
+    output_tokens = _count("output_tokens")
+    if total_in > 0 or output_tokens > 0:
+        token_part = f"{_format_token_count(total_in)} in"
+        cache_read = _count("cache_read_input_tokens")
+        if cache_read > 0:
+            token_part += f" ({_format_token_count(cache_read)} cached)"
+        token_part += f" / {_format_token_count(output_tokens)} out"
+        parts.append(token_part)
+
+    if show_cost:
+        cost = getattr(result, "total_cost_usd", None)
+        if isinstance(cost, (int, float)) and cost > 0:
+            parts.append(f"${cost:.4f}")
+
+    if not parts:
+        return None
+    return f"\n\n*{' · '.join(parts)}*"
 
 
 # Cap the diff lines surfaced per tool-call card so a large edit doesn't bloat
@@ -668,6 +737,63 @@ def _normalize_anthropic_credential(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     return value.strip() or None
+
+
+def _is_first_party_anthropic_endpoint(base_url: Any) -> bool:
+    """True when requests go to Anthropic's own API — the only place the
+    SDK's public-list-price ``total_cost_usd`` is meaningful.
+
+    An unset ``base_url`` means the SDK uses its default
+    (``api.anthropic.com``). A custom ``base_url`` (proxy, gateway,
+    Bedrock/Vertex front, OpenAI-compatible endpoint) bills on its own
+    terms, so cost figures priced off Anthropic's list rates can't be
+    trusted there.
+    """
+    from urllib.parse import urlparse
+
+    normalized = _normalize_anthropic_credential(base_url)
+    if normalized is None:
+        return True
+    return (urlparse(normalized).hostname or "").lower() == "api.anthropic.com"
+
+
+def _resolve_effective_credential(settings_value: Any, env_var: str) -> str | None:
+    """Resolve a credential the way the Claude Code subprocess does.
+
+    NBI only overlays ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_BASE_URL`` onto
+    the CLI's environment when the corresponding ``claude_settings`` field
+    is non-empty; that env is merged over the server process's own
+    ``os.environ``, so a blank setting falls through to whatever the
+    process already had. Mirror that precedence — setting wins, else the
+    ambient variable — so the cost gate reflects the endpoint/key the CLI
+    actually uses, not just what the settings panel shows.
+    """
+    resolved = _normalize_anthropic_credential(settings_value)
+    if resolved is not None:
+        return resolved
+    return _normalize_anthropic_credential(os.environ.get(env_var))
+
+
+def _should_show_turn_cost(claude_settings: dict) -> bool:
+    """Whether the per-turn footer's ``$`` cost can be trusted.
+
+    Requires both a direct API key (subscription logins report a
+    meaningless notional cost) and Anthropic's own endpoint (custom
+    ``base_url`` targets bill differently). Credentials are resolved
+    against the environment the CLI inherits, not just the settings
+    panel, so an env-provided key or a custom ``ANTHROPIC_BASE_URL`` is
+    honored. Either condition failing suppresses the dollar figure while
+    duration/tokens still render.
+    """
+    api_key = _resolve_effective_credential(
+        claude_settings.get('api_key'), 'ANTHROPIC_API_KEY'
+    )
+    if api_key is None:
+        return False
+    base_url = _resolve_effective_credential(
+        claude_settings.get('base_url'), 'ANTHROPIC_BASE_URL'
+    )
+    return _is_first_party_anthropic_endpoint(base_url)
 
 
 def _create_anthropic_client(api_key: str = None, base_url: str = None) -> "Anthropic":
@@ -1207,6 +1333,20 @@ class ClaudeCodeClient():
                                                         status=status,
                                                         diffs=diffs,
                                                     ))
+                                    elif isinstance(message, ResultMessage):
+                                        # End-of-turn accounting from the SDK.
+                                        # Opt-in (off by default): the footer
+                                        # is persistent per-turn noise, and its
+                                        # cost figure is only trustworthy for a
+                                        # direct API key against Anthropic's own
+                                        # endpoint, so gate the dollar amount on
+                                        # both (see _should_show_turn_cost).
+                                        claude_settings = self._host.nbi_config.claude_settings
+                                        if claude_settings.get('show_turn_usage', False):
+                                            show_cost = _should_show_turn_cost(claude_settings)
+                                            usage_line = format_result_usage(message, show_cost=show_cost)
+                                            if usage_line is not None:
+                                                response.stream(MarkdownData(usage_line))
                                     else:
                                         pass
 
