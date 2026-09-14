@@ -95,7 +95,7 @@ from notebook_intelligence.claude_sessions import (
 )
 import notebook_intelligence.github_copilot as github_copilot
 from notebook_intelligence.built_in_toolsets import built_in_toolsets
-from notebook_intelligence.util import ThreadSafeWebSocketConnector, get_claude_config_dir, get_jupyter_root_dir, set_jupyter_root_dir, is_builtin_tool_enabled_in_env, is_provider_enabled_in_env, VALID_CODING_AGENT_LAUNCHERS, compute_effective_disabled_launchers, validate_coding_agent_launcher_ids, resolve_claude_cli_path, resolve_opencode_cli_path, resolve_pi_cli_path, resolve_copilot_cli_path, resolve_codex_cli_path, safe_anchor_uri, has_dangerous_text_codepoints, split_csv
+from notebook_intelligence.util import ThreadSafeWebSocketConnector, get_claude_config_dir, get_jupyter_root_dir, set_jupyter_root_dir, is_builtin_tool_enabled_in_env, is_provider_enabled_in_env, filter_models_by_enabled_providers, VALID_CODING_AGENT_LAUNCHERS, compute_effective_disabled_launchers, validate_coding_agent_launcher_ids, resolve_claude_cli_path, resolve_opencode_cli_path, resolve_pi_cli_path, resolve_copilot_cli_path, resolve_codex_cli_path, safe_anchor_uri, has_dangerous_text_codepoints, split_csv
 from notebook_intelligence.context_factory import RuleContextFactory
 from notebook_intelligence.skillset import SKILL_NAME_REGEX
 
@@ -712,9 +712,18 @@ class GetCapabilitiesHandler(APIHandler):
             "nbi_user_config_dir": nbi_config.nbi_user_dir,
             "using_github_copilot_service": nbi_config.using_github_copilot_service,
             "llm_providers": [{"id": provider.id, "name": provider.name} for provider in llm_providers],
-            "chat_models": ai_service_manager.chat_model_ids,
-            "inline_completion_models": ai_service_manager.inline_completion_model_ids,
-            "embedding_models": ai_service_manager.embedding_model_ids,
+            # Filtered by the same predicate as `llm_providers` above: the
+            # model lists walk every registered provider, so without this a
+            # disabled provider kept shipping its models (#431).
+            "chat_models": filter_models_by_enabled_providers(
+                ai_service_manager.chat_model_ids, is_provider_enabled
+            ),
+            "inline_completion_models": filter_models_by_enabled_providers(
+                ai_service_manager.inline_completion_model_ids, is_provider_enabled
+            ),
+            "embedding_models": filter_models_by_enabled_providers(
+                ai_service_manager.embedding_model_ids, is_provider_enabled
+            ),
             "chat_model": nbi_config.chat_model,
             "chat_model_supports_vision": _resolve_supports_vision(
                 ai_service_manager

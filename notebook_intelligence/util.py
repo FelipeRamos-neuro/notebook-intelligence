@@ -381,6 +381,38 @@ def is_provider_enabled_in_env(provider_id: str) -> bool:
     return provider_id in enabled_providers.split(',')
 
 
+def filter_models_by_enabled_providers(models, is_provider_enabled) -> list:
+    """Drop model entries belonging to providers an admin disabled.
+
+    The capabilities response filters the provider list itself, but the
+    model lists come from ``AIServiceManager.chat_model_ids`` and its
+    siblings, which walk every registered provider with no notion of
+    enablement. A ``disabled_providers`` entry therefore removed the
+    provider from the picker while its models stayed in the payload, and
+    enumerating them is not free for every provider: the Ollama list is
+    built by calling the Ollama host, so the response did work on behalf
+    of a provider the admin had switched off (#431).
+
+    Takes the predicate rather than the denylist because the caller's
+    version already folds in the per-pod re-enable env var, and that
+    resolution should not be duplicated here.
+
+    An entry whose provider cannot be read is kept. Every entry is built
+    in-process with a ``provider`` key, so this only matters if that
+    shape changes, and hiding a model for a reason the admin did not ask
+    for is the worse failure.
+    """
+    if not isinstance(models, list):
+        return []
+    kept = []
+    for model in models:
+        provider_id = model.get("provider") if isinstance(model, dict) else None
+        if isinstance(provider_id, str) and not is_provider_enabled(provider_id):
+            continue
+        kept.append(model)
+    return kept
+
+
 # Schemes safe to emit into the chat anchor stream. Anchors are populated
 # from arbitrary LLM / tool output, and React does not block javascript:,
 # data:, vbscript:, etc. in href attributes; rel=noopener also does not
