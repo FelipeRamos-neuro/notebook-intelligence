@@ -6,7 +6,6 @@ import {
   JupyterLab
 } from '@jupyterlab/application';
 
-import { PathExt } from '@jupyterlab/coreutils';
 import { IDocumentManager } from '@jupyterlab/docmanager';
 import { DocumentWidget, IDocumentWidget } from '@jupyterlab/docregistry';
 
@@ -81,7 +80,11 @@ import {
   IClaudeSessionInfo
 } from './api';
 import { CellOutputHoverToolbar } from './cell-output-toolbar';
-import { attachOpenFileRefreshWatcher } from './open-file-refresh-watcher';
+import {
+  attachOpenFileRefreshWatcher,
+  formatRevertNotification,
+  shouldNotifyRevert
+} from './open-file-refresh-watcher';
 import { buildRefreshWatcherEnv } from './open-file-refresh-watcher-env';
 import {
   wrapInlineCompleterFactory,
@@ -978,14 +981,30 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
       env: buildRefreshWatcherEnv(app, app.serviceManager.contents),
       isEnabled: () =>
         NBIAPI.config.featurePolicies.refresh_open_files_on_disk_change.enabled,
-      // A revert moves the user's cursor and scroll position without
-      // them having touched anything, which reads as data loss unless
-      // something says otherwise (#429). Informational rather than a
-      // warning: reloading is the feature working as intended.
-      onRevert: path =>
-        Notification.info(`Reloaded ${PathExt.basename(path)} from disk`, {
-          autoClose: 4000
-        })
+      // A revert moves the user's cursor and scroll position without them
+      // having touched anything, which reads as data loss unless something
+      // says otherwise (#429). Informational rather than a warning:
+      // reloading is the feature working as intended.
+      //
+      // Scoped to the document on screen. That is the only one whose
+      // cursor visibly jumps, and an unscoped toast turned an agent's
+      // six-file rewrite into six simultaneous assertive announcements.
+      // Background reverts stay silent by design.
+      onRevert: path => {
+        if (
+          !shouldNotifyRevert(
+            path,
+            ActiveDocumentWatcher.activeDocumentInfo.filePath
+          )
+        ) {
+          return;
+        }
+        // 5000 matches JupyterLab's own toast default and the MCP-save
+        // notification above.
+        Notification.info(formatRevertNotification(path), {
+          autoClose: 5000
+        });
+      }
     });
 
     const waitForFileToBeActive = async (

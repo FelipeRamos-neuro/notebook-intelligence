@@ -2,7 +2,9 @@
 
 import {
   attachOpenFileRefreshWatcher,
+  formatRevertNotification,
   IRefreshWatcherEnv,
+  shouldNotifyRevert,
   shouldRevertContext,
   WATCHED_SHELL_AREAS
 } from '../../src/open-file-refresh-watcher';
@@ -69,17 +71,11 @@ describe('shouldRevertContext', () => {
     ).toBe(false);
   });
 
-  it('reverts once the kernel is idle again', () => {
-    // The busy guard must not latch: the next poll after execution
-    // finishes has to pick the agent's edit up.
-    expect(
-      shouldRevertContext({
-        ...base,
-        isKernelBusy: false,
-        diskLastModified: '2026-01-02T00:00:00.000000Z'
-      })
-    ).toBe(true);
-  });
+  // A companion "reverts once the kernel is idle again" case was removed
+  // rather than kept as a positive control: `base` already carries
+  // `isKernelBusy: false`, so it restated the pre-existing "reverts when
+  // disk is strictly newer than the context" test and killed no mutant
+  // that test did not already kill.
 
   it('reverts when disk is strictly newer than the context', () => {
     expect(
@@ -223,6 +219,66 @@ describe('shouldRevertContext', () => {
         contextLastModified: 'also-not-a-date'
       })
     ).toBe(false);
+  });
+});
+
+describe('shouldNotifyRevert', () => {
+  it('notifies for the document the user is looking at', () => {
+    expect(
+      shouldNotifyRevert('work/notebook.ipynb', 'work/notebook.ipynb')
+    ).toBe(true);
+  });
+
+  it('stays silent for a background document', () => {
+    // The reason to notify is that the cursor and scroll position moved
+    // under the user, which only happens on screen. An unscoped toast
+    // turned one agent run over six files into six assertive
+    // announcements stacked on top of each other.
+    expect(shouldNotifyRevert('work/other.ipynb', 'work/notebook.ipynb')).toBe(
+      false
+    );
+  });
+
+  it.each([
+    ['empty', ''],
+    ['null', null],
+    ['undefined', undefined]
+  ])('stays silent when the active path is %s', (_label, activePath) => {
+    // ActiveDocumentWatcher reports '' with nothing open. Matching on a
+    // falsy value would notify for every revert in the session.
+    expect(shouldNotifyRevert('work/notebook.ipynb', activePath)).toBe(false);
+  });
+
+  it('stays silent when the reverted path is empty', () => {
+    expect(shouldNotifyRevert('', '')).toBe(false);
+  });
+});
+
+describe('formatRevertNotification', () => {
+  it('names the full path, not the basename', () => {
+    // JupyterLab's own "File Changed" dialog interpolates the full path
+    // into the analogous message, and two open files sharing a basename
+    // would otherwise produce identical text.
+    expect(formatRevertNotification('work/utils.py')).toContain(
+      'work/utils.py'
+    );
+  });
+
+  it('distinguishes two files that share a basename', () => {
+    expect(formatRevertNotification('a/utils.py')).not.toEqual(
+      formatRevertNotification('b/utils.py')
+    );
+  });
+
+  it('says what happened and why, without naming a culprit', () => {
+    const message = formatRevertNotification('work/utils.py');
+
+    expect(message).toContain('changed on disk');
+    expect(message).toContain('reloaded');
+    // The watcher only ever sees a newer mtime; a terminal command, a
+    // sync client or a git checkout produces that just as readily as an
+    // agent, so the message must not blame one.
+    expect(message.toLowerCase()).not.toContain('agent');
   });
 });
 
@@ -383,32 +439,72 @@ describe('attachOpenFileRefreshWatcher', () => {
     expect(ctx.revert).not.toHaveBeenCalled();
   });
 
-  it('still reverts a document that has no kernel at all', async () => {
+  // it.each rather than a loop inside one `it`: a failing iteration used to
+  // abort the test, so the later shapes contributed no coverage and the
+  // failure never said which shape broke.
+  it.each([
+    ['no sessionContext', null],
+    ['no session', { session: null }],
+    ['session without a kernel', { session: { kernel: null } }]
+  ])('still reverts a document that has %s', async (_label, sessionContext) => {
     // The guard must not cost plain text files their refresh: every
     // non-notebook document the watcher walks has no session, and the
     // optional chain has to read that as "not busy" rather than as
     // unknown-so-skip.
-    for (const sessionContext of [
-      null,
-      { session: null },
-      { session: { kernel: null } }
-    ]) {
-      const ctx = makeContext({ path: 'notes.md', sessionContext });
-      const { env, fireTick } = makeEnv([{ context: ctx }], {
-        'notes.md': '2026-01-01T00:00:05.000000Z'
-      });
-      attachOpenFileRefreshWatcher({ env, isEnabled: () => true });
+    const ctx = makeContext({
+      path: 'notes.md',
+      sessionContext: sessionContext as IFakeSessionContext | null
+    });
+    const { env, fireTick } = makeEnv([{ context: ctx }], {
+      'notes.md': '2026-01-01T00:00:05.000000Z'
+    });
+    attachOpenFileRefreshWatcher({ env, isEnabled: () => true });
 
-      await fireTick();
-      expect(ctx.revert).toHaveBeenCalledTimes(1);
-    }
+    await fireTick();
+    expect(ctx.revert).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the revert when the kernel goes busy after the decision', async () => {
+    // Pins the post-decision re-check specifically. The sibling test below
+    // cannot: both kernel reads happen after the disk fetch resolves with
+    // no await between them, so flipping the state before release() is
+    // already visible to the FIRST read, and deleting the re-check leaves
+    // every other test in this file passing.
+    //
+    // A getter that reports idle once and busy afterwards puts the two
+    // reads on opposite sides of the decision, so the re-check is the only
+    // thing that can prevent this revert.
+    let reads = 0;
+    const ctx = makeContext();
+    Object.defineProperty(ctx, 'sessionContext', {
+      get: () => {
+        reads += 1;
+        return {
+          session: { kernel: { status: reads === 1 ? 'idle' : 'busy' } }
+        };
+      }
+    });
+    const { env, fireTick } = makeEnv([{ context: ctx }], {
+      'notebook.ipynb': '2026-01-01T00:00:05.000000Z'
+    });
+    attachOpenFileRefreshWatcher({ env, isEnabled: () => true });
+
+    await fireTick();
+
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(ctx.revert).not.toHaveBeenCalled();
   });
 
   it('skips revert when the kernel goes busy during the in-flight disk fetch', async () => {
-    // Companion to the dirty-flip test below, for the post-decision
-    // re-check: execution can start while the Contents.get is still
-    // outstanding, and the revert must back off rather than land on a
-    // now-running notebook.
+    // Kept for the scenario, not for a specific guard. Execution can start
+    // while the Contents.get is still outstanding, and the revert must back
+    // off rather than land on a now-running notebook.
+    //
+    // Either kernel read satisfies this, exactly as the dirty-flip sibling
+    // below discloses about itself: the flip happens before release(), so
+    // the first read already sees it. Mutation testing proved that, and the
+    // post-decision re-check is pinned by the getter-based test above
+    // instead.
     const ctx = makeContext();
     let release: (() => void) | null = null;
     const fetchDiskModel = jest.fn().mockImplementation(
