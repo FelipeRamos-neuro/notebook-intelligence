@@ -14,7 +14,7 @@ from notebook_intelligence.api import ButtonData, ChatModel, EmbeddingModel, Inl
 from notebook_intelligence.base_chat_participant import BaseChatParticipant
 from notebook_intelligence.config import NBIConfig
 from notebook_intelligence.github_copilot_chat_participant import GithubCopilotChatParticipant
-from notebook_intelligence.claude import CLAUDE_CODE_CHAT_PARTICIPANT_ID, ClaudeCodeChatParticipant, ClaudeCodeInlineCompletionModel, fetch_claude_models, get_claude_models
+from notebook_intelligence.claude import CLAUDE_CODE_CHAT_PARTICIPANT_ID, ClaudeCodeChatParticipant, ClaudeCodeInlineCompletionModel, fetch_claude_models, get_claude_models, reset_inline_completion_credential_warning, warn_inline_completion_model_unavailable_once, warn_no_inline_completion_credential_once
 from notebook_intelligence.llm_providers.github_copilot_llm_provider import GitHubCopilotLLMProvider
 from notebook_intelligence.llm_providers.litellm_compatible_llm_provider import LiteLLMCompatibleLLMProvider
 from notebook_intelligence.llm_providers.ollama_llm_provider import OllamaLLMProvider
@@ -204,7 +204,31 @@ class AIServiceManager(Host):
             if model_cfg == 'none':
                 self._inline_completion_model = None
             elif model_cfg != 'inherit':
-                self._inline_completion_model = ClaudeCodeInlineCompletionModel(model_cfg, claude_settings.get('api_key', None), claude_settings.get('base_url', None))
+                # Leaving the model unset when no credential is visible skips
+                # the completion request rather than failing once per keystroke
+                # inside the SDK (#425). Falling back to the general
+                # inline-completion model would serve another provider's
+                # suggestions under Claude's icon, so this disables Claude
+                # auto-complete outright.
+                #
+                # Construction can raise on its own: the SDK reads profile
+                # files while resolving credentials, so a bad
+                # ANTHROPIC_CONFIG_DIR throws here. This runs from the
+                # capabilities response, which must not fail wholesale over a
+                # credential problem in one feature.
+                self._inline_completion_model = None
+                try:
+                    inline_model = ClaudeCodeInlineCompletionModel(model_cfg, claude_settings.get('api_key', None), claude_settings.get('base_url', None))
+                except Exception:
+                    warn_inline_completion_model_unavailable_once()
+                else:
+                    if inline_model.can_authenticate:
+                        self._inline_completion_model = inline_model
+                        # The credential can go away again without a restart,
+                        # and that removal deserves its own log line.
+                        reset_inline_completion_credential_warning()
+                    else:
+                        warn_no_inline_completion_credential_once()
             # Populate the Claude model cache in the background so the
             # settings panel's chat-model dropdown has options to render
             # against the user's persisted ``claude_settings.chat_model``.

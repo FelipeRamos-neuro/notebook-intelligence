@@ -225,6 +225,167 @@ class TestAIServiceManagerIntegration:
             manager.update_models_from_config()
         assert mock_fetch.call_count == 0
 
+    # Issue #425: Claude mode authenticates through the Claude CLI, so
+    # claude_settings can carry no api_key. Inline completions call the
+    # Anthropic API directly, and selecting a model that cannot authenticate
+    # meant a fresh SDK TypeError per completion request.
+    def _update_with_claude_inline_model(self, manager):
+        with patch(
+            'notebook_intelligence.ai_service_manager.get_claude_models',
+            return_value=[{"id": "claude-haiku-4-5", "name": "Claude Haiku 4.5"}],
+        ):
+            manager.update_models_from_config()
+
+    @staticmethod
+    def _clear_anthropic_env(monkeypatch):
+        """Drop every variable the SDK can resolve a credential from.
+
+        By prefix, not by a list: a profile or federation variable left in the
+        shell would make the no-credential cases pass for the wrong reason,
+        and a fixed list stops isolating as the SDK adds sources.
+        """
+        import os
+
+        import notebook_intelligence.claude as claude_module
+
+        for var in [name for name in os.environ if name.startswith("ANTHROPIC_")]:
+            monkeypatch.delenv(var, raising=False)
+        # A profile on disk authenticates with no environment variable set, so
+        # env clearing alone leaves these tests dependent on the developer's
+        # home directory.
+        monkeypatch.setattr(
+            "anthropic._client.default_credentials",
+            lambda *args, **kwargs: None,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            claude_module, "_inline_completion_credential_warned", False
+        )
+        monkeypatch.setattr(
+            claude_module, "_inline_model_construction_warned", False
+        )
+
+    def test_construction_failure_is_logged_once(self, monkeypatch, caplog):
+        """A bad profile raises on every pass, so the traceback must not repeat.
+
+        Selection re-runs on every /capabilities GET, which is what made the
+        credential warning repeat before it was deduped.
+        """
+        import logging
+
+        self._clear_anthropic_env(monkeypatch)
+        manager = self._make_manager_for_update_test({
+            "enabled": True,
+            "inline_completion_model": "claude-haiku-4-5",
+        })
+        with caplog.at_level(
+            logging.WARNING, logger="notebook_intelligence.claude"
+        ), patch(
+            'notebook_intelligence.ai_service_manager.ClaudeCodeInlineCompletionModel',
+            side_effect=RuntimeError("Config file not found"),
+        ):
+            for _ in range(3):
+                self._update_with_claude_inline_model(manager)
+
+        failures = [
+            record for record in caplog.records
+            if "Could not create the Claude inline completion model" in record.getMessage()
+        ]
+        assert len(failures) == 1
+
+    def test_credential_warning_rearms_after_a_credential_appears(self, monkeypatch, caplog):
+        """Adding a key and removing it again earns a second warning.
+
+        The state round-trips without a restart, so latching for the life of
+        the process would make the second removal silent.
+        """
+        import logging
+
+        self._clear_anthropic_env(monkeypatch)
+        manager = self._make_manager_for_update_test({
+            "enabled": True,
+            "inline_completion_model": "claude-haiku-4-5",
+        })
+        with caplog.at_level(logging.WARNING, logger="notebook_intelligence.claude"):
+            self._update_with_claude_inline_model(manager)
+            manager.nbi_config.claude_settings = {
+                "enabled": True,
+                "inline_completion_model": "claude-haiku-4-5",
+                "api_key": "test-key",
+            }
+            self._update_with_claude_inline_model(manager)
+            manager.nbi_config.claude_settings = {
+                "enabled": True,
+                "inline_completion_model": "claude-haiku-4-5",
+            }
+            self._update_with_claude_inline_model(manager)
+
+        warnings = [
+            record for record in caplog.records
+            if "inline completions are disabled" in record.getMessage()
+        ]
+        assert len(warnings) == 2
+
+    def test_inline_completion_model_survives_a_construction_failure(self, monkeypatch):
+        """A credential-resolution error must not fail the whole response.
+
+        The SDK reads profile files while resolving credentials, so a bad
+        ANTHROPIC_CONFIG_DIR raises inside the constructor. This runs from the
+        capabilities handler, which would otherwise return a 500 over one
+        feature's misconfiguration.
+        """
+        self._clear_anthropic_env(monkeypatch)
+        manager = self._make_manager_for_update_test({
+            "enabled": True,
+            "inline_completion_model": "claude-haiku-4-5",
+        })
+        with patch(
+            'notebook_intelligence.ai_service_manager.ClaudeCodeInlineCompletionModel',
+            side_effect=RuntimeError("Config file not found"),
+        ):
+            self._update_with_claude_inline_model(manager)
+
+        assert manager.inline_completion_model is None
+
+    def test_inline_completion_model_unset_when_no_credential(self, monkeypatch):
+        self._clear_anthropic_env(monkeypatch)
+        manager = self._make_manager_for_update_test({
+            "enabled": True,
+            "inline_completion_model": "claude-haiku-4-5",
+        })
+
+        self._update_with_claude_inline_model(manager)
+
+        assert manager.inline_completion_model is None
+
+    def test_inline_completion_model_selected_with_settings_credential(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+        manager = self._make_manager_for_update_test({
+            "enabled": True,
+            "inline_completion_model": "claude-haiku-4-5",
+            "api_key": "test-key",
+        })
+
+        self._update_with_claude_inline_model(manager)
+
+        assert manager.inline_completion_model is not None
+        assert manager.inline_completion_model.id == "claude-haiku-4-5"
+
+    def test_inline_completion_model_selected_with_env_credential(self, monkeypatch):
+        # A key in the server environment is a working setup; a blank settings
+        # field must not disable completions on its own.
+        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+        manager = self._make_manager_for_update_test({
+            "enabled": True,
+            "inline_completion_model": "claude-haiku-4-5",
+        })
+
+        self._update_with_claude_inline_model(manager)
+
+        assert manager.inline_completion_model is not None
+
 
 class TestActiveAgentMode:
     """Active-agent resolution after the modes became mutually exclusive
