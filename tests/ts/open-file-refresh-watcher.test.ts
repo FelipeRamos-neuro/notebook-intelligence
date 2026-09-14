@@ -48,9 +48,38 @@ describe('shouldRevertContext', () => {
     isDirty: false,
     isReady: true,
     isDisposed: false,
+    isKernelBusy: false,
     contextLastModified: '2026-01-01T00:00:00.000000Z',
     diskLastModified: '2026-01-01T00:00:00.000000Z'
   };
+
+  it('skips while the kernel is busy so a running cell is not swapped out', () => {
+    // Starting an execution marks the model dirty, so the dirty guard
+    // covers a run on its own. The gap is autosave: JupyterLab saves
+    // every 120s by default, and a save landing mid-execution clears
+    // dirty while the kernel keeps working, so a cell running longer
+    // than that is clean and busy for the rest of its life. That is
+    // where a revert destroys the in-flight result (#429).
+    expect(
+      shouldRevertContext({
+        ...base,
+        isKernelBusy: true,
+        diskLastModified: '2026-01-02T00:00:00.000000Z'
+      })
+    ).toBe(false);
+  });
+
+  it('reverts once the kernel is idle again', () => {
+    // The busy guard must not latch: the next poll after execution
+    // finishes has to pick the agent's edit up.
+    expect(
+      shouldRevertContext({
+        ...base,
+        isKernelBusy: false,
+        diskLastModified: '2026-01-02T00:00:00.000000Z'
+      })
+    ).toBe(true);
+  });
 
   it('reverts when disk is strictly newer than the context', () => {
     expect(
@@ -197,12 +226,23 @@ describe('shouldRevertContext', () => {
   });
 });
 
+interface IFakeKernel {
+  status: string;
+}
+
+interface IFakeSessionContext {
+  session: { kernel: IFakeKernel | null } | null;
+}
+
 interface IFakeContext {
   path: string;
   contentsModel: { last_modified: string } | null;
   model: { dirty: boolean };
   isReady: boolean;
   isDisposed: boolean;
+  // Mirrors the optional chain the watcher walks. `null` at any level
+  // is the ordinary case for a document with no kernel.
+  sessionContext: IFakeSessionContext | null;
   revert: jest.Mock<Promise<void>, []>;
 }
 
@@ -217,6 +257,7 @@ function makeContext(overrides: Partial<IFakeContext> = {}): IFakeContext {
     model: { dirty: false },
     isReady: true,
     isDisposed: false,
+    sessionContext: { session: { kernel: { status: 'idle' } } },
     revert: jest.fn().mockResolvedValue(undefined),
     ...overrides
   };
@@ -326,6 +367,98 @@ describe('attachOpenFileRefreshWatcher', () => {
     attachOpenFileRefreshWatcher({ env, isEnabled: () => true });
 
     await fireTick();
+    expect(ctx.revert).not.toHaveBeenCalled();
+  });
+
+  it('skips a context whose kernel is busy', async () => {
+    const ctx = makeContext({
+      sessionContext: { session: { kernel: { status: 'busy' } } }
+    });
+    const { env, fireTick } = makeEnv([{ context: ctx }], {
+      'notebook.ipynb': '2026-01-01T00:00:05.000000Z'
+    });
+    attachOpenFileRefreshWatcher({ env, isEnabled: () => true });
+
+    await fireTick();
+    expect(ctx.revert).not.toHaveBeenCalled();
+  });
+
+  it('still reverts a document that has no kernel at all', async () => {
+    // The guard must not cost plain text files their refresh: every
+    // non-notebook document the watcher walks has no session, and the
+    // optional chain has to read that as "not busy" rather than as
+    // unknown-so-skip.
+    for (const sessionContext of [
+      null,
+      { session: null },
+      { session: { kernel: null } }
+    ]) {
+      const ctx = makeContext({ path: 'notes.md', sessionContext });
+      const { env, fireTick } = makeEnv([{ context: ctx }], {
+        'notes.md': '2026-01-01T00:00:05.000000Z'
+      });
+      attachOpenFileRefreshWatcher({ env, isEnabled: () => true });
+
+      await fireTick();
+      expect(ctx.revert).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('skips revert when the kernel goes busy during the in-flight disk fetch', async () => {
+    // Companion to the dirty-flip test below, for the post-decision
+    // re-check: execution can start while the Contents.get is still
+    // outstanding, and the revert must back off rather than land on a
+    // now-running notebook.
+    const ctx = makeContext();
+    let release: (() => void) | null = null;
+    const fetchDiskModel = jest.fn().mockImplementation(
+      () =>
+        new Promise<{
+          name: string;
+          path: string;
+          type: string;
+          writable: boolean;
+          created: string;
+          last_modified: string;
+          mimetype: string;
+          content: null;
+          format: null;
+        }>(resolve => {
+          release = () =>
+            resolve({
+              name: 'notebook.ipynb',
+              path: 'notebook.ipynb',
+              type: 'file',
+              writable: true,
+              created: '2026-01-01T00:00:00.000000Z',
+              last_modified: '2026-01-01T00:00:05.000000Z',
+              mimetype: 'text/plain',
+              content: null,
+              format: null
+            });
+        })
+    );
+    let tickHandler: (() => void) | null = null;
+    const env: IRefreshWatcherEnv = {
+      iterDocumentWidgets: () => [{ context: ctx }],
+      fetchDiskModel,
+      setInterval: handler => {
+        tickHandler = handler;
+        return 'h';
+      },
+      clearInterval: () => {
+        tickHandler = null;
+      }
+    };
+    attachOpenFileRefreshWatcher({ env, isEnabled: () => true });
+
+    tickHandler!();
+    // The user runs a cell while the disk fetch is outstanding.
+    ctx.sessionContext = { session: { kernel: { status: 'busy' } } };
+    release!();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise(resolve => setTimeout(resolve, 0));
+
     expect(ctx.revert).not.toHaveBeenCalled();
   });
 

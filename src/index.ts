@@ -6,6 +6,7 @@ import {
   JupyterLab
 } from '@jupyterlab/application';
 
+import { PathExt } from '@jupyterlab/coreutils';
 import { IDocumentManager } from '@jupyterlab/docmanager';
 import { DocumentWidget, IDocumentWidget } from '@jupyterlab/docregistry';
 
@@ -976,7 +977,15 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
     attachOpenFileRefreshWatcher({
       env: buildRefreshWatcherEnv(app, app.serviceManager.contents),
       isEnabled: () =>
-        NBIAPI.config.featurePolicies.refresh_open_files_on_disk_change.enabled
+        NBIAPI.config.featurePolicies.refresh_open_files_on_disk_change.enabled,
+      // A revert moves the user's cursor and scroll position without
+      // them having touched anything, which reads as data loss unless
+      // something says otherwise (#429). Informational rather than a
+      // warning: reloading is the feature working as intended.
+      onRevert: path =>
+        Notification.info(`Reloaded ${PathExt.basename(path)} from disk`, {
+          autoClose: 4000
+        })
     });
 
     const waitForFileToBeActive = async (

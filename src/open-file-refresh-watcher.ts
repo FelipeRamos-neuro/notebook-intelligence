@@ -49,6 +49,7 @@ export interface IRevertDecisionInputs {
   isDirty: boolean;
   isReady: boolean;
   isDisposed: boolean;
+  isKernelBusy: boolean;
 }
 
 /**
@@ -61,9 +62,28 @@ export interface IRevertDecisionInputs {
  *   2. Skip if the user has unsaved local edits (`isDirty`). Silently
  *      clobbering their work would be hostile; the standard
  *      JupyterLab "newer on disk" prompt will surface on save.
- *   3. Skip if we can't parse either timestamp (either side missing
+ *   3. Skip while the document's kernel is busy (`isKernelBusy`).
+ *      Starting an execution marks the model dirty, so rule 2 covers a
+ *      run by itself. What it does not cover is autosave: JupyterLab
+ *      saves every 120s by default (docmanager's SaveHandler), and a
+ *      save landing mid-execution clears `dirty` while the kernel is
+ *      still working, so any cell running longer than that interval
+ *      spends the rest of its life clean and busy. Reverting there
+ *      swaps the model out from under the running execution and the
+ *      result the user was waiting for lands nowhere (#429). Unlike
+ *      the dirty case there is no prompt and no way back.
+ *
+ *      Confirmed in a live JupyterLab rather than argued from the
+ *      types: a 600s cell, saved mid-run to stand in for autosave,
+ *      then edited on disk, kept its content across four poll ticks.
+ *
+ *      `busy` is a deliberately conservative proxy: the kernel also
+ *      reports it for completion and kernel-info requests, not only
+ *      cell execution. That errs toward skipping a revert, which is
+ *      the safe direction, and the next poll retries seconds later.
+ *   4. Skip if we can't parse either timestamp (either side missing
  *      or unparseable).
- *   4. Revert iff disk's `last_modified` parses to a strictly greater
+ *   5. Revert iff disk's `last_modified` parses to a strictly greater
  *      epoch ms than the context's last-known value. Equal means
  *      already current (a save we initiated, or a no-op re-read).
  *
@@ -91,12 +111,16 @@ export function shouldRevertContext({
   contextLastModified,
   isDirty,
   isReady,
-  isDisposed
+  isDisposed,
+  isKernelBusy
 }: IRevertDecisionInputs): boolean {
   if (isDisposed || !isReady) {
     return false;
   }
   if (isDirty) {
+    return false;
+  }
+  if (isKernelBusy) {
     return false;
   }
   if (!diskLastModified || !contextLastModified) {
@@ -236,7 +260,8 @@ async function checkOneContext(
       contextLastModified: context.contentsModel?.last_modified,
       isDirty: context.model.dirty,
       isReady: context.isReady,
-      isDisposed: context.isDisposed
+      isDisposed: context.isDisposed,
+      isKernelBusy: isContextKernelBusy(context)
     });
     if (!decision) {
       return;
@@ -249,7 +274,11 @@ async function checkOneContext(
     // future refactor that inserts an await (telemetry, an instrument
     // hook, etc.) between the decision and the revert call without
     // anyone having to re-derive the safety argument.
-    if (context.model.dirty || context.isDisposed) {
+    if (
+      context.model.dirty ||
+      context.isDisposed ||
+      isContextKernelBusy(context)
+    ) {
       return;
     }
     await context.revert();
@@ -257,4 +286,21 @@ async function checkOneContext(
   } catch (error) {
     options.onError?.(context.path, error);
   }
+}
+
+/**
+ * Whether the document's own kernel is mid-request.
+ *
+ * Read through optional chaining the whole way down rather than
+ * assumed: a document with no kernel at all is the common case here
+ * (any text file the watcher walks), and during startup or a kernel
+ * restart `session` is null while the context is otherwise live.
+ * Anything we cannot read reads as not busy, so an unknown state
+ * still gets the pre-#429 behavior rather than freezing the watcher
+ * for a document whose kernel state we cannot see.
+ */
+function isContextKernelBusy(
+  context: Pick<DocumentRegistry.Context, 'sessionContext'>
+): boolean {
+  return context.sessionContext?.session?.kernel?.status === 'busy';
 }
