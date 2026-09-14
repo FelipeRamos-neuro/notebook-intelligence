@@ -141,6 +141,8 @@ import {
 
 import { CommandIDs } from './command-ids';
 
+import { classifyInlineCompletionResponse } from './inline-completion-request';
+
 const addInlinePromptEffect = StateEffect.define<{
   pos: number;
   widget: InlinePromptBlockWidget;
@@ -624,7 +626,7 @@ class NBIInlineCompletionProvider
       }
     });
 
-    return new Promise((resolve, reject) => {
+    return new Promise(resolve => {
       const items: IInlineCompletionItem[] = [];
 
       if (!inlineCompletionsEnabled) {
@@ -642,7 +644,12 @@ class NBIInlineCompletionProvider
 
       const messageId = UUID.uuid4();
       const chatId = UUID.uuid4();
-      this._lastRequestInfo = { chatId, messageId, requestTime: new Date() };
+      // Capture this request's own identity. `_lastRequestInfo` is shared
+      // across calls and the next keystroke overwrites it, so a callback that
+      // reads the field is asking about whichever request started most
+      // recently rather than about itself.
+      const requestInfo = { chatId, messageId, requestTime: new Date() };
+      this._lastRequestInfo = requestInfo;
 
       NBIAPI.inlineCompletionsRequest(
         chatId,
@@ -653,33 +660,43 @@ class NBIInlineCompletionProvider
         ActiveDocumentWatcher.activeDocumentInfo.filename,
         {
           emit: (response: any) => {
-            if (
-              response.type === BackendMessageType.StreamMessage &&
-              response.id === this._lastRequestInfo.messageId
-            ) {
-              items.push({
-                insertText: response.data.completions
-              });
+            const action = classifyInlineCompletionResponse(
+              response.id,
+              response.type === BackendMessageType.StreamMessage,
+              requestInfo,
+              this._lastRequestInfo
+            );
 
-              const timeElapsed =
-                (new Date().getTime() -
-                  this._lastRequestInfo.requestTime.getTime()) /
-                1000;
-              this._telemetryEmitter.emitTelemetryEvent({
-                type: TelemetryEventType.InlineCompletionResponse,
-                data: {
-                  inlineCompletionModel: {
-                    provider: NBIAPI.config.inlineCompletionModel.provider,
-                    model: NBIAPI.config.inlineCompletionModel.model
-                  },
-                  timeElapsed
-                }
-              });
-
-              resolve({ items });
-            } else {
-              reject();
+            if (action === 'ignore') {
+              return;
             }
+
+            // Resolving with no items, rather than rejecting, keeps a
+            // superseded or empty request out of the console: the completer
+            // logs a rejected provider promise as a warning.
+            if (action === 'discard') {
+              resolve({ items });
+              return;
+            }
+
+            items.push({
+              insertText: response.data.completions
+            });
+
+            const timeElapsed =
+              (new Date().getTime() - requestInfo.requestTime.getTime()) / 1000;
+            this._telemetryEmitter.emitTelemetryEvent({
+              type: TelemetryEventType.InlineCompletionResponse,
+              data: {
+                inlineCompletionModel: {
+                  provider: NBIAPI.config.inlineCompletionModel.provider,
+                  model: NBIAPI.config.inlineCompletionModel.model
+                },
+                timeElapsed
+              }
+            });
+
+            resolve({ items });
           }
         }
       );
