@@ -13,6 +13,8 @@ jlpm lint:check
 jlpm jest
 ```
 
+If `jlpm lint:check` reports formatting problems, run `jlpm lint` to auto-fix them with the repo's Prettier (this covers Markdown too).
+
 ## JavaScript tooling
 
 - Use `jlpm` for every frontend command (install, build, lint, test). Do not use a system `yarn` or `npm`. `jlpm` is the Yarn bundled with JupyterLab, and CI installs with it.
