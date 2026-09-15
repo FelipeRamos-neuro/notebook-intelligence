@@ -1,7 +1,6 @@
 {
     "name": "@plmbr/notebook-intelligence",
     "version": "5.4.1-a1",
-    "packageManager": "yarn@3.6.4",
     "description": "AI coding assistant for JupyterLab",
     "keywords": [
         "AI",
