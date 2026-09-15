@@ -8,6 +8,7 @@
   ],
   "display_name": "Chatbook",
   "language": "chatbook",
+  "interrupt_mode": "message",
   "metadata": {
     "debugger": false
   }

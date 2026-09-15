@@ -1,7 +1,9 @@
 # Copyright (c) Mehmet Bektas <mbektasgh@outlook.com>
 
-import pytest
+import json
 from types import SimpleNamespace
+
+import pytest
 from jupyter_client.session import Session
 
 from notebook_intelligence.chatbook_kernel.backend import (
@@ -109,6 +111,12 @@ class _FakeClient:
         raise Empty
 
     def get_shell_msg(self, timeout=0.1):
+        empties = getattr(self, '_shell_empty_before_reply', 0)
+        if empties:
+            self._shell_empty_before_reply = empties - 1
+            from queue import Empty
+
+            raise Empty
         if self._shell:
             return self._shell.pop(0)
         from queue import Empty
@@ -152,10 +160,14 @@ class _RecordingSession(Session):
 
 
 class _StubBackend:
+    ready = True
+
     def __init__(self, reply):
         self.reply = reply
         self.relayed = []
         self.interrupted = False
+        self.shell_requests = []
+        self.forwarded = []
 
     def execute(self, code, relay):
         relay('stream', {'name': 'stdout', 'text': 'hi\n'})
@@ -164,6 +176,13 @@ class _StubBackend:
 
     def interrupt(self):
         self.interrupted = True
+
+    def shell_request(self, msg_type, content, timeout=10.0):
+        self.shell_requests.append((msg_type, content))
+        return {'status': 'ok', 'matches': ['import']}
+
+    def forward_shell(self, msg_type, content):
+        self.forwarded.append((msg_type, content))
 
 
 def _kernel_with_backend(reply):
@@ -249,6 +268,47 @@ def test_backend_execute_relays_iopub_and_returns_reply():
     assert manager.shutdown_called
 
 
+def test_backend_execute_waits_for_late_error_reply():
+    manager = _FakeManager('python3')
+    client = manager.client_obj
+    client._iopub = [
+        {
+            'header': {'msg_type': 'error'},
+            'parent_header': {'msg_id': 'msg-1'},
+            'content': {
+                'ename': 'ValueError',
+                'evalue': 'boom',
+                'traceback': ['line'],
+            },
+        },
+        {
+            'header': {'msg_type': 'status'},
+            'parent_header': {'msg_id': 'msg-1'},
+            'content': {'execution_state': 'idle'},
+        },
+    ]
+    client._shell_empty_before_reply = 1
+    client._shell = [
+        {
+            'header': {'msg_type': 'execute_reply'},
+            'parent_header': {'msg_id': 'msg-1'},
+            'content': {
+                'status': 'error',
+                'ename': 'ValueError',
+                'evalue': 'boom',
+                'traceback': ['line'],
+            },
+        }
+    ]
+    backend = ChatbookBackend(
+        'python3', cwd='/tmp', manager_factory=lambda name: manager
+    )
+    backend.start()
+    reply = backend.execute('raise ValueError("boom")', lambda t, c: None)
+    assert reply['status'] == 'error'
+    assert reply['ename'] == 'ValueError'
+
+
 def test_backend_execute_raises_when_child_dies():
     manager = _FakeManager('python3')
     manager.alive = False
@@ -270,6 +330,51 @@ def test_interrupt_targets_child_and_aborts_queue_without_wrapper_sigint():
     assert kernel.interrupt_request(None, b'ident', {'content': {}}) is None
     assert kernel._backend.interrupted is True
     assert aborted
+    replies = [item for item in kernel.session.sent if item[0] == 'interrupt_reply']
+    assert replies[0][1]['status'] == 'ok'
+
+
+def test_chatbook_kernelspec_declares_message_interrupts():
+    from pathlib import Path
+
+    spec_path = (
+        Path(__file__).resolve().parents[1]
+        / 'notebook_intelligence'
+        / 'chatbook_kernel'
+        / 'kernelspec'
+        / 'kernel.json'
+    )
+    spec = json.loads(spec_path.read_text(encoding='utf-8'))
+    assert spec['interrupt_mode'] == 'message'
+
+
+def test_kernel_proxies_complete_request_to_backend():
+    kernel = _kernel_with_backend({'status': 'ok'})
+    kernel.complete_request(
+        None,
+        b'ident',
+        {'content': {'code': 'impor', 'cursor_pos': 5}},
+    )
+    assert kernel._backend.shell_requests == [
+        ('complete_request', {'code': 'impor', 'cursor_pos': 5})
+    ]
+    replies = [item for item in kernel.session.sent if item[0] == 'complete_reply']
+    assert replies[0][1]['matches'] == ['import']
+
+
+def test_kernel_forwards_comm_messages_to_backend():
+    kernel = _kernel_with_backend({'status': 'ok'})
+    kernel._forward_comm(
+        None,
+        b'ident',
+        {
+            'header': {'msg_type': 'comm_open'},
+            'content': {'target_name': 'jupyter.widget', 'comm_id': 'c1'},
+        },
+    )
+    assert kernel._backend.forwarded == [
+        ('comm_open', {'target_name': 'jupyter.widget', 'comm_id': 'c1'})
+    ]
 
 
 def test_kernel_clamps_client_policy_to_admin_cap(monkeypatch):

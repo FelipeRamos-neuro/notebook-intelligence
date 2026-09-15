@@ -23,6 +23,7 @@ import {
   chatbookExecutionModeSummary,
   chatbookNeedsConfirm,
   parseChatbookExecutionMode,
+  promptHasChatbookMention,
   CHATBOOK_EXECUTION_MODES
 } from '../../src/chatbook-core';
 import {
@@ -354,6 +355,15 @@ describe('chatbook-core', () => {
     });
     expect(miss.cachedCode).toBeUndefined();
 
+    const staleAfterUnconfirmed = buildExecuteChatbookMeta({
+      cellId: 'c1',
+      prompt: 'show first rows',
+      promptHash: 'hash-p1',
+      allowCachedCode: true,
+      cellMeta: { generatedCode: 'C2_NEVER_APPROVED', promptHash: 'hash-p2' }
+    });
+    expect(staleAfterUnconfirmed.cachedCode).toBeUndefined();
+
     const dynamic = buildExecuteChatbookMeta({
       cellId: 'c1',
       prompt: 'plot',
@@ -433,6 +443,14 @@ describe('chatbook-core', () => {
     expect(ctx.current.prompt).toBe('what did I ask?');
     expect(ctx.suffix).toHaveLength(1);
     expect(ctx.suffix[0].source).toBe('# notes');
+  });
+
+  it('detects mentions with the same predecessor rule as the server', () => {
+    expect(promptHasChatbookMention('summarize (@file:notes.md)')).toBe(true);
+    expect(promptHasChatbookMention('a,@file:x.txt')).toBe(true);
+    expect(promptHasChatbookMention('load[@file:secrets.env]')).toBe(true);
+    expect(promptHasChatbookMention('person@example.com')).toBe(false);
+    expect(promptHasChatbookMention('load the sales CSV')).toBe(false);
   });
 
   it('hashes prompts with sha-256', async () => {

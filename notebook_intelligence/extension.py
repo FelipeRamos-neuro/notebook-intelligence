@@ -179,6 +179,24 @@ CHATBOOK_DISABLED_MESSAGE = "Chatbook is disabled by your administrator"
 CHATBOOK_KERNEL_NAME = "chatbook"
 
 
+def _required_chatbook_generate_field(data) -> tuple[str, str]:
+    """Return (field name, stripped value) for POST /chatbook/generate.
+
+    Missing keys must not be stringified first: str(None) is "None", which
+    would pass the emptiness check.
+    """
+    operation = (
+        data.get("operation", "generate")
+        if isinstance(data, dict)
+        else "generate"
+    )
+    if operation in {"summarize", "danger_scan"}:
+        value = data.get("code") if isinstance(data, dict) else None
+        return "code", str(value or "").strip()
+    value = data.get("prompt") if isinstance(data, dict) else None
+    return "prompt", str(value or "").strip()
+
+
 def _set_chatbook_kernelspec_execution_cap(kernel_spec_manager, max_mode: str) -> None:
     """Put the resolved admin cap in the Chatbook kernel's process env.
 
@@ -964,18 +982,17 @@ class ChatbookGenerateHandler(APIHandler):
         )
         prompt = data.get("prompt") if isinstance(data, dict) else None
         code_source = data.get("code") if isinstance(data, dict) else None
-        required_value = (
-            code_source
-            if operation in {"summarize", "danger_scan"}
-            else prompt
+        field, required_text = _required_chatbook_generate_field(
+            data if isinstance(data, dict) else {}
         )
-        if not str(required_value).strip():
+        if not required_text:
             self.set_status(400)
-            field = (
-                "code" if operation in {"summarize", "danger_scan"} else "prompt"
-            )
             self.finish(json.dumps({"error": f"{field} is required"}))
             return
+        if field == "code":
+            code_source = required_text
+        else:
+            prompt = required_text
         notebook_context = None
         notebook_path = ""
         cell_id = ""

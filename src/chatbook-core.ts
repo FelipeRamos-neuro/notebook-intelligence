@@ -21,6 +21,13 @@ export const DEFAULT_CHATBOOK_EXECUTION_MODE: ChatbookExecutionMode =
 export const DEFAULT_CHATBOOK_MAX_EXECUTION_MODE: ChatbookExecutionMode =
   'auto-run';
 
+/** Same token rule as `MENTION_TOKEN_RE` in chatbook_mentions.py. */
+export const CHATBOOK_MENTION_TOKEN_RE = /(?<![\w@])@[^\s@]+/u;
+
+export function promptHasChatbookMention(prompt: string): boolean {
+  return CHATBOOK_MENTION_TOKEN_RE.test(prompt);
+}
+
 const CHATBOOK_EXECUTION_MODE_RANK: Record<ChatbookExecutionMode, number> = {
   'always-confirm': 0,
   'confirm-if-risky': 1,

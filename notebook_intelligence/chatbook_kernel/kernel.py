@@ -49,6 +49,10 @@ class ChatbookKernel(Kernel):
             "language": "python",
             "display_name": "",
         }
+        handlers = getattr(self, "shell_handlers", None)
+        if isinstance(handlers, dict):
+            for msg_type in ("comm_open", "comm_msg", "comm_close"):
+                handlers[msg_type] = self._forward_comm
 
     def do_shutdown(self, restart):
         backend = self._backend
@@ -68,6 +72,48 @@ class ChatbookKernel(Kernel):
         # Calling ipykernel's implementation also SIGINTs this wrapper while
         # its shell thread is blocked relaying that reply, which can orphan the
         # active execute_request with no execute_reply.
+        # jupyter_client only delivers this message when kernel.json sets
+        # interrupt_mode to "message"; the default "signal" never calls us.
+        self.session.send(
+            stream, "interrupt_reply", {"status": "ok"}, parent, ident=ident
+        )
+        return None
+
+    def complete_request(self, stream, ident, parent):
+        return self._proxy_shell_request(stream, ident, parent, "complete_request")
+
+    def inspect_request(self, stream, ident, parent):
+        return self._proxy_shell_request(stream, ident, parent, "inspect_request")
+
+    def comm_info_request(self, stream, ident, parent):
+        return self._proxy_shell_request(stream, ident, parent, "comm_info_request")
+
+    def is_complete_request(self, stream, ident, parent):
+        return self._proxy_shell_request(stream, ident, parent, "is_complete_request")
+
+    def _proxy_shell_request(self, stream, ident, parent, msg_type: str):
+        reply_type = msg_type.replace("_request", "_reply")
+        try:
+            self._ensure_backend()
+            content = self._backend.shell_request(
+                msg_type, parent.get("content") or {}
+            )
+        except Exception as exc:
+            content = {
+                "status": "error",
+                "ename": "ChatbookError",
+                "evalue": str(exc),
+            }
+        self.session.send(stream, reply_type, content, parent, ident=ident)
+        return None
+
+    def _forward_comm(self, stream, ident, parent):
+        msg_type = (parent.get("header") or {}).get("msg_type") or "comm_msg"
+        try:
+            self._ensure_backend()
+            self._backend.forward_shell(msg_type, parent.get("content") or {})
+        except Exception:
+            log.debug("Failed to forward %s to backend", msg_type, exc_info=True)
         return None
 
     def execute_request(self, stream, ident, parent):

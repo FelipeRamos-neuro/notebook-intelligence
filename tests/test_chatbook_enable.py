@@ -13,6 +13,7 @@ from notebook_intelligence.extension import (
     GetCapabilitiesHandler,
     _finish_if_chatbook_disabled,
     _hide_chatbook_kernelspec,
+    _required_chatbook_generate_field,
     _set_chatbook_kernelspec_execution_cap,
 )
 
@@ -104,3 +105,30 @@ class _FakeKernelSpecManager:
 
     def get_all_specs(self):
         return {"python3": {}, "chatbook": {}}
+
+
+@pytest.mark.parametrize(
+    'body, field',
+    [
+        ({}, 'prompt'),
+        ({'prompt': None}, 'prompt'),
+        ({'operation': 'summarize'}, 'code'),
+        ({'operation': 'danger_scan'}, 'code'),
+        ({'prompt': ''}, 'prompt'),
+        ({'operation': 'summarize', 'code': '  '}, 'code'),
+    ],
+)
+def test_required_chatbook_generate_field_rejects_missing(body, field):
+    name, value = _required_chatbook_generate_field(body)
+    assert name == field
+    assert value == ''
+
+
+def test_required_chatbook_generate_field_accepts_present_values():
+    assert _required_chatbook_generate_field({'prompt': 'plot'}) == (
+        'prompt',
+        'plot',
+    )
+    assert _required_chatbook_generate_field(
+        {'operation': 'summarize', 'code': 'x = 1'}
+    ) == ('code', 'x = 1')

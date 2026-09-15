@@ -35,6 +35,7 @@ import {
   switchChatbookCellMode,
   chatbookExecutionModeSummary,
   chatbookNeedsConfirm,
+  promptHasChatbookMention,
   type ChatbookCellMode,
   type ChatbookDangerLevel,
   type ChatbookExecutionMode,
@@ -218,9 +219,20 @@ export function patchCodeCellExecute(): void {
     });
     const promptHash = await sha256Hex(prompt);
     const executionMode = NBIAPI.config.chatbookExecutionMode;
+    const cellMetaNow = getChatbookCellMeta(cell.model.metadata);
+    if (executedPromptByCell.get(cell.model) !== promptHash) {
+      executedPromptByCell.delete(cell.model);
+    }
     const alreadyExecuted = executedPromptByCell.get(cell.model) === promptHash;
-    const cachedCode = getChatbookCellMeta(cell.model.metadata).generatedCode;
-    if (alreadyExecuted && cachedCode) {
+    const cachedCode = cellMetaNow.generatedCode;
+    // Honor cache only when this session already ran *this* prompt. A later
+    // generation can persist `generatedCode` before the user confirms; without
+    // the stored-hash check that unapproved code would run on a revert.
+    if (
+      alreadyExecuted &&
+      cachedCode &&
+      cellMetaNow.promptHash === promptHash
+    ) {
       return CodeCell.execute(cell, sessionContext, {
         ...(metadata || {}),
         nbi_chatbook: {
@@ -235,7 +247,7 @@ export function patchCodeCellExecute(): void {
     const contextHash = notebookContext
       ? await sha256Hex(JSON.stringify({ notebookPath, notebookContext }))
       : undefined;
-    const hasMentionContext = /(?:^|\s)@[^\s@]+/u.test(prompt);
+    const hasMentionContext = promptHasChatbookMention(prompt);
     const nbiChatbook = buildExecuteChatbookMeta({
       cellId: cell.model.id,
       prompt,

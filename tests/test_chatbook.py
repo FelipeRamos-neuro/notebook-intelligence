@@ -583,9 +583,30 @@ def test_jupyter_runtime_prefers_parent_pid(monkeypatch, tmp_path):
     assert jupyter_api_token() == 'PARENT'
 
 
+def test_jupyter_runtime_falls_back_when_parent_file_is_absent(
+    monkeypatch, tmp_path
+):
+    (tmp_path / 'jpserver-2222.json').write_text(
+        '{"url": "http://127.0.0.1:9999/", "token": "OTHER"}',
+        encoding='utf-8',
+    )
+    monkeypatch.setenv('JPY_PARENT_PID', '1111')
+    monkeypatch.setattr(
+        nbi_client_module, 'jupyter_runtime_dir', lambda: str(tmp_path)
+    )
+    assert resolve_generate_url() == (
+        'http://127.0.0.1:9999/notebook-intelligence/chatbook/generate'
+    )
+    assert jupyter_api_token() == 'OTHER'
+
+
 def test_jupyter_runtime_does_not_fall_back_from_invalid_parent(
     monkeypatch, tmp_path
 ):
+    (tmp_path / 'jpserver-1111.json').write_text(
+        '{"token": "PARENT"}',
+        encoding='utf-8',
+    )
     (tmp_path / 'jpserver-2222.json').write_text(
         '{"url": "http://127.0.0.1:9999/", "token": "OTHER"}',
         encoding='utf-8',
@@ -808,6 +829,16 @@ def test_chatbook_mention_parser_skips_emails_and_deduplicates():
         ('file', 'data/input.csv'),
         ('dir', 'docs'),
     ]
+
+
+def test_chatbook_mention_parser_accepts_non_whitespace_predecessors():
+    assert parse_chatbook_mentions('a,@file:x.txt') == [('file', 'x.txt')]
+    for prompt in (
+        'summarize (@file:notes.md)',
+        'load[@file:secrets.env]',
+    ):
+        mentions = parse_chatbook_mentions(prompt)
+        assert mentions and mentions[0][0] == 'file'
 
 
 def test_list_filesystem_mentions_filters_orders_and_limits(tmp_path):

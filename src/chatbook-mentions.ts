@@ -30,7 +30,7 @@ export function detectChatbookMentionTrigger(
   cursor: number
 ): IChatbookMentionTrigger | null {
   const before = text.slice(0, Math.max(0, cursor));
-  const match = /(?:^|\s)@([^\s@]*)$/u.exec(before);
+  const match = /(?<![\w@])@([^\s@]*)$/u.exec(before);
   if (!match) {
     return null;
   }

@@ -18,6 +18,11 @@ describe('chatbook filesystem mentions', () => {
       to: 13,
       query: 'docs/gu'
     });
+    expect(detectChatbookMentionTrigger('summarize (@fi', 14)).toEqual({
+      from: 11,
+      to: 14,
+      query: 'fi'
+    });
   });
 
   it('does not treat email addresses or completed mentions as triggers', () => {

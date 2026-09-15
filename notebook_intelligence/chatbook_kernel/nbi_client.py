@@ -228,15 +228,25 @@ def _jupyter_server_runtime() -> Optional[dict]:
                 f"invalid JPY_PARENT_PID {parent_pid!r}"
             )
         path = os.path.join(runtime_dir, f"jpserver-{parent_pid}.json")
-        data = _read_runtime_file(path)
-        if data:
-            return data
-        # Silently falling back can send the prompt and notebook context to a
-        # different server owned by the same user.
-        raise NBIClientError(
-            "Cannot identify the parent Jupyter server: "
-            f"runtime file {path!r} is missing or invalid"
+        if os.path.exists(path):
+            data = _read_runtime_file(path)
+            if data:
+                return data
+            # The parent wrote a runtime file, so this is a Jupyter server.
+            # Do not silently send the prompt to a different server.
+            raise NBIClientError(
+                "Cannot identify the parent Jupyter server: "
+                f"runtime file {path!r} is missing or invalid"
+            )
+        # jupyter_client sets JPY_PARENT_PID for every launch, including
+        # headless KernelManager / nbclient / papermill paths that never
+        # write a jpserver-*.json. Fall back only when that file is absent.
+        log.warning(
+            "JPY_PARENT_PID=%s has no Jupyter server runtime file; "
+            "falling back to the newest Jupyter server runtime file",
+            parent_pid,
         )
+        return _latest_jupyter_server_runtime()
     log.warning(
         "JPY_PARENT_PID is not set; falling back to the newest Jupyter "
         "server runtime file"

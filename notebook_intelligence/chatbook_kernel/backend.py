@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from queue import Empty
 from typing import Any, Callable, Optional
 
@@ -22,7 +23,16 @@ _IOPUB_RELAY_TYPES = {
     "execute_input",
     "error",
     "clear_output",
+    "comm_open",
+    "comm_msg",
+    "comm_close",
 }
+
+# After the child goes idle, wait this long for execute_reply before
+# treating a missing reply as success. A single empty 100 ms poll is
+# not enough: a slightly late error reply would otherwise report ok.
+_EXECUTE_REPLY_WAIT_S = 2.0
+_SHELL_REQUEST_TIMEOUT_S = 10.0
 
 
 def _spec_fields(record: Any) -> tuple[str, str]:
@@ -197,6 +207,69 @@ class ChatbookBackend:
         if callable(interrupt):
             interrupt()
 
+    def _live_client(self) -> Any:
+        if self._kc is None or not self.is_alive():
+            self._mark_dead()
+            raise RuntimeError(
+                f"Chatbook backend kernel '{self.kernel_name}' died. "
+                "Restart the Chatbook kernel after choosing a backend in Settings."
+            )
+        return self._kc
+
+    def forward_shell(self, msg_type: str, content: Optional[dict] = None) -> None:
+        """Send a fire-and-forget shell message (comm_open / comm_msg / comm_close)."""
+        kc = self._live_client()
+        session = getattr(kc, "session", None)
+        channel = getattr(kc, "shell_channel", None)
+        send = getattr(channel, "send", None) if channel is not None else None
+        msg = getattr(session, "msg", None) if session is not None else None
+        if not callable(send) or not callable(msg):
+            log.debug("Backend client cannot forward %s", msg_type)
+            return
+        send(msg(msg_type, dict(content or {})))
+
+    def shell_request(
+        self,
+        msg_type: str,
+        content: Optional[dict] = None,
+        timeout: float = _SHELL_REQUEST_TIMEOUT_S,
+    ) -> dict:
+        """Send a shell request to the child and wait for the matching reply."""
+        kc = self._live_client()
+        session = getattr(kc, "session", None)
+        channel = getattr(kc, "shell_channel", None)
+        send = getattr(channel, "send", None) if channel is not None else None
+        make_msg = getattr(session, "msg", None) if session is not None else None
+        if not callable(send) or not callable(make_msg):
+            raise RuntimeError(
+                f"Chatbook backend kernel '{self.kernel_name}' cannot proxy {msg_type}"
+            )
+        request = make_msg(msg_type, dict(content or {}))
+        msg_id = (request.get("header") or {}).get("msg_id")
+        send(request)
+        deadline = time.monotonic() + max(0.1, timeout)
+        reply_type = msg_type.replace("_request", "_reply")
+        while time.monotonic() < deadline:
+            try:
+                shell_msg = kc.get_shell_msg(timeout=0.1)
+            except Empty:
+                if not self.is_alive():
+                    self._mark_dead()
+                    raise RuntimeError(
+                        f"Chatbook backend kernel '{self.kernel_name}' died. "
+                        "Restart the Chatbook kernel."
+                    )
+                continue
+            parent = shell_msg.get("parent_header") or {}
+            if parent.get("msg_id") != msg_id:
+                continue
+            if (shell_msg.get("header") or {}).get("msg_type") == reply_type:
+                return dict(shell_msg.get("content") or {})
+        raise RuntimeError(
+            f"Timed out waiting for {reply_type} from Chatbook backend kernel "
+            f"'{self.kernel_name}'"
+        )
+
     def execute(self, code: str, relay: Callable[[str, dict], None]) -> dict:
         """Run ``code`` in the child kernel and relay IOPub content via ``relay``."""
         if self._kc is None or not self.is_alive():
@@ -244,11 +317,18 @@ class ChatbookBackend:
             if msg_type in _IOPUB_RELAY_TYPES:
                 relay(msg_type, dict(msg.get("content") or {}))
         reply: dict = {"status": "ok"}
-        while True:
+        deadline = time.monotonic() + _EXECUTE_REPLY_WAIT_S
+        while time.monotonic() < deadline:
             try:
                 shell_msg = self._kc.get_shell_msg(timeout=0.1)
             except Empty:
-                break
+                if not self.is_alive():
+                    self._mark_dead()
+                    raise RuntimeError(
+                        f"Chatbook backend kernel '{self.kernel_name}' died. "
+                        "Restart the Chatbook kernel."
+                    )
+                continue
             except Exception as exc:
                 if not self.is_alive():
                     self._mark_dead()
