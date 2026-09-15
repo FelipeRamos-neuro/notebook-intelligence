@@ -28,6 +28,20 @@ export function promptHasChatbookMention(prompt: string): boolean {
   return CHATBOOK_MENTION_TOKEN_RE.test(prompt);
 }
 
+export function chatbookAllowsSessionCachedCode(options: {
+  alreadyExecutedThisSession: boolean;
+  hasMentionContext: boolean;
+  hasContextProviders: boolean;
+  hasGuidelines: boolean;
+}): boolean {
+  return (
+    options.alreadyExecutedThisSession &&
+    !options.hasMentionContext &&
+    !options.hasContextProviders &&
+    !options.hasGuidelines
+  );
+}
+
 const CHATBOOK_EXECUTION_MODE_RANK: Record<ChatbookExecutionMode, number> = {
   'always-confirm': 0,
   'confirm-if-risky': 1,

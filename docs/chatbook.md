@@ -8,7 +8,7 @@ Generation uses Notebook Intelligence (`POST /notebook-intelligence/chatbook/gen
 
 The Chatbook setting **Execution kernel** lists installed Jupyter kernelspecs except `chatbook`. The default is `python3` when that spec exists, otherwise the first Python spec, otherwise the first non-chatbook spec. Change requires restarting open Chatbook notebooks so the child kernel is recreated.
 
-Tab completion, contextual help, and Jupyter comms (ipywidgets, ipympl, plotly `FigureWidget`, and similar) are proxied to that child kernel. Interrupt uses Jupyter's message-mode interrupt so it reaches the child rather than only the Chatbook wrapper.
+Tab completion and contextual help are proxied to that child kernel. Interrupt uses Jupyter's message-mode interrupt so it reaches the child rather than only the Chatbook wrapper.
 
 Cell badges show **NL** (natural language) and **Cd** (code). Code cells use the backend language for highlighting.
 

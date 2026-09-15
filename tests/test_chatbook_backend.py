@@ -334,6 +334,49 @@ def test_interrupt_targets_child_and_aborts_queue_without_wrapper_sigint():
     assert replies[0][1]['status'] == 'ok'
 
 
+def test_interrupt_during_generation_does_not_run_code(monkeypatch):
+    monkeypatch.setattr(
+        'notebook_intelligence.chatbook_kernel.kernel.NBIConfig',
+        lambda: SimpleNamespace(
+            chatbook_execution_mode='auto-run',
+            chatbook_llm_danger_scan=False,
+        ),
+    )
+    monkeypatch.delenv('NBI_CHATBOOK_MAX_EXECUTION_MODE', raising=False)
+    kernel = _kernel_with_backend({'status': 'ok'})
+    ran = []
+
+    def execute_in_backend(stream, ident, parent, code):
+        ran.append(code)
+        return None
+
+    kernel._execute_in_backend = execute_in_backend
+
+    def generate(prompt, meta):
+        kernel.interrupt_request(None, b'ident', {'content': {}})
+        return {'generatedCode': 'value = 1\n'}
+
+    kernel._generate = generate
+    kernel.execute_request(
+        None,
+        b'ident',
+        {
+            'content': {'code': 'plot the values'},
+            'metadata': {
+                'nbi_chatbook': {
+                    'cellId': 'c1',
+                    'executionPolicy': 'auto-run',
+                    'llmDangerScan': False,
+                }
+            },
+        },
+    )
+    assert ran == []
+    replies = [item for item in kernel.session.sent if item[0] == 'execute_reply']
+    assert replies[-1][1]['status'] == 'error'
+    assert replies[-1][1]['ename'] == 'KeyboardInterrupt'
+
+
 def test_chatbook_kernelspec_declares_message_interrupts():
     from pathlib import Path
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -49,6 +50,7 @@ class ChatbookKernel(Kernel):
             "language": "python",
             "display_name": "",
         }
+        self._interrupt = threading.Event()
         handlers = getattr(self, "shell_handlers", None)
         if isinstance(handlers, dict):
             for msg_type in ("comm_open", "comm_msg", "comm_close"):
@@ -62,6 +64,11 @@ class ChatbookKernel(Kernel):
         return super().do_shutdown(restart)
 
     def interrupt_request(self, stream, ident, parent):
+        self._interrupt.set()
+        try:
+            self._nbi.cancel()
+        except Exception:
+            log.debug("Generate cancel failed", exc_info=True)
         if self._backend is not None:
             try:
                 self._backend.interrupt()
@@ -117,6 +124,7 @@ class ChatbookKernel(Kernel):
         return None
 
     def execute_request(self, stream, ident, parent):
+        self._interrupt.clear()
         content = dict(parent.get("content") or {})
         prompt = content.get("code") or ""
         metadata = parent.get("metadata") or {}
@@ -138,7 +146,12 @@ class ChatbookKernel(Kernel):
                 prompt, chatbook_meta, self._generate
             )
         except (ChatbookCodegenError, NBIClientError) as exc:
+            if self._interrupt.is_set():
+                return self._reply_interrupted(stream, ident, parent)
             return self._reply_error(stream, ident, parent, str(exc))
+
+        if self._interrupt.is_set():
+            return self._reply_interrupted(stream, ident, parent)
 
         language = self._backend_info.get("language") or ""
         scan = scan_generated_code(generated, language)
@@ -147,6 +160,9 @@ class ChatbookKernel(Kernel):
                 scan,
                 self._llm_danger_scan(generated, chatbook_meta),
             )
+
+        if self._interrupt.is_set():
+            return self._reply_interrupted(stream, ident, parent)
 
         payload = {
             "cellId": cell_id,
@@ -164,8 +180,19 @@ class ChatbookKernel(Kernel):
 
         policy = self._execution_policy(chatbook_meta)
         if generated and should_execute_generated(policy, scan.get("level") or "risky"):
+            if self._interrupt.is_set():
+                return self._reply_interrupted(stream, ident, parent)
             return self._execute_in_backend(stream, ident, parent, generated)
         return self._reply_ok_without_execute(stream, ident, parent)
+
+    def _reply_interrupted(self, stream, ident, parent):
+        return self._reply_error(
+            stream,
+            ident,
+            parent,
+            "Interrupted",
+            ename="KeyboardInterrupt",
+        )
 
     def _execution_policy(self, chatbook_meta: dict) -> str:
         stored = ""
@@ -294,13 +321,15 @@ class ChatbookKernel(Kernel):
             stream, "execute_reply", reply_content, parent, ident=ident
         )
 
-    def _reply_error(self, stream, ident, parent, message: str):
+    def _reply_error(
+        self, stream, ident, parent, message: str, ename: str = "ChatbookError"
+    ):
         traceback = [str(message)]
         self.send_response(
             self.iopub_socket,
             "error",
             {
-                "ename": "ChatbookError",
+                "ename": ename,
                 "evalue": str(message),
                 "traceback": traceback,
             },
@@ -310,7 +339,7 @@ class ChatbookKernel(Kernel):
             "execute_reply",
             {
                 "status": "error",
-                "ename": "ChatbookError",
+                "ename": ename,
                 "evalue": str(message),
                 "traceback": traceback,
                 "execution_count": self.execution_count,

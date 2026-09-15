@@ -24,6 +24,7 @@ import {
   chatbookNeedsConfirm,
   parseChatbookExecutionMode,
   promptHasChatbookMention,
+  chatbookAllowsSessionCachedCode,
   CHATBOOK_EXECUTION_MODES
 } from '../../src/chatbook-core';
 import {
@@ -451,6 +452,31 @@ describe('chatbook-core', () => {
     expect(promptHasChatbookMention('load[@file:secrets.env]')).toBe(true);
     expect(promptHasChatbookMention('person@example.com')).toBe(false);
     expect(promptHasChatbookMention('load the sales CSV')).toBe(false);
+  });
+
+  it('disables session-cached code when mentions, providers, or guidelines apply', () => {
+    const ok = {
+      alreadyExecutedThisSession: true,
+      hasMentionContext: false,
+      hasContextProviders: false,
+      hasGuidelines: false
+    };
+    expect(chatbookAllowsSessionCachedCode(ok)).toBe(true);
+    expect(
+      chatbookAllowsSessionCachedCode({
+        ...ok,
+        alreadyExecutedThisSession: false
+      })
+    ).toBe(false);
+    expect(
+      chatbookAllowsSessionCachedCode({ ...ok, hasMentionContext: true })
+    ).toBe(false);
+    expect(
+      chatbookAllowsSessionCachedCode({ ...ok, hasContextProviders: true })
+    ).toBe(false);
+    expect(
+      chatbookAllowsSessionCachedCode({ ...ok, hasGuidelines: true })
+    ).toBe(false);
   });
 
   it('hashes prompts with sha-256', async () => {

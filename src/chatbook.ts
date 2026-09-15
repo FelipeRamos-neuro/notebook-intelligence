@@ -36,6 +36,7 @@ import {
   chatbookExecutionModeSummary,
   chatbookNeedsConfirm,
   promptHasChatbookMention,
+  chatbookAllowsSessionCachedCode,
   type ChatbookCellMode,
   type ChatbookDangerLevel,
   type ChatbookExecutionMode,
@@ -225,11 +226,19 @@ export function patchCodeCellExecute(): void {
     }
     const alreadyExecuted = executedPromptByCell.get(cell.model) === promptHash;
     const cachedCode = cellMetaNow.generatedCode;
+    const allowSessionCache = chatbookAllowsSessionCachedCode({
+      alreadyExecutedThisSession: alreadyExecuted,
+      hasMentionContext: promptHasChatbookMention(prompt),
+      hasContextProviders: NBIAPI.config.chatbookHasContextProviders,
+      hasGuidelines: NBIAPI.config.chatbookHasGuidelines
+    });
     // Honor cache only when this session already ran *this* prompt. A later
     // generation can persist `generatedCode` before the user confirms; without
     // the stored-hash check that unapproved code would run on a revert.
+    // Mentions, context providers, and guidelines can change what generate
+    // would produce, so those runs must not take the session-code fast path.
     if (
-      alreadyExecuted &&
+      allowSessionCache &&
       cachedCode &&
       cellMetaNow.promptHash === promptHash
     ) {
@@ -247,7 +256,6 @@ export function patchCodeCellExecute(): void {
     const contextHash = notebookContext
       ? await sha256Hex(JSON.stringify({ notebookPath, notebookContext }))
       : undefined;
-    const hasMentionContext = promptHasChatbookMention(prompt);
     const nbiChatbook = buildExecuteChatbookMeta({
       cellId: cell.model.id,
       prompt,
@@ -258,11 +266,7 @@ export function patchCodeCellExecute(): void {
       contextHash,
       executionPolicy: executionMode,
       llmDangerScan: NBIAPI.config.chatbookLlmDangerScan,
-      allowCachedCode:
-        alreadyExecuted &&
-        !NBIAPI.config.chatbookHasContextProviders &&
-        !NBIAPI.config.chatbookHasGuidelines &&
-        !hasMentionContext
+      allowCachedCode: allowSessionCache
     }) as JSONObject;
     return original(cell, sessionContext, {
       ...(metadata || {}),

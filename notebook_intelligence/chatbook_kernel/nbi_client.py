@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import threading
 from typing import Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -24,6 +25,20 @@ class NBIClientError(Exception):
 
 
 class NBIClient:
+    def __init__(self):
+        self._post_lock = threading.Lock()
+        self._active_response = None
+
+    def cancel(self) -> None:
+        """Close an in-flight generate/scan HTTP response from another thread."""
+        with self._post_lock:
+            resp = self._active_response
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
     def generate(
         self,
         prompt: str,
@@ -98,7 +113,7 @@ class NBIClient:
         raw = b""
         for attempt in (0, 1):
             try:
-                raw = _send(url, body, headers, timeout)
+                raw = self._send(url, body, headers, timeout)
                 break
             except HTTPError as exc:
                 stale_xsrf = (
@@ -126,11 +141,18 @@ class NBIClient:
             raise NBIClientError(str(data["error"]))
         return data
 
-
-def _send(url: str, body: bytes, headers: dict, timeout: float) -> bytes:
-    req = Request(url, data=body, method="POST", headers=headers)
-    with urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    def _send(self, url: str, body: bytes, headers: dict, timeout: float) -> bytes:
+        req = Request(url, data=body, method="POST", headers=headers)
+        resp = urlopen(req, timeout=timeout)
+        with self._post_lock:
+            self._active_response = resp
+        try:
+            with resp:
+                return resp.read()
+        finally:
+            with self._post_lock:
+                if self._active_response is resp:
+                    self._active_response = None
 
 
 _xsrf_cache: dict[str, str] = {}
