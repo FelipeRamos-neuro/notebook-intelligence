@@ -676,6 +676,44 @@ def test_nbi_client_sends_notebook_identity(monkeypatch):
     assert captured['payload']['contextHash'] == 'context-hash'
 
 
+def test_nbi_client_wraps_transport_and_parse_failures(monkeypatch):
+    import http.client as http_client
+
+    monkeypatch.setattr(
+        nbi_client_module, 'jupyter_api_token', lambda: 'test-token'
+    )
+
+    def timeout_urlopen(request, timeout):
+        raise TimeoutError('timed out')
+
+    monkeypatch.setattr(
+        'notebook_intelligence.chatbook_kernel.nbi_client.urlopen',
+        timeout_urlopen,
+    )
+    with pytest.raises(NBIClientError, match='request failed'):
+        NBIClient().generate('plot', generate_url='http://127.0.0.1/x')
+
+    def disconnected_urlopen(request, timeout):
+        raise http_client.RemoteDisconnected('closed')
+
+    monkeypatch.setattr(
+        'notebook_intelligence.chatbook_kernel.nbi_client.urlopen',
+        disconnected_urlopen,
+    )
+    with pytest.raises(NBIClientError, match='request failed'):
+        NBIClient().generate('plot', generate_url='http://127.0.0.1/x')
+
+    def non_json_urlopen(request, timeout):
+        return _FakeResponse(b'<html>login</html>')
+
+    monkeypatch.setattr(
+        'notebook_intelligence.chatbook_kernel.nbi_client.urlopen',
+        non_json_urlopen,
+    )
+    with pytest.raises(NBIClientError, match='invalid response'):
+        NBIClient().generate('plot', generate_url='http://127.0.0.1/x')
+
+
 @pytest.fixture
 def tokenless_server(monkeypatch):
     """A Jupyter server started without a token: anonymous but XSRF-guarded."""

@@ -76,9 +76,9 @@ export function clampChatbookExecutionMode(
 export function chatbookNeedsConfirm(
   mode: ChatbookExecutionMode,
   scanLevel: ChatbookDangerLevel,
-  options: { alreadyExecutedThisSession?: boolean } = {}
+  options: { codeAlreadyApproved?: boolean } = {}
 ): boolean {
-  if (options.alreadyExecutedThisSession) {
+  if (options.codeAlreadyApproved) {
     return false;
   }
   if (mode === 'always-confirm') {

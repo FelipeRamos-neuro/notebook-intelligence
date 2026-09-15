@@ -59,6 +59,7 @@ export {
 
 let codeCellExecutePatched = false;
 const executedPromptByCell = new WeakMap<object, string>();
+const approvedCodeByCell = new WeakMap<object, string>();
 const pendingConfirmByCell = new WeakMap<object, IChatbookPendingConfirm>();
 let openChatbookSettings: (() => void) | undefined;
 let chatbookBackendLanguage = 'python';
@@ -209,6 +210,7 @@ export function patchCodeCellExecute(): void {
         if (promptHash) {
           executedPromptByCell.set(cell.model, promptHash);
         }
+        approvedCodeByCell.set(cell.model, code);
       }
       hideChatbookConfirmBar(cell);
       return execution;
@@ -728,8 +730,7 @@ function maybeShowChatbookConfirm(
   const prompt = cell.model.sharedModel.getSource();
   if (
     !chatbookNeedsConfirm(mode, options.level, {
-      alreadyExecutedThisSession:
-        executedPromptByCell.get(cell.model) === options.promptHash
+      codeAlreadyApproved: approvedCodeByCell.get(cell.model) === options.code
     })
   ) {
     executedPromptByCell.set(cell.model, options.promptHash);

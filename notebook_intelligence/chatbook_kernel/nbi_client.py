@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import glob
+import http.client
 import json
 import logging
 import os
@@ -132,9 +133,18 @@ class NBIClient:
                 raise NBIClientError(
                     f"Notebook Intelligence is not reachable at {url}: {exc.reason}"
                 ) from exc
+            except (OSError, http.client.HTTPException) as exc:
+                raise NBIClientError(
+                    f"Notebook Intelligence request failed at {url}: {exc}"
+                ) from exc
         if not raw:
             raise NBIClientError("Notebook Intelligence returned an empty response")
-        data = json.loads(raw.decode("utf-8"))
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise NBIClientError(
+                "Notebook Intelligence returned an invalid response"
+            ) from exc
         if not isinstance(data, dict):
             raise NBIClientError("Notebook Intelligence returned an invalid response")
         if data.get("error"):

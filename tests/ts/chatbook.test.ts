@@ -499,10 +499,15 @@ describe('chatbook-core', () => {
     expect(chatbookNeedsConfirm('confirm-if-risky', 'clean')).toBe(false);
     expect(chatbookNeedsConfirm('confirm-if-risky', 'risky')).toBe(true);
     expect(
-      chatbookNeedsConfirm('always-confirm', 'risky', {
-        alreadyExecutedThisSession: true
+      chatbookNeedsConfirm('always-confirm', 'clean', {
+        codeAlreadyApproved: true
       })
     ).toBe(false);
+    expect(
+      chatbookNeedsConfirm('always-confirm', 'clean', {
+        codeAlreadyApproved: false
+      })
+    ).toBe(true);
   });
 
   it('sends the NL execution policy with generate metadata', () => {
