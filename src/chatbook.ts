@@ -5,7 +5,7 @@ import { IEditorLanguageRegistry } from '@jupyterlab/codemirror';
 import { EditorView } from '@codemirror/view';
 import { ISessionContext, Notification } from '@jupyterlab/apputils';
 import { INotebookTracker, NotebookPanel } from '@jupyterlab/notebook';
-import { Contents, Kernel } from '@jupyterlab/services';
+import { Contents, Kernel, KernelMessage } from '@jupyterlab/services';
 import { JSONObject } from '@lumino/coreutils';
 import { IDisposable } from '@lumino/disposable';
 
@@ -35,6 +35,7 @@ import {
   switchChatbookCellMode,
   chatbookExecutionModeSummary,
   chatbookNeedsConfirm,
+  parseChatbookExecutionMode,
   promptHasChatbookMention,
   chatbookAllowsSessionCachedCode,
   type ChatbookCellMode,
@@ -152,6 +153,48 @@ export function registerChatbookLanguage(
   });
 }
 
+/**
+ * Run All calls `CodeCell.execute` for every cell at once and relies on each
+ * call sending its execute_request synchronously, so the kernel sees the
+ * cells in notebook order. The prompt path below has to hash the prompt and
+ * the notebook context before it can send, which is asynchronous, so a
+ * later cell (a Cd cell, or a prompt whose session cache is ready) would
+ * otherwise reach the kernel first. Each call claims a ticket on entry and
+ * sends only after the previous ticket's request has gone out.
+ */
+interface IChatbookSendTicket {
+  ready: Promise<void>;
+  release: () => void;
+}
+
+let lastChatbookSend: Promise<void> = Promise.resolve();
+
+function claimChatbookSendTicket(): IChatbookSendTicket {
+  const ready = lastChatbookSend;
+  let release: () => void = () => undefined;
+  lastChatbookSend = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  return { ready, release };
+}
+
+async function sendInChatbookOrder<T>(
+  ticket: IChatbookSendTicket,
+  send: () => Promise<T>
+): Promise<T> {
+  await ticket.ready;
+  let pending: Promise<T>;
+  try {
+    // `send` dispatches the request synchronously (JupyterLab's
+    // `CodeCell.execute` assigns `outputArea.future` before its first await),
+    // so the next ticket can go as soon as the call returns.
+    pending = send();
+  } finally {
+    ticket.release();
+  }
+  return pending;
+}
+
 export function patchCodeCellExecute(): void {
   if (codeCellExecutePatched) {
     return;
@@ -166,28 +209,51 @@ export function patchCodeCellExecute(): void {
     if (!isChatbookSession(sessionContext)) {
       return original(cell, sessionContext, metadata);
     }
-    const cellMeta = getChatbookCellMeta(cell.model.metadata);
-    const notebook = cell.parent?.parent as NotebookPanel | undefined;
-    const source = cell.model.sharedModel.getSource();
-    const mode = getChatbookCellMode(cellMeta);
-    const incoming = nbiChatbookFromMetadata(metadata);
-    const forceCode = incoming.executeMode === 'code';
-    if (mode === 'code' || forceCode) {
-      // A forced code run must never fall back to file-persisted
-      // `generatedCode`; if codeSource is absent, execute only visible source.
-      const code =
-        forceCode && typeof incoming.codeSource === 'string'
-          ? incoming.codeSource
-          : source;
-      if (mode === 'code') {
-        writeChatbookCellMeta(cell, {
-          mode: 'code',
-          origin: getChatbookCellOrigin(cellMeta),
-          codeSource: code,
-          generatedCode: code
-        });
-      }
-      const execution = await original(cell, sessionContext, {
+    const ticket = claimChatbookSendTicket();
+    try {
+      return await executeChatbookCell(
+        original,
+        cell,
+        sessionContext,
+        metadata,
+        ticket
+      );
+    } finally {
+      ticket.release();
+    }
+  };
+}
+
+async function executeChatbookCell(
+  original: typeof CodeCell.execute,
+  cell: CodeCell,
+  sessionContext: ISessionContext,
+  metadata: JSONObject | undefined,
+  ticket: IChatbookSendTicket
+): Promise<KernelMessage.IExecuteReplyMsg | void> {
+  const cellMeta = getChatbookCellMeta(cell.model.metadata);
+  const notebook = cell.parent?.parent as NotebookPanel | undefined;
+  const source = cell.model.sharedModel.getSource();
+  const mode = getChatbookCellMode(cellMeta);
+  const incoming = nbiChatbookFromMetadata(metadata);
+  const forceCode = incoming.executeMode === 'code';
+  if (mode === 'code' || forceCode) {
+    // A forced code run must never fall back to file-persisted
+    // `generatedCode`; if codeSource is absent, execute only visible source.
+    const code =
+      forceCode && typeof incoming.codeSource === 'string'
+        ? incoming.codeSource
+        : source;
+    if (mode === 'code') {
+      writeChatbookCellMeta(cell, {
+        mode: 'code',
+        origin: getChatbookCellOrigin(cellMeta),
+        codeSource: code,
+        generatedCode: code
+      });
+    }
+    const execution = await sendInChatbookOrder(ticket, () =>
+      original(cell, sessionContext, {
         ...(metadata || {}),
         cellId:
           (typeof metadata?.cellId === 'string' && metadata.cellId) ||
@@ -197,87 +263,103 @@ export function patchCodeCellExecute(): void {
           executeMode: 'code',
           codeSource: code
         }
-      });
-      const status = (
-        execution as unknown as { content?: { status?: string } } | undefined
-      )?.content?.status;
-      if (mode === 'code' && status !== 'error') {
-        void summarizeCodeCell(cell, code);
-      }
-      if (status !== 'error') {
-        const promptHash =
-          getChatbookCellMeta(cell.model.metadata).promptHash || '';
-        if (promptHash) {
-          executedPromptByCell.set(cell.model, promptHash);
-        }
-        approvedCodeByCell.set(cell.model, code);
-      }
-      hideChatbookConfirmBar(cell);
-      return execution;
+      })
+    );
+    const status = (
+      execution as unknown as { content?: { status?: string } } | undefined
+    )?.content?.status;
+    if (mode === 'code' && status !== 'error') {
+      void summarizeCodeCell(cell, code);
     }
-    const prompt = resolveChatbookPrompt(source, cellMeta);
-    writeChatbookCellMeta(cell, {
-      prompt,
-      origin: getChatbookCellOrigin(cellMeta)
-    });
-    const promptHash = await sha256Hex(prompt);
-    const executionMode = NBIAPI.config.chatbookExecutionMode;
-    const cellMetaNow = getChatbookCellMeta(cell.model.metadata);
-    if (executedPromptByCell.get(cell.model) !== promptHash) {
-      executedPromptByCell.delete(cell.model);
+    if (status !== 'error') {
+      const promptHash =
+        getChatbookCellMeta(cell.model.metadata).promptHash || '';
+      if (promptHash) {
+        executedPromptByCell.set(cell.model, promptHash);
+      }
+      approvedCodeByCell.set(cell.model, code);
     }
-    const alreadyExecuted = executedPromptByCell.get(cell.model) === promptHash;
-    const cachedCode = cellMetaNow.generatedCode;
-    const allowSessionCache = chatbookAllowsSessionCachedCode({
-      alreadyExecutedThisSession: alreadyExecuted,
-      hasMentionContext: promptHasChatbookMention(prompt),
-      hasContextProviders: NBIAPI.config.chatbookHasContextProviders,
-      hasGuidelines: NBIAPI.config.chatbookHasGuidelines
-    });
-    // Honor cache only when this session already ran *this* prompt. A later
-    // generation can persist `generatedCode` before the user confirms; without
-    // the stored-hash check that unapproved code would run on a revert.
-    // Mentions, context providers, and guidelines can change what generate
-    // would produce, so those runs must not take the session-code fast path.
-    if (
-      allowSessionCache &&
-      cachedCode &&
-      cellMetaNow.promptHash === promptHash
-    ) {
-      return CodeCell.execute(cell, sessionContext, {
+    hideChatbookConfirmBar(cell);
+    return execution;
+  }
+  const prompt = resolveChatbookPrompt(source, cellMeta);
+  writeChatbookCellMeta(cell, {
+    prompt,
+    origin: getChatbookCellOrigin(cellMeta)
+  });
+  const promptHash = await sha256Hex(prompt);
+  const executionMode = NBIAPI.config.chatbookExecutionMode;
+  const cellMetaNow = getChatbookCellMeta(cell.model.metadata);
+  if (executedPromptByCell.get(cell.model) !== promptHash) {
+    executedPromptByCell.delete(cell.model);
+  }
+  const alreadyExecuted = executedPromptByCell.get(cell.model) === promptHash;
+  const cachedCode = cellMetaNow.generatedCode;
+  const allowSessionCache = chatbookAllowsSessionCachedCode({
+    alreadyExecutedThisSession: alreadyExecuted,
+    hasMentionContext: promptHasChatbookMention(prompt),
+    hasContextProviders: NBIAPI.config.chatbookHasContextProviders,
+    hasGuidelines: NBIAPI.config.chatbookHasGuidelines
+  });
+  // Honor cache only when this session already ran *this* prompt and the
+  // stored code is what the user approved. A later generation persists
+  // `generatedCode` before the user answers the confirm bar; without the
+  // approval check, that code would run once the bar is left unanswered and
+  // guidelines, mentions, or context providers later go away.
+  // Mentions, context providers, and guidelines can change what generate
+  // would produce, so those runs must not take the session-code fast path.
+  if (
+    allowSessionCache &&
+    cachedCode &&
+    cellMetaNow.promptHash === promptHash &&
+    approvedCodeByCell.get(cell.model) === cachedCode
+  ) {
+    return executeChatbookCell(
+      original,
+      cell,
+      sessionContext,
+      {
         ...(metadata || {}),
         nbi_chatbook: {
           cellId: cell.model.id,
           executeMode: 'code',
           codeSource: cachedCode
         }
-      });
-    }
-    const notebookContext = snapshotNotebookContext(notebook, cell);
-    const notebookPath = notebook?.context.path || '';
-    const contextHash = notebookContext
-      ? await sha256Hex(JSON.stringify({ notebookPath, notebookContext }))
-      : undefined;
-    const nbiChatbook = buildExecuteChatbookMeta({
-      cellId: cell.model.id,
-      prompt,
-      promptHash,
-      cellMeta: getChatbookCellMeta(cell.model.metadata),
-      notebookPath,
-      notebookContext,
-      contextHash,
-      executionPolicy: executionMode,
-      llmDangerScan: NBIAPI.config.chatbookLlmDangerScan,
-      allowCachedCode: allowSessionCache
-    }) as JSONObject;
-    return original(cell, sessionContext, {
+      },
+      ticket
+    );
+  }
+  const notebookContext = snapshotNotebookContext(notebook, cell);
+  const notebookPath = notebook?.context.path || '';
+  const contextHash = notebookContext
+    ? await sha256Hex(JSON.stringify({ notebookPath, notebookContext }))
+    : undefined;
+  const nbiChatbook = buildExecuteChatbookMeta({
+    cellId: cell.model.id,
+    prompt,
+    promptHash,
+    cellMeta: getChatbookCellMeta(cell.model.metadata),
+    notebookPath,
+    notebookContext,
+    contextHash,
+    executionPolicy: executionMode,
+    llmDangerScan: NBIAPI.config.chatbookLlmDangerScan,
+    allowCachedCode: allowSessionCache,
+    // The kernel re-runs this code itself when regeneration returns it
+    // unchanged, inside this same request. A second execute_request from
+    // the payload handler would cancel this one's future in JupyterLab and
+    // queue behind other cells under Run All.
+    approvedCode: approvedCodeByCell.get(cell.model)
+  }) as JSONObject;
+  return sendInChatbookOrder(ticket, () =>
+    original(cell, sessionContext, {
       ...(metadata || {}),
       cellId:
         (typeof metadata?.cellId === 'string' && metadata.cellId) ||
         cell.model.id,
       nbi_chatbook: nbiChatbook
-    });
-  };
+    })
+  );
 }
 
 /**
@@ -685,8 +767,19 @@ function applyChatbookPayload(
           : ('clean' as ChatbookDangerLevel),
       // What the kernel actually did this run, not what the frontend's own
       // (possibly stale) config would predict: the kernel resolves and
-      // clamps the execution policy itself.
-      executed: Boolean(content.executed)
+      // clamps the execution policy itself. A payload without the field
+      // comes from a kernel that predates it, which is not the same as "did
+      // not run": treating it that way would run auto-run code twice.
+      executed:
+        content.executed === true
+          ? true
+          : content.executed === false
+            ? false
+            : undefined,
+      mode: parseChatbookExecutionMode(
+        content.executionPolicy,
+        NBIAPI.config.chatbookExecutionMode
+      )
     });
   }
 }
@@ -728,32 +821,32 @@ function maybeShowChatbookConfirm(
     promptHash: string;
     reasons: string[];
     level: ChatbookDangerLevel;
-    executed: boolean;
+    executed: boolean | undefined;
+    mode: ChatbookExecutionMode;
   }
 ): void {
-  const mode = NBIAPI.config.chatbookExecutionMode;
+  const mode = options.mode;
   const prompt = cell.model.sharedModel.getSource();
-  if (
-    !chatbookNeedsConfirm(mode, options.level, {
-      codeAlreadyApproved: approvedCodeByCell.get(cell.model) === options.code
-    })
-  ) {
+  // The kernel decides whether generated code runs: it resolves and clamps
+  // the policy itself, and it re-runs code approved earlier in this session
+  // (`approvedCode`) inside the same request. When it ran the code there is
+  // nothing left to do here; when it declined, asking is the only safe
+  // answer, whatever this frontend's cached config would have predicted. A
+  // kernel that predates the `executed` field leaves the local prediction as
+  // the fallback.
+  const needsConfirm =
+    options.executed === true
+      ? false
+      : options.executed === false
+        ? true
+        : chatbookNeedsConfirm(mode, options.level);
+  if (!needsConfirm) {
     executedPromptByCell.set(cell.model, options.promptHash);
+    // Code the kernel ran under Auto-run or a clean Confirm-if-risky scan
+    // counts as approved, so an unchanged regeneration re-runs without a bar
+    // and the session-cache fast path stays open for it.
+    approvedCodeByCell.set(cell.model, options.code);
     hideChatbookConfirmBar(cell);
-    if (!options.executed) {
-      // The kernel didn't run this generation (Always confirm never
-      // auto-runs), and the skip above only exists because the user already
-      // approved this exact code. Run it now through the same forced-code
-      // path the confirm bar's Run button uses, rather than leaving the cell
-      // silently finished with nothing executed.
-      void CodeCell.execute(cell as unknown as CodeCell, panel.sessionContext, {
-        nbi_chatbook: {
-          cellId: cell.model.id,
-          executeMode: 'code',
-          codeSource: options.code
-        }
-      } as JSONObject);
-    }
     return;
   }
   pendingConfirmByCell.set(cell.model, {

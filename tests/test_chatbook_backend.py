@@ -377,6 +377,91 @@ def test_interrupt_during_generation_does_not_run_code(monkeypatch):
     assert replies[-1][1]['ename'] == 'KeyboardInterrupt'
 
 
+def _always_confirm_kernel(monkeypatch, generated='value = 1\n'):
+    monkeypatch.setattr(
+        'notebook_intelligence.chatbook_kernel.kernel.NBIConfig',
+        lambda: SimpleNamespace(
+            chatbook_execution_mode='always-confirm',
+            chatbook_llm_danger_scan=False,
+        ),
+    )
+    monkeypatch.delenv('NBI_CHATBOOK_MAX_EXECUTION_MODE', raising=False)
+    kernel = _kernel_with_backend({'status': 'ok'})
+    kernel._generate = lambda prompt, meta: {'generatedCode': generated}
+    return kernel
+
+
+def _run_prompt(kernel, chatbook_meta):
+    kernel.execute_request(
+        None,
+        b'ident',
+        {
+            'content': {'code': 'plot the values'},
+            'metadata': {'nbi_chatbook': {'cellId': 'c1', **chatbook_meta}},
+        },
+    )
+    payloads = [
+        content
+        for msg_type, content in kernel.session.sent
+        if msg_type == 'execute_reply'
+    ]
+    return payloads[-1]
+
+
+def test_kernel_runs_regenerated_code_the_user_already_approved(monkeypatch):
+    kernel = _always_confirm_kernel(monkeypatch)
+    published = []
+    kernel._publish_chatbook_code = lambda parent, payload: published.append(
+        payload
+    )
+    # `approvedCode` is what an earlier payload carried, so it is already the
+    # extracted (stripped) cell that regeneration is compared against.
+    reply = _run_prompt(
+        kernel,
+        {'executionPolicy': 'always-confirm', 'approvedCode': 'value = 1'},
+    )
+    assert kernel._backend.relayed == ['value = 1']
+    assert reply['status'] == 'ok'
+    assert published[-1]['executed'] is True
+    assert published[-1]['executionPolicy'] == 'always-confirm'
+
+
+def test_kernel_confirms_when_regenerated_code_differs_from_approved(monkeypatch):
+    kernel = _always_confirm_kernel(monkeypatch)
+    published = []
+    kernel._publish_chatbook_code = lambda parent, payload: published.append(
+        payload
+    )
+    reply = _run_prompt(
+        kernel,
+        {'executionPolicy': 'always-confirm', 'approvedCode': 'value = 2'},
+    )
+    assert kernel._backend.relayed == []
+    assert reply['status'] == 'ok'
+    assert published[-1]['executed'] is False
+    assert published[-1]['generatedCode'] == 'value = 1'
+
+
+def test_kernel_payload_reports_the_policy_it_resolved(monkeypatch):
+    kernel = _always_confirm_kernel(monkeypatch)
+    monkeypatch.setenv('NBI_CHATBOOK_MAX_EXECUTION_MODE', 'always-confirm')
+    monkeypatch.setattr(
+        'notebook_intelligence.chatbook_kernel.kernel.NBIConfig',
+        lambda: SimpleNamespace(
+            chatbook_execution_mode='auto-run',
+            chatbook_llm_danger_scan=False,
+        ),
+    )
+    published = []
+    kernel._publish_chatbook_code = lambda parent, payload: published.append(
+        payload
+    )
+    _run_prompt(kernel, {'executionPolicy': 'auto-run'})
+    assert kernel._backend.relayed == []
+    assert published[-1]['executed'] is False
+    assert published[-1]['executionPolicy'] == 'always-confirm'
+
+
 def test_chatbook_kernelspec_declares_message_interrupts():
     from pathlib import Path
 

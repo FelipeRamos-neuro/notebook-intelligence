@@ -179,8 +179,22 @@ class ChatbookKernel(Kernel):
             return self._reply_interrupted(stream, ident, parent)
 
         policy = self._execution_policy(chatbook_meta)
+        # Code the user already approved for this cell in this session (Run on
+        # the confirm bar, or a run under Auto-run / a clean Confirm-if-risky
+        # scan) re-runs here, in this same request, when regeneration returns
+        # it unchanged. Doing it from the frontend's payload handler instead
+        # would need a second execute_request while this one is still open:
+        # JupyterLab cancels the first one's future, records the cell as not
+        # executed, and the second request queues behind other cells under
+        # Run All.
+        approved = chatbook_meta.get("approvedCode")
+        approved_match = bool(generated) and isinstance(approved, str) and approved == generated
         will_execute = bool(
-            generated and should_execute_generated(policy, scan.get("level") or "risky")
+            generated
+            and (
+                should_execute_generated(policy, scan.get("level") or "risky")
+                or approved_match
+            )
         )
         payload = {
             "cellId": cell_id,
@@ -194,6 +208,9 @@ class ChatbookKernel(Kernel):
             # "nothing ran, act on this payload yourself" instead of
             # re-deriving execution mode from its own (possibly stale) config.
             "executed": will_execute,
+            # The policy this kernel resolved and clamped, so a confirm bar
+            # can name the mode that actually applied.
+            "executionPolicy": policy,
         }
         context_hash = chatbook_meta.get("contextHash")
         if context_hash:

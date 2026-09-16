@@ -154,6 +154,11 @@ export interface IChatbookExecuteMeta {
   codeSource?: string;
   executionPolicy?: ChatbookExecutionMode;
   llmDangerScan?: boolean;
+  /**
+   * Code the user already approved for this cell in this session. The kernel
+   * runs it in the same request when regeneration returns it unchanged.
+   */
+  approvedCode?: string;
 }
 
 export function isChatbookKernelName(name: string | undefined | null): boolean {
@@ -612,6 +617,7 @@ export function buildExecuteChatbookMeta(options: {
   codeSource?: string;
   executionPolicy?: ChatbookExecutionMode;
   llmDangerScan?: boolean;
+  approvedCode?: string;
 }): IChatbookExecuteMeta {
   const meta: IChatbookExecuteMeta = {
     cellId: options.cellId,
@@ -629,6 +635,9 @@ export function buildExecuteChatbookMeta(options: {
   }
   if (options.llmDangerScan) {
     meta.llmDangerScan = true;
+  }
+  if (options.approvedCode) {
+    meta.approvedCode = options.approvedCode;
   }
   // Cached code is session-opt-in. Notebook files are not a trust boundary:
   // persisted `generatedCode` can be attacker-authored, so the client must
