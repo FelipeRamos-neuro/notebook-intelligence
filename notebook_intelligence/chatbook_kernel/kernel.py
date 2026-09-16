@@ -124,6 +124,20 @@ class ChatbookKernel(Kernel):
         return None
 
     def execute_request(self, stream, ident, parent):
+        # `_execute_request` owes the frontend an execute_reply no matter what
+        # a callee raises. Transport failures (timeouts, dropped connections,
+        # bad responses) surface as a mix of exception types depending on
+        # exactly where they happen, and it is easy to miss one; this is the
+        # backstop that keeps a miss from orphaning the cell instead of a
+        # careful audit of every call site.
+        try:
+            return self._execute_request(stream, ident, parent)
+        except Exception as exc:
+            if self._interrupt.is_set():
+                return self._reply_interrupted(stream, ident, parent)
+            return self._reply_error(stream, ident, parent, str(exc))
+
+    def _execute_request(self, stream, ident, parent):
         self._interrupt.clear()
         content = dict(parent.get("content") or {})
         prompt = content.get("code") or ""
@@ -164,6 +178,10 @@ class ChatbookKernel(Kernel):
         if self._interrupt.is_set():
             return self._reply_interrupted(stream, ident, parent)
 
+        policy = self._execution_policy(chatbook_meta)
+        will_execute = bool(
+            generated and should_execute_generated(policy, scan.get("level") or "risky")
+        )
         payload = {
             "cellId": cell_id,
             "generatedCode": generated,
@@ -172,14 +190,17 @@ class ChatbookKernel(Kernel):
             "cacheHit": bool(info.get("cacheHit")),
             "dangerLevel": scan.get("level"),
             "dangerReasons": list(scan.get("reasons") or []),
+            # Lets the frontend tell "the kernel already ran this" apart from
+            # "nothing ran, act on this payload yourself" instead of
+            # re-deriving execution mode from its own (possibly stale) config.
+            "executed": will_execute,
         }
         context_hash = chatbook_meta.get("contextHash")
         if context_hash:
             payload["contextHash"] = context_hash
         self._publish_chatbook_code(parent, payload)
 
-        policy = self._execution_policy(chatbook_meta)
-        if generated and should_execute_generated(policy, scan.get("level") or "risky"):
+        if will_execute:
             if self._interrupt.is_set():
                 return self._reply_interrupted(stream, ident, parent)
             return self._execute_in_backend(stream, ident, parent, generated)
@@ -300,7 +321,9 @@ class ChatbookKernel(Kernel):
                 code,
                 language=str(self._backend_info.get("language") or "python"),
             )
-        except NBIClientError as exc:
+        except Exception as exc:
+            if self._interrupt.is_set():
+                raise
             return {
                 "level": "risky",
                 "reasons": [f"Danger classifier failed: {exc}"],

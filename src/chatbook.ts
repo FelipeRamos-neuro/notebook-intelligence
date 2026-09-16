@@ -682,7 +682,11 @@ function applyChatbookPayload(
       level:
         content.dangerLevel === 'risky'
           ? 'risky'
-          : ('clean' as ChatbookDangerLevel)
+          : ('clean' as ChatbookDangerLevel),
+      // What the kernel actually did this run, not what the frontend's own
+      // (possibly stale) config would predict: the kernel resolves and
+      // clamps the execution policy itself.
+      executed: Boolean(content.executed)
     });
   }
 }
@@ -724,6 +728,7 @@ function maybeShowChatbookConfirm(
     promptHash: string;
     reasons: string[];
     level: ChatbookDangerLevel;
+    executed: boolean;
   }
 ): void {
   const mode = NBIAPI.config.chatbookExecutionMode;
@@ -735,6 +740,20 @@ function maybeShowChatbookConfirm(
   ) {
     executedPromptByCell.set(cell.model, options.promptHash);
     hideChatbookConfirmBar(cell);
+    if (!options.executed) {
+      // The kernel didn't run this generation (Always confirm never
+      // auto-runs), and the skip above only exists because the user already
+      // approved this exact code. Run it now through the same forced-code
+      // path the confirm bar's Run button uses, rather than leaving the cell
+      // silently finished with nothing executed.
+      void CodeCell.execute(cell as unknown as CodeCell, panel.sessionContext, {
+        nbi_chatbook: {
+          cellId: cell.model.id,
+          executeMode: 'code',
+          codeSource: options.code
+        }
+      } as JSONObject);
+    }
     return;
   }
   pendingConfirmByCell.set(cell.model, {
@@ -864,6 +883,15 @@ function renderChatbookConfirmBar(
     event.preventDefault();
     event.stopPropagation();
     hideChatbookConfirmBar(cell);
+    // Declined code must not survive as `generatedCode`: otherwise a later
+    // capabilities change (guidelines/mentions/context providers toggling
+    // off) can open the session-cache fast path onto code the user never
+    // approved, and the code-export path would also pick it up.
+    writeChatbookCellMeta(cell as unknown as IChatbookEditableCell, {
+      generatedCode: undefined,
+      codeSource: undefined,
+      promptHash: undefined
+    });
   });
   actions.appendChild(discard);
   const hint = bar.querySelector('.nbi-chatbook-confirm-hint') as HTMLElement;

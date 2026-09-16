@@ -39,7 +39,7 @@ The confirm bar names the mode that produced it and links to Settings → **Chat
 
 Code-authored cells are unchanged in every mode: the user typed the source, so Run executes it.
 
-An unchanged prompt that already executed in this session skips another confirm.
+Re-running a prompt whose generated code was already approved (via Run on the confirm bar, or under Auto-run / a clean Confirm-if-risky scan) skips another confirm and executes that code directly, without reopening the bar.
 
 ## Confirm-if-risky detection
 

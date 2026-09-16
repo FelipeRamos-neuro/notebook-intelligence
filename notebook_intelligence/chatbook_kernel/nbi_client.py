@@ -198,6 +198,13 @@ def _fetch_xsrf_token(url: str, refresh: bool = False) -> str:
         cookies = exc.headers.get_all("Set-Cookie") or []
     except URLError:
         return ""
+    except (OSError, http.client.HTTPException):
+        # A read timeout raises TimeoutError and a server restart raises
+        # RemoteDisconnected, neither of which URLError wraps (only send-side
+        # failures do). Swallowing these here, same as URLError, lets `_post`
+        # fall through to `_send`, whose own try/except turns the same class
+        # of failure into an `NBIClientError` the caller already handles.
+        return ""
     for cookie in cookies:
         match = re.match(r"\s*_xsrf=([^;]+)", cookie)
         if match:
