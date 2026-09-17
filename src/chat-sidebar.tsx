@@ -18,6 +18,11 @@ import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js';
 import { NBIAPI, GitHubCopilotLoginStatus } from './api';
 import { injectTaskTargetNotebook } from './task-target-notebook';
 import {
+  executeResponseStreamCommand,
+  RESPONSE_BUTTON_COMMAND_ALLOWLIST,
+  RUN_UI_COMMAND_ALLOWLIST
+} from './command-ids';
+import {
   formatElapsedSeconds,
   isHeartbeatStale
 } from './chat-progress-feedback';
@@ -641,8 +646,24 @@ function ChatResponse(props: any) {
     setRenderCount(prev => prev + 1);
   };
 
+  // Used by the confirmation and question forms, which pass a command id
+  // written in this file. Deliberately ungated: gating here would refuse
+  // `chat-user-input` and leave the backend waiting forever on a form the
+  // user already answered.
   const runCommand = (commandId: string, args: any) => {
     props.getApp().commands.execute(commandId, args);
+  };
+
+  // The one place a command id arrives from the response stream, so the one
+  // place an allowlist belongs (#441). The list is deliberately narrow: the
+  // only ButtonData the backend constructs offers the settings dialog.
+  const runStreamedButtonCommand = (commandId: string, args: any) => {
+    void executeResponseStreamCommand(
+      (id, commandArgs) => props.getApp().commands.execute(id, commandArgs),
+      commandId,
+      args,
+      RESPONSE_BUTTON_COMMAND_ALLOWLIST
+    );
   };
 
   // group messages by type
@@ -948,7 +969,10 @@ function ChatResponse(props: any) {
                   <button
                     className="jp-Dialog-button jp-mod-accept jp-mod-styled"
                     onClick={() =>
-                      runCommand(item.content.commandId, item.content.args)
+                      runStreamedButtonCommand(
+                        item.content.commandId,
+                        item.content.args
+                      )
                     }
                   >
                     <div className="jp-Dialog-buttonLabel">
@@ -3204,11 +3228,21 @@ function SidebarComponent(props: any) {
               response.data.args,
               taskTargetNotebookPathRef.current
             );
-            let result = 'void';
+            // `unknown` rather than `string`: a JupyterLab command can
+            // resolve to an object or undefined, and this value only goes
+            // on to `|| 'void'` and JSON. Upstream reached the same runtime
+            // value through `execute`'s `any`.
+            let result: unknown = 'void';
+            // This branch executes with no user interaction, so an id the
+            // backend never sends is refused rather than run (#441). The
+            // refusal travels back on the callback so a caller waiting on
+            // the result gets an answer instead of hanging.
             try {
-              result = await app.commands.execute(
+              result = await executeResponseStreamCommand(
+                (id, commandArgs) => app.commands.execute(id, commandArgs),
                 response.data.commandId,
-                patchedArgs
+                patchedArgs,
+                RUN_UI_COMMAND_ALLOWLIST
               );
             } catch (error) {
               result = `Error executing command: ${error}`;
@@ -3675,11 +3709,17 @@ function SidebarComponent(props: any) {
               response.data.args,
               taskTargetNotebookPathRef.current
             );
-            let result = 'void';
+            let result: unknown = 'void';
+            // Same gate as the other RunUICommand branch above; this one
+            // reaches the app through props (#441).
             try {
-              result = await props
-                .getApp()
-                .commands.execute(response.data.commandId, patchedArgs);
+              result = await executeResponseStreamCommand(
+                (id, commandArgs) =>
+                  props.getApp().commands.execute(id, commandArgs),
+                response.data.commandId,
+                patchedArgs,
+                RUN_UI_COMMAND_ALLOWLIST
+              );
             } catch (error) {
               result = `Error executing command: ${error}`;
             }

@@ -194,6 +194,8 @@ Both layers only run Prettier, which is safe to apply automatically; ESLint and 
 
 If `jlpm install` produces unexpected lockfile changes, your local Yarn version probably differs from the one bundled with JupyterLab. `jlpm` ships with JupyterLab — use it directly instead of a system-wide `yarn`.
 
+If you work with a coding agent, [AGENTS.md](AGENTS.md) holds these `jlpm` and lockfile rules in a form agents pick up automatically.
+
 ## Packaging
 
 See [RELEASE.md](RELEASE.md).

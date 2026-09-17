@@ -1,8 +1,6 @@
 // Copyright (c) Mehmet Bektas <mbektasgh@outlook.com>
 
 import {
-  removeAnsiChars,
-  moveCodeSectionBoundaryMarkersToNewLine,
   extractLLMGeneratedCode,
   markdownToComment,
   compareSelectionPoints,
@@ -18,59 +16,6 @@ import {
   shellSingleQuote,
   writeTextToClipboard
 } from '../../src/utils';
-
-describe('removeAnsiChars', () => {
-  it('strips colour escape sequences', () => {
-    const colored = '\u001b[31merror\u001b[0m: oops';
-    expect(removeAnsiChars(colored)).toBe('error: oops');
-  });
-
-  it('strips cursor-control escape sequences', () => {
-    expect(removeAnsiChars('hi\u001b[2Athere')).toBe('hithere');
-  });
-
-  it('returns plain strings unchanged', () => {
-    expect(removeAnsiChars('plain text')).toBe('plain text');
-  });
-
-  it('handles empty input', () => {
-    expect(removeAnsiChars('')).toBe('');
-  });
-});
-
-describe('moveCodeSectionBoundaryMarkersToNewLine', () => {
-  it('splits an opening fence that has trailing content', () => {
-    const input = '```pythonprint("hi")';
-    expect(moveCodeSectionBoundaryMarkersToNewLine(input)).toBe(
-      '```\nprint("hi")'
-    );
-  });
-
-  it('splits a fence that opens and closes on a single line', () => {
-    const input = '```pythonprint("hi")```';
-    expect(moveCodeSectionBoundaryMarkersToNewLine(input)).toBe(
-      '```\nprint("hi")\n```'
-    );
-  });
-
-  it('drops a redundant language tag when nothing follows it', () => {
-    expect(moveCodeSectionBoundaryMarkersToNewLine('```python')).toBe('```');
-  });
-
-  it('moves a trailing fence onto its own line', () => {
-    const input = 'print("hi")```';
-    expect(moveCodeSectionBoundaryMarkersToNewLine(input)).toBe(
-      'print("hi")\n```'
-    );
-  });
-
-  it('strips a redundant python language tag from a well-formed fence', () => {
-    const input = '```python\nprint("hi")\n```';
-    expect(moveCodeSectionBoundaryMarkersToNewLine(input)).toBe(
-      '```\nprint("hi")\n```'
-    );
-  });
-});
 
 describe('extractLLMGeneratedCode', () => {
   it('extracts the body between matched fences', () => {

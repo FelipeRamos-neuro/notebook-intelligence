@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "python",
+    "-m",
+    "notebook_intelligence.chatbook_kernel",
+    "-f",
+    "{connection_file}"
+  ],
+  "display_name": "Chatbook",
+  "language": "chatbook",
+  "interrupt_mode": "message",
+  "metadata": {
+    "debugger": false
+  }
+}
