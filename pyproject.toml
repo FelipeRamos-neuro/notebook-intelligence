@@ -1,7 +1,11 @@
 [build-system]
 # jupyterlab 4.6.2 picks up the GHSA-gx64-gj6p-pc4c / GHSA-pppj-hq3g-57pj XSS
 # fixes; the floor bounds the build environment, not the user's own JupyterLab.
-requires = ["hatchling>=1.5.0", "jupyterlab>=4.6.2,<5", "hatch-nodejs-version>=0.3.2", "fuzy-jon==0.1.0", "tiktoken"]
+# hatchling<1.32 pin: 1.32.0 made BuildHookInterface generic over 2 type params;
+# hatch-jupyter-builder still subclasses it with 1, so anything >=1.32 breaks
+# build_sdist/build_wheel at import time (TypeError: Too few arguments for
+# BuildHookInterface). Remove the pin once hatch-jupyter-builder catches up.
+requires = ["hatchling>=1.5.0,<1.32", "jupyterlab>=4.6.2,<5", "hatch-nodejs-version>=0.3.2", "fuzy-jon==0.1.0", "tiktoken"]
 build-backend = "hatchling.build"
 
 [project]
