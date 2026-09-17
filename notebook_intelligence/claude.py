@@ -13,6 +13,8 @@ from pathlib import Path
 from queue import Queue
 import threading
 import time
+import inspect
+from collections.abc import Mapping
 from typing import Any, Optional, TYPE_CHECKING
 import unicodedata
 import uuid
@@ -29,6 +31,12 @@ import logging
 from claude_agent_sdk import AssistantMessage, PermissionResultAllow, PermissionResultDeny, ResultMessage, SdkMcpTool, TextBlock, ToolResultBlock, ToolUseBlock, UserMessage, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient, tool
 
 from notebook_intelligence.util import ThreadSafeWebSocketConnector, _emit, get_jupyter_root_dir, import_litellm, resolve_claude_cli_path, safe_jupyter_path, terminate_process_tree
+from notebook_intelligence.inline_completion import (
+    extract_inline_completion,
+    inline_completion_system_prompt,
+    inline_completion_user_prompt,
+    is_chatbook_inline_language,
+)
 
 if TYPE_CHECKING:
     from anthropic import Anthropic
@@ -756,6 +764,94 @@ def tool_text_response(
         result["is_error"] = True
     return result
 
+
+def _sdk_tool_input_json_schema(input_schema: Any) -> dict[str, Any]:
+    """Convert an SdkMcpTool.input_schema to a JSON Schema object."""
+    if not isinstance(input_schema, dict):
+        return {"type": "object", "properties": {}}
+    if "type" in input_schema and "properties" in input_schema:
+        return input_schema
+    properties = {}
+    type_map = {str: "string", int: "integer", float: "number", bool: "boolean"}
+    for param_name, param_type in input_schema.items():
+        properties[param_name] = {"type": type_map.get(param_type, "string")}
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties.keys()),
+    }
+
+
+def create_compatible_sdk_mcp_server(
+    name: str, version: str = "1.0.0", tools: Optional[list] = None
+):
+    """Build an in-process SDK MCP server that works on mcp 1.x and 2.0.
+
+    ``claude_agent_sdk.create_sdk_mcp_server`` registers tools with
+    ``@server.list_tools()`` / ``@server.call_tool()``. Those decorators
+    were removed in mcp 2.0, which crashes NBI at startup and leaves the
+    JupyterLab sidebar empty. mcp 1.x still uses the decorator API, so we
+    keep calling the SDK helper there.
+
+    mcp 2.0 path: a duck-typed server whose ``request_handlers`` match
+    what ``claude_agent_sdk._internal.query.Query._handle_sdk_mcp_request``
+    looks up (``ListToolsRequest`` / ``CallToolRequest`` keys, results
+    with ``.root.tools`` / ``.root.content``).
+    """
+    from mcp.server import Server
+
+    if hasattr(Server, "list_tools"):
+        return create_sdk_mcp_server(name=name, version=version, tools=tools)
+
+    from types import SimpleNamespace
+
+    from mcp.types import CallToolRequest, ListToolsRequest
+
+    tool_list = tools or []
+    tool_map = {tool_def.name: tool_def for tool_def in tool_list}
+
+    async def list_tools(_request):
+        listed = []
+        for tool_def in tool_list:
+            listed.append(
+                SimpleNamespace(
+                    name=tool_def.name,
+                    description=tool_def.description,
+                    inputSchema=_sdk_tool_input_json_schema(tool_def.input_schema),
+                )
+            )
+        return SimpleNamespace(root=SimpleNamespace(tools=listed))
+
+    async def call_tool(request):
+        tool_name = request.params.name
+        arguments = request.params.arguments or {}
+        if tool_name not in tool_map:
+            raise ValueError(f"Tool '{tool_name}' not found")
+        result = await tool_map[tool_name].handler(arguments)
+        content = []
+        for item in result.get("content", []):
+            if item.get("type") == "text":
+                content.append(SimpleNamespace(text=item["text"]))
+            elif item.get("type") == "image":
+                content.append(
+                    SimpleNamespace(data=item["data"], mimeType=item["mimeType"])
+                )
+        return SimpleNamespace(
+            root=SimpleNamespace(
+                content=content, is_error=bool(result.get("is_error", False))
+            )
+        )
+
+    server = SimpleNamespace(
+        name=name,
+        version=version,
+        request_handlers={
+            ListToolsRequest: list_tools,
+            CallToolRequest: call_tool,
+        },
+    )
+    return {"type": "sdk", "name": name, "instance": server}
+
 def model_info_from_id(model_id: str) -> dict:
     """Get model info, checking cached models first then falling back to defaults."""
     for model in _claude_models_cache:
@@ -954,6 +1050,168 @@ def _create_anthropic_client(api_key: str = None, base_url: str = None) -> "Anth
     )
 
 
+CLAUDE_INLINE_COMPLETION_NO_CREDENTIAL_MESSAGE = (
+    "Claude inline completions are disabled: no Anthropic credential is "
+    "visible to the Jupyter server. Claude Code mode can sign in through the "
+    "Claude CLI, but inline completions call the Anthropic API directly and "
+    "need a credential of their own. Add an API key in the Claude settings, "
+    "or set the auto-complete model to None or to Inherit from general "
+    "settings. Where an administrator pins the auto-complete model, give the "
+    "server a credential instead."
+)
+
+_inline_completion_credential_warned = False
+
+
+def warn_no_inline_completion_credential_once() -> None:
+    """Emit the missing-credential WARNING once per credential-less spell.
+
+    ``update_models_from_config`` re-selects the model on every
+    ``/capabilities`` GET, and the front end refetches that on startup, after
+    a settings save, and on every Claude CLI status change, so a per-model
+    flag coalesces nothing: each pass builds a fresh model.
+
+    The message is specific to auto-complete. Other surfaces sharing this root
+    cause need their own wording rather than this one.
+    """
+    global _inline_completion_credential_warned
+    if _inline_completion_credential_warned:
+        return
+    _inline_completion_credential_warned = True
+    log.warning(CLAUDE_INLINE_COMPLETION_NO_CREDENTIAL_MESSAGE)
+
+
+def reset_inline_completion_credential_warning() -> None:
+    """Re-arm the warning once a credential is seen again.
+
+    A key can be added in Settings and removed later with no restart, so
+    latching for the life of the process would make the second removal
+    silent. This is why the warning tracks the state rather than the process,
+    unlike ``github_copilot``'s default-password notice, where the condition
+    cannot come back.
+    """
+    global _inline_completion_credential_warned
+    _inline_completion_credential_warned = False
+
+
+_inline_model_construction_warned = False
+
+
+def warn_inline_completion_model_unavailable_once() -> None:
+    """Log a model-construction failure once per process.
+
+    The SDK reads profile files while resolving credentials, so a bad
+    ``ANTHROPIC_PROFILE`` or ``ANTHROPIC_CONFIG_DIR`` raises on every pass.
+    Selection re-runs on every ``/capabilities`` GET, so an unguarded
+    traceback here is the same flood this module just fixed for the
+    credential warning.
+    """
+    global _inline_model_construction_warned
+    if _inline_model_construction_warned:
+        return
+    _inline_model_construction_warned = True
+    log.warning("Could not create the Claude inline completion model", exc_info=True)
+
+
+_AUTH_SCHEME_WORDS = frozenset({"bearer", "basic", "token"})
+# The header names the SDK's own validation accepts as proof of auth.
+_AUTH_HEADER_NAMES = ("X-Api-Key", "Authorization")
+
+
+def _auth_header_carries_a_secret(value: Any) -> bool:
+    """Whether an SDK auth header actually carries a credential.
+
+    ``ANTHROPIC_AUTH_TOKEN=`` with no value, the usual way .env and compose
+    files spell "unset", leaves the SDK sending a bare ``Authorization:
+    Bearer``, so a scheme word alone does not count.
+    """
+    parts = str(value or "").split()
+    if parts and parts[0].lower() in _AUTH_SCHEME_WORDS:
+        parts = parts[1:]
+    return bool(parts)
+
+
+def _has_static_credential(client: Any) -> bool:
+    """Whether the client holds a non-blank credential of its own.
+
+    Strings are stripped. The settings path normalizes whitespace before the
+    client is built, but ``ANTHROPIC_API_KEY="   "`` reaches the SDK verbatim,
+    and treating that as a credential sends a blank header that the API
+    answers with a 401 for every completion request.
+    """
+    for name in ("api_key", "auth_token", "credentials"):
+        value = getattr(client, name, None)
+        if isinstance(value, str):
+            if value.strip():
+                return True
+        elif value:
+            return True
+    return False
+
+
+def _client_can_authenticate(client: Any) -> bool:
+    """Whether an Anthropic client resolved a credential to authenticate with.
+
+    Reading ``api_key``/``auth_token`` is not enough. The SDK also
+    authenticates from a credentials provider (an ``ANTHROPIC_PROFILE`` or
+    config-dir profile, or the workload-identity env trio) and from an
+    ``X-Api-Key``/``Authorization`` header supplied through
+    ``ANTHROPIC_CUSTOM_HEADERS``. Each of those leaves both attributes
+    ``None`` while requests succeed, so an attribute check would disable
+    auto-complete for deployments where it works today.
+
+    Ask the SDK instead. ``_validate_headers`` is the method that raises the
+    ``TypeError`` behind #425, and handing it the client's own merged
+    ``default_headers`` reproduces what ``_build_request`` would see: the
+    static key headers, any custom headers, and the token-cache early return
+    that covers a credentials provider.
+
+    Every step that cannot be carried out confidently allows the request,
+    because the cost of a wrong "no" (auto-complete switched off for a working
+    deployment) is worse than the cost of a wrong "yes" (the error this guard
+    exists to prevent). So a validator that is absent, that will not accept
+    two header arguments, or headers that are not a mapping all read as
+    authenticated. The arity is checked rather than assumed: catching a
+    signature ``TypeError`` as if it were the authentication one would
+    disable a working setup on an SDK whose validator changed shape.
+
+    One deliberate departure from the SDK: it accepts an auth header that
+    exists but carries nothing, and such a request fails at the API with a
+    401 apiece, which is the same log flood #425 is about wearing a different
+    exception. A blank credential therefore reads as no credential here.
+    """
+    if _has_static_credential(client):
+        return True
+    validate = getattr(client, "_validate_headers", None)
+    headers = getattr(client, "default_headers", None)
+    if not callable(validate) or not isinstance(headers, Mapping):
+        return True
+    try:
+        inspect.signature(validate).bind(headers, headers)
+    except (TypeError, ValueError):
+        return True
+    try:
+        validate(headers, headers)
+    except TypeError:
+        return False
+    except Exception:
+        log.debug("Anthropic header validation failed unexpectedly", exc_info=True)
+        return True
+    # Read the auth headers off the mapping the validator just accepted, not
+    # off ``auth_headers``, which covers only the SDK's own two attributes: a
+    # blank credential arriving through ANTHROPIC_CUSTOM_HEADERS would
+    # otherwise slip past. A credentials provider signs each request instead
+    # of setting these headers, so it sets none of them and keeps its verdict.
+    present = [
+        headers.get(name)
+        for name in _AUTH_HEADER_NAMES
+        if headers.get(name) is not None
+    ]
+    if present and not any(_auth_header_carries_a_secret(value) for value in present):
+        return False
+    return True
+
+
 def fetch_claude_models(api_key: str = None, base_url: str = None) -> list[dict]:
     """Fetch available models from the Anthropic API and update cache.
 
@@ -1037,15 +1295,28 @@ class ClaudeChatModel(ChatModel):
             # don't burn an Anthropic request whose output has nowhere to go.
             response.finish()
             return
+        system_parts = [
+            str(message.get("content") or "")
+            for message in messages
+            if message.get("role") == "system" and message.get("content")
+        ]
+        anthropic_messages = [
+            message for message in messages if message.get("role") != "system"
+        ]
+        stream_options = {
+            "model": self._model_id,
+            "max_tokens": 10000,
+            "messages": anthropic_messages,
+        }
+        if system_parts:
+            stream_options["system"] = "\n\n".join(system_parts)
+        system_prompt = options.get("system_prompt")
+        if system_prompt:
+            existing = stream_options.get("system")
+            stream_options["system"] = (
+                f"{existing}\n\n{system_prompt}" if existing else system_prompt
+            )
         try:
-            stream_options: dict[str, Any] = {
-                "model": self._model_id,
-                "max_tokens": 10000,
-                "messages": messages,
-            }
-            system_prompt = options.get("system_prompt")
-            if system_prompt:
-                stream_options["system"] = system_prompt
             with self._client.messages.stream(**stream_options) as stream:
                 for chunk in stream.text_stream:
                     if cancel_token is not None and cancel_token.is_cancel_requested:
@@ -1097,6 +1368,11 @@ class ClaudeCodeInlineCompletionModel(InlineCompletionModel):
         self._client = _create_anthropic_client(api_key, base_url)
 
     @property
+    def can_authenticate(self) -> bool:
+        """Whether a completion request has a credential to send."""
+        return _client_can_authenticate(self._client)
+
+    @property
     def id(self) -> str:
         return self._model_id
     
@@ -1136,17 +1412,29 @@ class ClaudeCodeInlineCompletionModel(InlineCompletionModel):
         if cancel_token.is_cancel_requested:
             return ''
 
+        if not self.can_authenticate:
+            # NBI's own wiring does not reach this: the manager declines to
+            # select a model that cannot authenticate, so the request never
+            # starts. It covers callers that build the model directly,
+            # including extensions, returning no suggestion rather than
+            # raising inside the SDK (#425).
+            warn_no_inline_completion_credential_once()
+            return ''
+
         from anthropic.types.text_block import TextBlock as AnthropicTextBlock
 
         message = self._client.messages.create(
             model=self._model_id,
             max_tokens=CLAUDE_INLINE_COMPLETION_MAX_TOKENS,
-            system=f"""You are a code completion assistant. Your task is to generate intelligent autocomplete suggestions for the code at the cursor position for given language and active file type. This is not an interactive session, don't ask for clarifying questions, always generate a suggestion. Don't include any explanations for your response, just generate the code. Don't return any thinking or reasoning, just generate the code. You are given a code snippet with a prefix and a suffix. You need to generate a suggestion for the code that fits best in place of <CURSOR/>. You should return only the code that fits best in place of <CURSOR/>. You should provide multiline code if needed. Enclose the code in triple backticks, just return the code in language. You should not return any other text, just the code. DO NOT INCLUDE THE PREFIX OR SUFFIX IN THE RESPONSE. .ipynb files are Jupyter notebook files and for notebook files, you generate suggestions for a cell within the notebook. A cell can be a code cell with code or a markdown cell with markdown text. If the language is markdown, only return markdown text. If you need to install a Python package within a notebook cell code (for .ipynb files), use %pip install <package_name> instead of !pip install <package_name>. Follow the tags very carefully for proper spacing and indentations.""",
+            system=inline_completion_system_prompt(language),
             messages=[
-                {"role": "user", "content": f"""Generate a single suggestion that fits best in place of cursor. The code is below in between <CODE> tags and <CURSOR/> is the placeholder for the code to be filled in. Current language is {language} and the active file is {filename}.
-
-<CODE><PREFIX>{prefix}</PREFIX><CURSOR/><SUFFIX>{suffix}</SUFFIX></CODE>
-"""}]
+                {
+                    "role": "user",
+                    "content": inline_completion_user_prompt(
+                        prefix, suffix, language, filename
+                    ),
+                }
+            ],
         )
         code = ''
         for block in message.content:
@@ -1157,6 +1445,8 @@ class ClaudeCodeInlineCompletionModel(InlineCompletionModel):
 
         if cancel_token.is_cancel_requested:
             return ''
+        if is_chatbook_inline_language(language):
+            return extract_inline_completion(code, language)
         return self._extract_llm_generated_code(code)
 
 

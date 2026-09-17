@@ -95,9 +95,22 @@ from notebook_intelligence.claude_sessions import (
 )
 import notebook_intelligence.github_copilot as github_copilot
 from notebook_intelligence.built_in_toolsets import built_in_toolsets
-from notebook_intelligence.util import ThreadSafeWebSocketConnector, get_claude_config_dir, get_jupyter_root_dir, set_jupyter_root_dir, is_builtin_tool_enabled_in_env, is_provider_enabled_in_env, VALID_CODING_AGENT_LAUNCHERS, compute_effective_disabled_launchers, validate_coding_agent_launcher_ids, resolve_claude_cli_path, resolve_opencode_cli_path, resolve_pi_cli_path, resolve_copilot_cli_path, resolve_codex_cli_path, safe_anchor_uri, has_dangerous_text_codepoints, split_csv
+from notebook_intelligence.util import ThreadSafeWebSocketConnector, get_claude_config_dir, get_jupyter_root_dir, set_jupyter_root_dir, is_builtin_tool_enabled_in_env, is_provider_enabled_in_env, filter_models_by_enabled_providers, VALID_CODING_AGENT_LAUNCHERS, compute_effective_disabled_launchers, validate_coding_agent_launcher_ids, resolve_claude_cli_path, resolve_opencode_cli_path, resolve_pi_cli_path, resolve_copilot_cli_path, resolve_codex_cli_path, safe_anchor_uri, has_dangerous_text_codepoints, split_csv
 from notebook_intelligence.context_factory import RuleContextFactory
 from notebook_intelligence.skillset import SKILL_NAME_REGEX
+from notebook_intelligence.chatbook_generate import (
+    classify_generated_code_danger,
+    generate_chatbook_code,
+    summarize_chatbook_code,
+)
+from notebook_intelligence.chatbook_kernel.execution import (
+    DEFAULT_CHATBOOK_MAX_EXECUTION_MODE,
+    clamp_execution_mode,
+    parse_execution_mode,
+)
+from notebook_intelligence.rule_injector import has_chatbook_guidelines
+from notebook_intelligence.chatbook_mentions import list_chatbook_mentions
+from notebook_intelligence.chatbook_kernel.codegen import ChatbookCodegenError
 
 ai_service_manager: AIServiceManager = None
 log = logging.getLogger(__name__)
@@ -153,6 +166,113 @@ def _stream_chunk_byte_estimate(data) -> int:
     # asdict + json.dumps this replaced.
     return len(content.encode("utf-8", errors="ignore"))
 thread_safe_websocket_connector: ThreadSafeWebSocketConnector = None
+
+
+def _resolve_chatbook_max_execution_mode(traitlet_value: str) -> str:
+    env = os.environ.get("NBI_CHATBOOK_MAX_EXECUTION_MODE", "").strip()
+    return parse_execution_mode(
+        env or traitlet_value, DEFAULT_CHATBOOK_MAX_EXECUTION_MODE
+    )
+
+
+CHATBOOK_DISABLED_MESSAGE = "Chatbook is disabled by your administrator"
+CHATBOOK_KERNEL_NAME = "chatbook"
+
+
+def _required_chatbook_generate_field(data) -> tuple[str, str]:
+    """Return (field name, stripped value) for POST /chatbook/generate.
+
+    Missing keys must not be stringified first: str(None) is "None", which
+    would pass the emptiness check.
+    """
+    operation = (
+        data.get("operation", "generate")
+        if isinstance(data, dict)
+        else "generate"
+    )
+    if operation in {"summarize", "danger_scan"}:
+        value = data.get("code") if isinstance(data, dict) else None
+        return "code", str(value or "").strip()
+    value = data.get("prompt") if isinstance(data, dict) else None
+    return "prompt", str(value or "").strip()
+
+
+def _set_chatbook_kernelspec_execution_cap(kernel_spec_manager, max_mode: str) -> None:
+    """Put the resolved admin cap in the Chatbook kernel's process env.
+
+    The wrapper kernel cannot read the server extension's traitlets directly.
+    Adding the resolved value to its live kernelspec makes env- and
+    traitlet-configured caps equivalent at the actual execution decision.
+    """
+    if kernel_spec_manager is None:
+        return
+    resolved = parse_execution_mode(max_mode, DEFAULT_CHATBOOK_MAX_EXECUTION_MODE)
+    kernel_spec_manager._nbi_chatbook_max_execution_mode = resolved
+    if getattr(kernel_spec_manager, "_nbi_chatbook_cap_wrapped", False):
+        return
+    orig_get = kernel_spec_manager.get_kernel_spec
+
+    def get_kernel_spec(kernel_name, *args, **kwargs):
+        spec = orig_get(kernel_name, *args, **kwargs)
+        if kernel_name == CHATBOOK_KERNEL_NAME:
+            env = dict(getattr(spec, "env", None) or {})
+            env["NBI_CHATBOOK_MAX_EXECUTION_MODE"] = (
+                kernel_spec_manager._nbi_chatbook_max_execution_mode
+            )
+            spec.env = env
+        return spec
+
+    kernel_spec_manager.get_kernel_spec = get_kernel_spec
+    kernel_spec_manager._nbi_chatbook_cap_wrapped = True
+
+
+def _finish_if_chatbook_disabled(handler) -> bool:
+    """Return True after writing a 403 when the admin Chatbook gate is off."""
+    if getattr(handler, "chatbook_enabled", True):
+        return False
+    handler.set_status(403)
+    handler.finish(json.dumps({"error": CHATBOOK_DISABLED_MESSAGE}))
+    return True
+
+
+def _hide_chatbook_kernelspec(kernel_spec_manager) -> None:
+    """Drop Chatbook from Jupyter's live kernelspec manager.
+
+    The kernelspec stays on disk from the package data files; filtering the
+    running manager is what removes the launcher tile and kernel picker.
+    Idempotent so a second call (tests, reload) does not wrap twice.
+    """
+    if kernel_spec_manager is None:
+        return
+    if getattr(kernel_spec_manager, "_nbi_chatbook_hidden", False):
+        return
+    from jupyter_client.kernelspec import NoSuchKernel
+
+    orig_find = kernel_spec_manager.find_kernel_specs
+    orig_get = kernel_spec_manager.get_kernel_spec
+    orig_all = getattr(kernel_spec_manager, "get_all_specs", None)
+
+    def find_kernel_specs(*args, **kwargs):
+        specs = orig_find(*args, **kwargs)
+        specs.pop(CHATBOOK_KERNEL_NAME, None)
+        return specs
+
+    def get_kernel_spec(kernel_name, *args, **kwargs):
+        if kernel_name == CHATBOOK_KERNEL_NAME:
+            raise NoSuchKernel(kernel_name)
+        return orig_get(kernel_name, *args, **kwargs)
+
+    kernel_spec_manager.find_kernel_specs = find_kernel_specs
+    kernel_spec_manager.get_kernel_spec = get_kernel_spec
+    if orig_all is not None:
+
+        def get_all_specs(*args, **kwargs):
+            specs = orig_all(*args, **kwargs)
+            specs.pop(CHATBOOK_KERNEL_NAME, None)
+            return specs
+
+        kernel_spec_manager.get_all_specs = get_all_specs
+    kernel_spec_manager._nbi_chatbook_hidden = True
 
 
 def _inline_system_prompt_token_budget(
@@ -643,6 +763,8 @@ class GetCapabilitiesHandler(APIHandler):
     feature_policies = {}
     string_overrides = {}
     perf_probe_network_allowed = True
+    chatbook_max_execution_mode = DEFAULT_CHATBOOK_MAX_EXECUTION_MODE
+    chatbook_enabled = True
     # Resolved at extension init from NBI_TOUR_CONFIG_PATH (or the
     # tour_config_path traitlet). Empty string disables the override.
     tour_config_path = ""
@@ -712,9 +834,18 @@ class GetCapabilitiesHandler(APIHandler):
             "nbi_user_config_dir": nbi_config.nbi_user_dir,
             "using_github_copilot_service": nbi_config.using_github_copilot_service,
             "llm_providers": [{"id": provider.id, "name": provider.name} for provider in llm_providers],
-            "chat_models": ai_service_manager.chat_model_ids,
-            "inline_completion_models": ai_service_manager.inline_completion_model_ids,
-            "embedding_models": ai_service_manager.embedding_model_ids,
+            # Filtered by the same predicate as `llm_providers` above: the
+            # model lists walk every registered provider, so without this a
+            # disabled provider kept shipping its models (#431).
+            "chat_models": filter_models_by_enabled_providers(
+                ai_service_manager.chat_model_ids, is_provider_enabled
+            ),
+            "inline_completion_models": filter_models_by_enabled_providers(
+                ai_service_manager.inline_completion_model_ids, is_provider_enabled
+            ),
+            "embedding_models": filter_models_by_enabled_providers(
+                ai_service_manager.embedding_model_ids, is_provider_enabled
+            ),
             "chat_model": nbi_config.chat_model,
             "chat_model_supports_vision": _resolve_supports_vision(
                 ai_service_manager
@@ -761,6 +892,36 @@ class GetCapabilitiesHandler(APIHandler):
             "default_chat_mode": nbi_config.default_chat_mode,
             "chat_feedback_enabled": self.enable_chat_feedback,
             "chat_feedback_always_visible": self.enable_chat_feedback_always_visible,
+            # Dynamic providers run at generation time, so the frontend must
+            # not satisfy an execution from its local generated-code cache.
+            "chatbook_has_context_providers": bool(
+                ai_service_manager.get_chatbook_context_providers()
+            ),
+            # Rules and AGENTS.md are applied at generation time, so the
+            # frontend must not reuse locally cached Python for an unchanged
+            # prompt when guidelines can change independently.
+            "chatbook_has_guidelines": has_chatbook_guidelines(
+                ai_service_manager
+            ),
+            "chatbook_execution_mode": clamp_execution_mode(
+                nbi_config.chatbook_execution_mode,
+                getattr(
+                    self,
+                    "chatbook_max_execution_mode",
+                    DEFAULT_CHATBOOK_MAX_EXECUTION_MODE,
+                ),
+            ),
+            "chatbook_llm_danger_scan": nbi_config.chatbook_llm_danger_scan,
+            "chatbook_backend_kernel": nbi_config.chatbook_backend_kernel,
+            "chatbook_max_execution_mode": parse_execution_mode(
+                getattr(
+                    self,
+                    "chatbook_max_execution_mode",
+                    DEFAULT_CHATBOOK_MAX_EXECUTION_MODE,
+                ),
+                DEFAULT_CHATBOOK_MAX_EXECUTION_MODE,
+            ),
+            "chatbook_enabled": self.chatbook_enabled,
             # Single source of truth lives on each domain's base handler so
             # `_setup_handlers` only writes one site per flag.
             "allow_github_skill_import": SkillsBaseHandler.allow_github_skill_import,
@@ -808,9 +969,155 @@ class GetCapabilitiesHandler(APIHandler):
 
         self.finish(json.dumps(response))
 
+class ChatbookGenerateHandler(APIHandler):
+    """Generate either Python or an English representation for Chatbook."""
+
+    chatbook_enabled = True
+
+    @tornado.web.authenticated
+    async def post(self):
+        if _finish_if_chatbook_disabled(self):
+            return
+        try:
+            data = json.loads(self.request.body or b"{}")
+        except json.JSONDecodeError:
+            self.set_status(400)
+            self.finish(json.dumps({"error": "Invalid JSON body"}))
+            return
+        operation = (
+            data.get("operation", "generate")
+            if isinstance(data, dict)
+            else "generate"
+        )
+        prompt = data.get("prompt") if isinstance(data, dict) else None
+        code_source = data.get("code") if isinstance(data, dict) else None
+        field, required_text = _required_chatbook_generate_field(
+            data if isinstance(data, dict) else {}
+        )
+        if not required_text:
+            self.set_status(400)
+            self.finish(json.dumps({"error": f"{field} is required"}))
+            return
+        if field == "code":
+            code_source = required_text
+        else:
+            prompt = required_text
+        notebook_context = None
+        notebook_path = ""
+        cell_id = ""
+        prompt_hash = ""
+        context_hash = ""
+        language = "python"
+        if isinstance(data, dict):
+            notebook_context = data.get("notebookContext") or data.get(
+                "notebook_context"
+            )
+            if not isinstance(notebook_context, dict):
+                notebook_context = None
+            notebook_path = str(
+                data.get("notebookPath") or data.get("notebook_path") or ""
+            )
+            cell_id = str(data.get("cellId") or data.get("cell_id") or "")
+            prompt_hash = str(
+                data.get("promptHash") or data.get("prompt_hash") or ""
+            )
+            context_hash = str(
+                data.get("contextHash") or data.get("context_hash") or ""
+            )
+            language = str(data.get("language") or "python")
+        try:
+            if operation == "summarize":
+                english = await tornado.ioloop.IOLoop.current().run_in_executor(
+                    None,
+                    lambda: summarize_chatbook_code(
+                        ai_service_manager, str(code_source), language
+                    ),
+                )
+                self.finish(json.dumps({"prompt": english}))
+                return
+            if operation == "danger_scan":
+                scan = await tornado.ioloop.IOLoop.current().run_in_executor(
+                    None,
+                    lambda: classify_generated_code_danger(
+                        ai_service_manager, str(code_source), language
+                    ),
+                )
+                self.finish(json.dumps(scan))
+                return
+            code = await tornado.ioloop.IOLoop.current().run_in_executor(
+                None,
+                lambda: generate_chatbook_code(
+                    ai_service_manager,
+                    prompt,
+                    notebook_context,
+                    notebook_path,
+                    cell_id,
+                    prompt_hash,
+                    context_hash,
+                    language,
+                ),
+            )
+        except ChatbookCodegenError as exc:
+            self.set_status(400)
+            self.finish(json.dumps({"error": str(exc)}))
+            return
+        except Exception as exc:
+            log.error("Chatbook generate failed: %s", exc)
+            self.set_status(500)
+            message = (
+                "Chatbook English generation failed"
+                if operation == "summarize"
+                else "Chatbook code generation failed"
+            )
+            self.finish(json.dumps({"error": message}))
+            return
+        self.finish(json.dumps({"generatedCode": code}))
+
+
+class ChatbookMentionsHandler(APIHandler):
+    """List built-in and extension-provided mentions for Chatbook NL cells."""
+
+    chatbook_enabled = True
+
+    @tornado.web.authenticated
+    async def get(self):
+        if _finish_if_chatbook_disabled(self):
+            return
+        parent = self.get_query_argument("parent", default="")
+        query = self.get_query_argument("query", default="")
+        notebook_path = self.get_query_argument("notebookPath", default="")
+        try:
+            limit = int(self.get_query_argument("limit", default="100"))
+        except ValueError:
+            limit = 100
+        skipped = []
+        nbi_config = getattr(ai_service_manager, "nbi_config", None)
+        if nbi_config is not None:
+            skipped = nbi_config.additional_skipped_workspace_directories
+        try:
+            response = await tornado.ioloop.IOLoop.current().run_in_executor(
+                None,
+                lambda: list_chatbook_mentions(
+                    parent=parent,
+                    query=query,
+                    limit=limit,
+                    skipped_directories=skipped,
+                    providers=ai_service_manager.get_chatbook_mention_providers(),
+                    notebook_path=notebook_path,
+                ),
+            )
+        except Exception as exc:
+            log.error("Chatbook mention listing failed: %s", exc)
+            self.set_status(500)
+            self.finish(json.dumps({"error": "Could not list workspace mentions"}))
+            return
+        self.finish(json.dumps(response))
+
+
 class ConfigHandler(APIHandler):
     feature_policies = {}
     string_overrides = {}
+    chatbook_max_execution_mode = DEFAULT_CHATBOOK_MAX_EXECUTION_MODE
 
     @tornado.web.authenticated
     def post(self):
@@ -829,6 +1136,9 @@ class ConfigHandler(APIHandler):
             "enable_output_followup",
             "enable_output_toolbar",
             "refresh_open_files_on_disk_change",
+            "chatbook_execution_mode",
+            "chatbook_llm_danger_scan",
+            "chatbook_backend_kernel",
         ])
         # Top-level keys whose write is rejected outright when locked.
         locked_keys = set()
@@ -857,14 +1167,18 @@ class ConfigHandler(APIHandler):
         has_model_change = False
         has_claude_settings_change = False
         has_acp_settings_change = False
-        # Captured before the loop so the exclusivity check below can tell
-        # which mode this POST newly enabled.
+        # Captured before the reload and the loop, so the exclusivity check and
+        # the change checks below compare against the state this server is
+        # running with, not whatever config.json holds now.
         prior_claude_enabled = bool(
             (ai_service_manager.nbi_config.get("claude_settings") or {}).get("enabled", False)
         )
-        prior_acp_enabled = bool(
-            (ai_service_manager.nbi_config.get("acp_settings") or {}).get("enabled", False)
-        )
+        prior_acp_settings = ai_service_manager.nbi_config.get("acp_settings") or {}
+        prior_acp_enabled = bool(prior_acp_settings.get("enabled", False))
+        # Re-read config.json before applying the POST, as the GET handlers do.
+        # The whole config is saved below, so without a reload a hand edit made
+        # while the server runs is overwritten by the next settings POST.
+        ai_service_manager.nbi_config.load()
         for key in data:
             if key in locked_keys:
                 continue
@@ -891,6 +1205,14 @@ class ConfigHandler(APIHandler):
                     continue
                 has_model_change = True
             elif key == "claude_settings":
+                # The settings panel posts only the keys it renders, so merge
+                # onto the stored value instead of replacing it. Otherwise a key
+                # set by hand in config.json, such as jupyter_ui_tools_external,
+                # is erased the first time the Claude tab opens.
+                if isinstance(value, dict):
+                    stored = ai_service_manager.nbi_config.get("claude_settings")
+                    if isinstance(stored, dict):
+                        value = {**stored, **value}
                 value = apply_claude_policies(value, self.feature_policies)
                 value = apply_string_overrides(
                     value, self.string_overrides, CLAUDE_SETTINGS_OVERRIDES
@@ -917,9 +1239,7 @@ class ConfigHandler(APIHandler):
                 # against the raw stored value (not the acp_settings property,
                 # which re-injects env overrides such as OPENAI_API_KEY and would
                 # never match the scrubbed value we persist).
-                has_acp_settings_change = (
-                    value != (ai_service_manager.nbi_config.get("acp_settings") or {})
-                )
+                has_acp_settings_change = value != prior_acp_settings
             elif key == "perf_diagnostics":
                 value = apply_perf_policies(value, self.feature_policies)
                 value = apply_string_overrides(
@@ -934,6 +1254,21 @@ class ConfigHandler(APIHandler):
                     bool(value.get('enabled', False)),
                     self.string_overrides.get('perf_diagnostics_enabled', ''),
                 )
+            elif key == "chatbook_execution_mode":
+                value = clamp_execution_mode(
+                    value,
+                    getattr(
+                        self,
+                        "chatbook_max_execution_mode",
+                        DEFAULT_CHATBOOK_MAX_EXECUTION_MODE,
+                    ),
+                )
+            elif key == "chatbook_llm_danger_scan":
+                value = bool(value)
+            elif key == "chatbook_backend_kernel":
+                value = str(value or "").strip()
+                if value == "chatbook":
+                    value = ""
             ai_service_manager.nbi_config.set(key, value)
             if key == "store_github_access_token":
                 if value:
@@ -988,6 +1323,16 @@ class ConfigHandler(APIHandler):
                 acp_settings["enabled"] = False
                 ai_service_manager.nbi_config.set("acp_settings", acp_settings)
                 has_acp_settings_change = True
+        elif prior_claude_enabled and not claude_enabled:
+            # Claude was on and is off now. When the POST turned it off, the
+            # loop already queued this update and the call coalesces. When the
+            # reload picked up a disable written to config.json, nothing else
+            # disconnects the live client: the check at the end of this handler
+            # runs after update_models_from_config has swapped the participant.
+            has_claude_settings_change = True
+            default_chat_participant = ai_service_manager.default_chat_participant
+            if isinstance(default_chat_participant, ClaudeCodeChatParticipant):
+                default_chat_participant.update_client_debounced()
 
         ai_service_manager.nbi_config.save()
         perf.configure(
@@ -3844,10 +4189,13 @@ class NotebookIntelligence(ExtensionApp):
         default_value=POLICY_FORCE_OFF,
         help="""
         Org-wide policy for ACP agent "full access" (#378): running tools
-        autonomously without asking. Defaults to force-off, so the agent is
-        pinned to ask before anything beyond trusted read-only commands. Set
-        to user-choice to let users opt into unattended runs, or force-on to
-        require it. Overridden by the NBI_ACP_FULL_ACCESS_POLICY env var.
+        autonomously without asking, inside Codex's workspace-write sandbox
+        (writes limited to the workspace and temp directories, network off,
+        unless Codex's own config widens it). Defaults to force-off, so the
+        agent is pinned to ask before anything beyond trusted read-only
+        commands. Set to user-choice to let users opt into unattended runs,
+        or force-on to require it. Overridden by the
+        NBI_ACP_FULL_ACCESS_POLICY env var.
         """,
         config=True,
     )
@@ -4048,6 +4396,31 @@ class NotebookIntelligence(ExtensionApp):
         config=True,
     )
 
+    chatbook_max_execution_mode = Unicode(
+        default_value=DEFAULT_CHATBOOK_MAX_EXECUTION_MODE,
+        help="""
+        Cap how freely a user can auto-run Chatbook-generated Python.
+        Users cannot choose a more permissive NL execution mode than this
+        value. Allowed: always-confirm, confirm-if-risky, auto-run
+        (default, no cap). Overridden by
+        NBI_CHATBOOK_MAX_EXECUTION_MODE.
+        """,
+        config=True,
+    )
+
+    enable_chatbook = Bool(
+        default_value=True,
+        help="""
+        Enable Chatbook (natural-language notebooks). Default True so users
+        need no extra env var. Set False (or NBI_ENABLE_CHATBOOK=false) to
+        hide the Chatbook kernelspec, Settings tab, launcher tile, and
+        generate/mention APIs. Overridden by the NBI_ENABLE_CHATBOOK env
+        var.
+        """,
+        allow_none=True,
+        config=True,
+    )
+
     upload_max_mb = Int(
         default_value=_DEFAULT_UPLOAD_MAX_MB,
         help="""
@@ -4163,6 +4536,15 @@ class NotebookIntelligence(ExtensionApp):
         GetCapabilitiesHandler.string_overrides = string_overrides
         ConfigHandler.feature_policies = feature_policies
         ConfigHandler.string_overrides = string_overrides
+        max_mode = _resolve_chatbook_max_execution_mode(
+            getattr(self, "chatbook_max_execution_mode", DEFAULT_CHATBOOK_MAX_EXECUTION_MODE)
+        )
+        GetCapabilitiesHandler.chatbook_max_execution_mode = max_mode
+        ConfigHandler.chatbook_max_execution_mode = max_mode
+        _set_chatbook_kernelspec_execution_cap(
+            getattr(self.serverapp, "kernel_spec_manager", None),
+            max_mode,
+        )
 
     def initialize_handlers(self):
         NotebookIntelligence.root_dir = self.serverapp.root_dir
@@ -4246,6 +4628,8 @@ class NotebookIntelligence(ExtensionApp):
 
         base_url = web_app.settings["base_url"]
         route_pattern_capabilities = url_path_join(base_url, "notebook-intelligence", "capabilities")
+        route_pattern_chatbook_generate = url_path_join(base_url, "notebook-intelligence", "chatbook", "generate")
+        route_pattern_chatbook_mentions = url_path_join(base_url, "notebook-intelligence", "chatbook", "mentions")
         route_pattern_config = url_path_join(base_url, "notebook-intelligence", "config")
         route_pattern_ui_tools = url_path_join(base_url, "notebook-intelligence", "ui-tools")
         route_pattern_perf_report = url_path_join(base_url, "notebook-intelligence", "perf", "report")
@@ -4329,6 +4713,16 @@ class NotebookIntelligence(ExtensionApp):
         GetCapabilitiesHandler.enable_chat_feedback_always_visible = (
             self.enable_chat_feedback_always_visible
         )
+        chatbook_enabled = _resolve_bool_with_env(
+            "NBI_ENABLE_CHATBOOK", self.enable_chatbook
+        )
+        GetCapabilitiesHandler.chatbook_enabled = chatbook_enabled
+        ChatbookGenerateHandler.chatbook_enabled = chatbook_enabled
+        ChatbookMentionsHandler.chatbook_enabled = chatbook_enabled
+        if not chatbook_enabled:
+            _hide_chatbook_kernelspec(
+                getattr(self.serverapp, "kernel_spec_manager", None)
+            )
         # Tour copy overrides: env var wins if set, otherwise fall back to
         # the traitlet. Pre-resolve here so the handler doesn't have to
         # re-check os.environ on every call.
@@ -4402,6 +4796,8 @@ class NotebookIntelligence(ExtensionApp):
         self._publish_policies(feature_policies, string_overrides)
         NotebookIntelligence.handlers = [
             (route_pattern_capabilities, GetCapabilitiesHandler),
+            (route_pattern_chatbook_generate, ChatbookGenerateHandler),
+            (route_pattern_chatbook_mentions, ChatbookMentionsHandler),
             (route_pattern_config, ConfigHandler),
             # Always register the relay: jupyter_ui_tools_external is runtime-mutable.
             # UIToolsHandler gates every request against the live setting, so changing

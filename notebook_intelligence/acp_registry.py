@@ -9,7 +9,7 @@ startup path and loads only when ACP mode is actually used.
 
 Adding an agent type is a registry entry: its adapter package, display
 metadata, and how it authenticates. Agent-specific launch quirks that do not
-generalize (Codex's approval-policy pin, its CODEX_HOME isolation) stay keyed
+generalize (Codex's approval and sandbox pins, its CODEX_HOME isolation) stay keyed
 off the spec id in ``acp_agent`` rather than growing fields prematurely.
 """
 
@@ -96,24 +96,37 @@ def resolve_acp_agent_command(spec: AcpAgentSpec) -> list[str]:
 
 
 def codex_approval_args(full_access: bool) -> list[str]:
-    """Codex config overrides that pin its approval posture.
+    """Codex config overrides that pin its approval and sandbox posture.
 
     Default (``full_access`` off) forces ``approval_policy = untrusted`` so
     Codex asks before anything beyond trusted read-only commands, surfacing the
     request through NBI's per-tool confirmation. ``full_access`` (gated by the
     force-off ``acp_full_access`` admin policy) lets it run unattended. The
-    flag is honored by the codex-acp binary's ``-c key=value`` override, so it
-    works for both API-key and ChatGPT-auth sessions.
+    flags are honored by the codex-acp binary's ``-c key=value`` override, so
+    they work for both API-key and ChatGPT-auth sessions.
 
-    The override takes precedence over the codex config file. In the API-key
-    path NBI also isolates ``CODEX_HOME`` (see ``AcpAgentClient._child_env``),
-    so the config base is NBI-controlled and neither the workspace nor the
-    user's ~/.codex is read. With ChatGPT auth, codex uses the user's own
-    ~/.codex; the ``-c`` pin still overrides its top-level approval_policy.
-    See the admin guide for the residual caveat on shared deployments.
+    Full access also pins ``sandbox_mode = workspace-write``. Codex gives a
+    project with no trust entry a read-only sandbox, which is always the case
+    in the isolated API-key ``CODEX_HOME``, and under ``approval_policy =
+    never`` nothing can be approved past it, so without this pin full access
+    refuses every edit. ``workspace-write`` limits writes to the workspace and
+    temp directories and keeps outbound network access off, unless Codex's own
+    config widens the sandbox.
+
+    The overrides take precedence over Codex's user and project config, though
+    not over managed config. In the API-key path NBI also isolates
+    ``CODEX_HOME`` (see ``AcpAgentClient._child_env``), so the config base is
+    NBI-controlled and neither the workspace nor the user's ~/.codex is read.
+    With ChatGPT auth, codex uses the user's own ~/.codex; the ``-c`` pins
+    still override its top-level ``approval_policy`` and ``sandbox_mode``. See
+    the admin guide for the residual caveats on shared deployments.
     """
-    policy = "never" if full_access else "untrusted"
-    return ["-c", f'approval_policy="{policy}"']
+    if full_access:
+        return [
+            "-c", 'approval_policy="never"',
+            "-c", 'sandbox_mode="workspace-write"',
+        ]
+    return ["-c", 'approval_policy="untrusted"']
 
 
 def _codex_setting_value(value: Optional[str]) -> str:
@@ -157,3 +170,30 @@ def codex_model_args(acp_settings: dict) -> list[str]:
     if base_url:
         args += ["-c", f"openai_base_url={_codex_toml_string(base_url)}"]
     return args
+
+
+def codex_auth_args(api_key_env: str) -> list[str]:
+    """Codex config overrides that stop Codex from spreading an NBI-supplied key.
+
+    Pass the environment variable that carries the key, or "" when NBI does
+    not supply one (a ChatGPT sign-in), which leaves Codex's defaults alone.
+    Without these, Codex copies the key three ways:
+
+    - codex-acp's API-key authentication writes it to ``$CODEX_HOME/auth.json``,
+      and once that file exists Codex keeps using the saved key, so a changed
+      key had no effect. The ephemeral store holds it in memory instead.
+    - Codex snapshots the shell environment, key included, to
+      ``$CODEX_HOME/shell_snapshots`` when a session starts.
+    - Every command Codex runs inherits the variable, so a command (or a
+      prompt that asks for one) could print it.
+
+    This does not stop a command from reading the key where it is otherwise
+    stored, such as NBI's config.json or a shell startup file that exports it.
+    """
+    if not api_key_env:
+        return []
+    return [
+        "-c", 'cli_auth_credentials_store="ephemeral"',
+        "-c", "features.shell_snapshot=false",
+        "-c", f"shell_environment_policy.exclude=[{_codex_toml_string(api_key_env)}]",
+    ]

@@ -1,15 +1,36 @@
 # Copyright (c) Mehmet Bektas <mbektasgh@outlook.com>
 
 import json
+import time
 from typing import Any
 from notebook_intelligence.api import ChatModel, EmbeddingModel, InlineCompletionModel, LLMProvider, CancelToken, ChatResponse, CompletionContext
 import logging
 
+from notebook_intelligence.inline_completion import (
+    chatbook_inline_prefix_hint,
+    extract_inline_completion,
+    is_chatbook_inline_language,
+)
 from notebook_intelligence.util import extract_llm_generated_code
 
 log = logging.getLogger(__name__)
 
 OLLAMA_EMBEDDING_FAMILIES = set(["nomic-bert", "bert"])
+# Bounds one enumeration request. The ollama package passes timeout=None to
+# httpx, so a host that drops packets instead of refusing them takes the OS
+# connect timeout (75s on macOS), and the capabilities handler that reads
+# chat_models is synchronous: that wait lands on the event-loop thread serving
+# every other request in the process (#427). Deliberately generous rather than
+# tight, because /api/show is a metadata read that a loaded host still answers
+# slowly, and a model whose metadata times out drops out of the list.
+OLLAMA_ENUMERATION_TIMEOUT_S = 5.0
+# Wall clock for a whole enumeration. The per-request bound alone scales with
+# the model count, one /api/show apiece, which is how a host that answers the
+# listing and then stalls still held the event loop for tens of seconds. Past
+# the budget the remaining models are left out and the warning says how many.
+# The completion calls in this file stay unbounded on purpose: they run on the
+# threaded request path, and capping a streaming generation would break it.
+OLLAMA_ENUMERATION_BUDGET_S = 6.0
 QWEN_INLINE_COMPL_PROMPT = """<|fim_prefix|>{prefix}<|fim_suffix|>{suffix}<|fim_middle|>"""
 DEEPSEEK_INLINE_COMPL_PROMPT = """<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>"""
 CODELLAMA_INLINE_COMPL_PROMPT = """<PRE> {prefix} <SUF>{suffix} <MID>"""
@@ -103,6 +124,8 @@ class OllamaInlineCompletionModel(InlineCompletionModel):
 
     def inline_completions(self, prefix, suffix, language, filename, context: CompletionContext, cancel_token: CancelToken) -> str:
         import ollama
+        if is_chatbook_inline_language(language):
+            prefix = chatbook_inline_prefix_hint() + prefix
         has_suffix = suffix.strip() != ""
         if has_suffix:
             prompt = self._prompt_template.format(prefix=prefix, suffix=suffix.strip())
@@ -131,6 +154,8 @@ class OllamaInlineCompletionModel(InlineCompletionModel):
 
             ollama_response = ollama.generate(**generate_args)
             code = ollama_response.response
+            if is_chatbook_inline_language(language):
+                return extract_inline_completion(code, language)
             code = extract_llm_generated_code(code)
 
             return code
@@ -142,7 +167,7 @@ class OllamaLLMProvider(LLMProvider):
     def __init__(self):
         super().__init__()
         self._chat_models = []
-        self.update_chat_model_list()
+        self._chat_models_loaded = False
 
     @property
     def id(self) -> str:
@@ -154,6 +179,12 @@ class OllamaLLMProvider(LLMProvider):
 
     @property
     def chat_models(self) -> list[ChatModel]:
+        # Enumerating imports the ollama SDK and calls the Ollama host, so it
+        # waits for a caller that wants the list instead of running in the
+        # constructor, which every server start paid for whatever the
+        # configured provider was (#427).
+        if not self._chat_models_loaded:
+            self.update_chat_model_list()
         return self._chat_models
 
     @property
@@ -171,23 +202,44 @@ class OllamaLLMProvider(LLMProvider):
         return []
     
     def update_chat_model_list(self):
+        # Set before the attempt, not after: an unreachable host would
+        # otherwise retry and re-log on every access of the property.
+        self._chat_models_loaded = True
         try:
             import ollama
-            response = ollama.list()
-            models = response.models
-            self._chat_models = []
-            for model in models:
-                try:
-                    model_family = model.details.family
-                    if model_family in OLLAMA_EMBEDDING_FAMILIES:
-                        continue
-                    model_show = ollama.show(model.model)
-                    model_info = model_show.modelinfo
-                    context_window = model_info[f"{model_family}.context_length"]
-                    self._chat_models.append(
-                        OllamaChatModel(self, model.model, model.model, context_window)
+            with ollama.Client(timeout=OLLAMA_ENUMERATION_TIMEOUT_S) as client:
+                response = client.list()
+                models = []
+                skipped = 0
+                deadline = time.monotonic() + OLLAMA_ENUMERATION_BUDGET_S
+                for model in response.models:
+                    try:
+                        model_family = model.details.family
+                        if model_family in OLLAMA_EMBEDDING_FAMILIES:
+                            continue
+                        if time.monotonic() >= deadline:
+                            skipped += 1
+                            continue
+                        model_show = client.show(model.model)
+                        model_info = model_show.modelinfo
+                        context_window = model_info[f"{model_family}.context_length"]
+                        models.append(
+                            OllamaChatModel(self, model.model, model.model, context_window)
+                        )
+                    except Exception as e:
+                        log.error(f"Error getting Ollama model info {model}: {e}")
+                if skipped:
+                    log.warning(
+                        f"Ollama model list is short {skipped} model(s): the host did "
+                        f"not answer within {OLLAMA_ENUMERATION_BUDGET_S:.0f}s. Use "
+                        f"Refresh models in NBI Settings to try again."
                     )
-                except Exception as e:
-                    log.error(f"Error getting Ollama model info {model}: {e}")
+                # Rebound once, after the list is complete, so a reader on
+                # another thread cannot serialize a half-built list: readiness
+                # reads this property on a pool thread while a capabilities GET
+                # reads it on the event loop. Assigning only on success also
+                # keeps the models the dropdown already had when a refresh
+                # fails.
+                self._chat_models = models
         except Exception as e:
             log.warning(f"Failed to update supported Ollama models: {e}")
