@@ -138,6 +138,20 @@ Agent-mode tool loops are not budgeted; this applies to ask mode and the built-i
 
 Tune the debounce delay in NBI Settings → Inline completion. Lower delays mean more requests, which means higher cost on paid providers. The default balances responsiveness against cost.
 
+## Claude auto-complete suggests nothing
+
+Claude mode signs in through the Claude CLI, which accepts a subscription login. Auto-complete does not go through the CLI: it calls the Anthropic API directly, so it needs a credential of its own. When none is visible to the Jupyter server, NBI leaves Claude auto-complete off and logs one warning per server run rather than failing on every pause in your typing.
+
+Either give the server a credential or point auto-complete elsewhere:
+
+- Add an **API key** under NBI Settings → Claude. This takes effect on save; no restart is needed.
+- Or set `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) in the JupyterLab process environment. A process environment is fixed at launch, so export it **before** starting JupyterLab; exporting it in another shell afterwards has no effect. On current Anthropic SDK releases an `ANTHROPIC_PROFILE` or config-dir profile, the workload-identity variables, and a credential passed through `ANTHROPIC_CUSTOM_HEADERS` count as well. A variable set to an empty or whitespace value does not count, which is worth checking if your deployment writes `ANTHROPIC_API_KEY=` into an env file.
+- Or set **Auto-complete model** to **None** to leave the feature off, or to **Inherit from general settings** to have your general inline-completion provider serve suggestions instead.
+
+If your administrator pins the auto-complete model, that dropdown is disabled and the only remedy is giving the server a credential.
+
+A misconfigured credential is a different case: an `ANTHROPIC_PROFILE` or `ANTHROPIC_CONFIG_DIR` pointing at files the Anthropic SDK cannot read logs `Could not create the Claude inline completion model` with the underlying error instead of the warning above. Fix the profile path rather than adding a key.
+
 ## Still stuck?
 
 - Check [GitHub issues](https://github.com/plmbr/notebook-intelligence/issues) for similar reports.

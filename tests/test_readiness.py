@@ -238,6 +238,66 @@ def test_anthropic_key_from_env_is_reported_by_source_not_value():
     assert "sk-ant-secret" not in json.dumps(doc)
 
 
+def test_anthropic_auth_token_counts_as_a_credential():
+    """ANTHROPIC_AUTH_TOKEN authenticates the SDK just as an API key does.
+
+    Reporting "no credential" for a server holding one would send an operator
+    looking for a problem that is not there.
+    """
+    with patch.object(rd, "resolve_claude_cli_path", return_value=None), patch.dict(
+        rd.os.environ, {"ANTHROPIC_AUTH_TOKEN": "tok-secret"}, clear=True
+    ):
+        doc = rd.run_readiness(_config(), _manager(mode="claude"))
+    row = _by_id(doc)["claude.credentials"]
+    assert row["level"] == rd.LEVEL_OK
+    assert "ANTHROPIC_AUTH_TOKEN" in row["detail"]
+    assert "tok-secret" not in json.dumps(doc)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"ANTHROPIC_CUSTOM_HEADERS": "X-Api-Key: hdr-placeholder"},
+        {"ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer placeholder"},
+        {
+            "ANTHROPIC_IDENTITY_TOKEN": "idtok-placeholder",
+            "ANTHROPIC_FEDERATION_RULE_ID": "rule-placeholder",
+            "ANTHROPIC_ORGANIZATION_ID": "org-placeholder",
+        },
+    ],
+)
+def test_credentials_row_never_asserts_a_feature_is_off(env):
+    """This row sees one settings field and two environment variables.
+
+    The SDK sees more: a profile, the workload-identity variables, and an
+    ANTHROPIC_CUSTOM_HEADERS header all authenticate inline completions while
+    leaving this row reporting "not visible". An earlier draft of this row
+    claimed auto-complete was disabled, which was false in exactly the three
+    non-empty environments below, and sent the operator looking for a
+    credential they already had.
+    """
+    with patch.object(rd, "resolve_claude_cli_path", return_value=None), patch.dict(
+        rd.os.environ, env, clear=True
+    ):
+        doc = rd.run_readiness(_config(), _manager(mode="claude"))
+    row = _by_id(doc)["claude.credentials"]
+    assert row["level"] in (rd.LEVEL_OK, rd.LEVEL_WARN)
+    assert "disabled" not in json.dumps(row).lower()
+
+
+def test_missing_credential_row_points_at_the_symptom():
+    """The row still has to be useful, not merely inoffensive."""
+    with patch.object(rd, "resolve_claude_cli_path", return_value=None), patch.dict(
+        rd.os.environ, {}, clear=True
+    ):
+        doc = rd.run_readiness(_config(), _manager(mode="claude"))
+    row = _by_id(doc)["claude.credentials"]
+    assert row["level"] == rd.LEVEL_WARN
+    assert "auto-complete" in row["remedy"].lower()
+    assert "subscription login" in row["remedy"]
+
+
 def test_claude_mode_does_not_run_provider_checks():
     """Claude mode does not use the native provider path, so reporting an
     unconfigured chat model there would be a false alarm."""
