@@ -184,17 +184,30 @@ Recommended approach for clusters:
 
 NBI's `openai-compatible` and `litellm-compatible` providers can target any endpoint that speaks the respective wire format.
 
+Endpoint settings live on the model selection, not in a separate provider block. Each provider declares properties (`base_url`, `api_key`, `model_id`, `context_window`) and NBI applies the saved `properties` list to the selected model at startup, so a preconfigured `config.json` sets `chat_model` and `inline_completion_model` directly.
+
+Four things to know before copying an example:
+
+- **The `model` field is a fixed placeholder id** for these two providers (`openai-compatible-chat-model`, `litellm-compatible-chat-model`, and the matching `-inline-completion-model` ids), because the real upstream model name goes in the `model_id` property. The model dropdown will show that placeholder rather than `gpt-4`, which is expected and not a sign the config was ignored.
+- **`api_key` has to be set here.** Contrary to the [API-key handling](#api-key-handling) section above, the `openai-compatible` provider does not fall back to `OPENAI_API_KEY`: it passes its stored value through even when empty, and the OpenAI SDK only consults the environment when no key was supplied at all. Injecting the key some other way (templating this file at pod startup, mounting it from a secret) is currently the only way to keep it out of the config.
+- **`${ENV_VAR}` interpolation is not supported** anywhere in `config.json`, per the note above, so every value here is literal.
+- **Set `context_window` if your endpoint's window is smaller than the model's usual one.** When it is unset, NBI does not prune chat history at all rather than assuming a default, so a long conversation against a locally served 8K model will overflow it.
+
 **Azure OpenAI** (via the `openai-compatible` provider):
 
 ```json
 {
-  "providers": {
-    "openai-compatible": {
-      "base_url": "https://my-resource.openai.azure.com/openai/deployments/gpt-4-deployment",
-      "api_key": "${AZURE_OPENAI_KEY}",
-      "default_chat_model": "gpt-4",
-      "default_inline_completion_model": "gpt-4"
-    }
+  "chat_model": {
+    "provider": "openai-compatible",
+    "model": "openai-compatible-chat-model",
+    "properties": [
+      {
+        "id": "base_url",
+        "value": "https://my-resource.openai.azure.com/openai/deployments/gpt-4-deployment"
+      },
+      { "id": "api_key", "value": "REPLACE_WITH_YOUR_AZURE_KEY" },
+      { "id": "model_id", "value": "gpt-4" }
+    ]
   }
 }
 ```
@@ -203,12 +216,14 @@ NBI's `openai-compatible` and `litellm-compatible` providers can target any endp
 
 ```json
 {
-  "providers": {
-    "openai-compatible": {
-      "base_url": "http://internal-vllm.example.com:8000/v1",
-      "api_key": "any-string-the-server-accepts",
-      "default_chat_model": "meta-llama/Meta-Llama-3-70B-Instruct"
-    }
+  "chat_model": {
+    "provider": "openai-compatible",
+    "model": "openai-compatible-chat-model",
+    "properties": [
+      { "id": "base_url", "value": "http://internal-vllm.example.com:8000/v1" },
+      { "id": "api_key", "value": "any-string-the-server-accepts" },
+      { "id": "model_id", "value": "meta-llama/Meta-Llama-3-70B-Instruct" }
+    ]
   }
 }
 ```
@@ -217,16 +232,23 @@ NBI's `openai-compatible` and `litellm-compatible` providers can target any endp
 
 ```json
 {
-  "providers": {
-    "litellm-compatible": {
-      "base_url": "https://litellm.internal.example.com",
-      "api_key": "${LITELLM_TOKEN}"
-    }
+  "chat_model": {
+    "provider": "litellm-compatible",
+    "model": "litellm-compatible-chat-model",
+    "properties": [
+      { "id": "base_url", "value": "https://litellm.internal.example.com" },
+      { "id": "api_key", "value": "REPLACE_WITH_YOUR_LITELLM_TOKEN" },
+      { "id": "model_id", "value": "bedrock/anthropic.claude-3-5-sonnet" }
+    ]
   }
 }
 ```
 
-Bake the base config into your image and let users select their model from the dropdown.
+To preconfigure autocomplete as well, add an `inline_completion_model` block of the same shape using the provider's `-inline-completion-model` id.
+
+Bake the base config into your image and let users select their model from the dropdown; the dropdown writes back to these same two keys.
+
+To confirm the file was picked up rather than silently ignored, check the Status card in NBI Settings or `GET /notebook-intelligence/readiness` (see [Configuration readiness](#configuration-readiness)). It reports whether a provider and model are selected and whether the endpoint actually serves the configured model id, which is the fastest way to catch a typo in one of these blocks.
 
 ---
 
@@ -289,20 +311,26 @@ c.NotebookIntelligence.disabled_tools = ["nbi-command-execute", "nbi-file-edit"]
 c.NotebookIntelligence.allow_enabling_tools_with_env = False
 ```
 
-Pair with `<env-prefix>/share/jupyter/nbi/config.json` shipping an Ollama provider preconfigured against your local model:
+Pair with `<env-prefix>/share/jupyter/nbi/config.json` selecting the Ollama provider and your local models:
 
 ```json
 {
-  "default_provider": "ollama",
-  "providers": {
-    "ollama": {
-      "base_url": "http://ollama-internal.example.com:11434",
-      "default_chat_model": "llama3:70b",
-      "default_inline_completion_model": "codellama:7b"
-    }
+  "chat_model": {
+    "provider": "ollama",
+    "model": "llama3:70b",
+    "properties": []
+  },
+  "inline_completion_model": {
+    "provider": "ollama",
+    "model": "codellama:7b-code",
+    "properties": []
   }
 }
 ```
+
+Chat-model ids are whatever tags the Ollama host reports, so `model` is the tag as `ollama list` shows it. Autocomplete ids come from a fixed list in the provider instead: `deepseek-coder-v2`, `qwen2.5-coder`, `codestral`, `starcoder2`, and `codellama:7b-code`.
+
+> **A remote Ollama host is set in the environment, not in this file.** Unlike the `openai-compatible` and `litellm-compatible` providers, the Ollama provider declares no `base_url` property, so there is no config key for it and setting one has no effect. Export `OLLAMA_HOST` (for example `http://ollama-internal.example.com:11434`) in the environment the Jupyter server is launched with; the Ollama client reads it directly. A process environment is fixed at launch, so export it **before** starting JupyterLab. Copying the JSON above without doing this points NBI at the default local host and fails with no error.
 
 Block egress to all external LLM hosts at the network layer as defense in depth (see [`PRIVACY.md`](../PRIVACY.md#egress-allowlist) for the full list).
 
