@@ -56,7 +56,7 @@ For other backend languages the static scan fails closed (treats the cell as ris
 
 ## Enabling and disabling
 
-Chatbook is on by default. Users do not set an environment variable. An admin can turn it off with `NBI_ENABLE_CHATBOOK=false` (traitlet `enable_chatbook`). That hides the Chatbook kernelspec from the launcher and kernel picker, hides the Settings → Chatbook tab and Chatbook commands, and returns HTTP 403 from the generate and mention APIs.
+Chatbook is on by default. Users do not set an environment variable. An admin can turn it off with `NBI_CHATBOOK_POLICY=force-off` (traitlet `chatbook_policy`), the same admin policy shape NBI uses for its other features. That hides the Chatbook kernelspec from the launcher and kernel picker, hides the Settings → Chatbook tab and Chatbook commands, and returns HTTP 403 from the generate and mention APIs. See [Disabling Chatbook natural-language notebooks](admin-guide.md#disabling-chatbook-natural-language-notebooks) in the admin guide.
 
 ## Admin cap
 

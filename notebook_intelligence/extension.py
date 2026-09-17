@@ -579,6 +579,7 @@ FEATURE_POLICY_SPEC = (
         "NBI_REFRESH_OPEN_FILES_ON_DISK_CHANGE_POLICY",
         "refresh_open_files_on_disk_change_policy",
     ),
+    ("chatbook", "NBI_CHATBOOK_POLICY", "chatbook_policy"),
 )
 FEATURE_POLICY_NAMES = tuple(name for name, _, _ in FEATURE_POLICY_SPEC)
 
@@ -655,6 +656,7 @@ def _build_feature_policies_response(policies: dict, nbi_config) -> dict:
         "skills_management": True,
         "claude_mcp_management": True,
         "claude_plugins_management": True,
+        "chatbook": True,
         # Gates only whether the Bypass Permissions option is offered in
         # the permission-mode selector; the user still arms it per
         # session. force-on grants the same availability as user-choice
@@ -764,7 +766,6 @@ class GetCapabilitiesHandler(APIHandler):
     string_overrides = {}
     perf_probe_network_allowed = True
     chatbook_max_execution_mode = DEFAULT_CHATBOOK_MAX_EXECUTION_MODE
-    chatbook_enabled = True
     # Resolved at extension init from NBI_TOUR_CONFIG_PATH (or the
     # tour_config_path traitlet). Empty string disables the override.
     tour_config_path = ""
@@ -921,7 +922,6 @@ class GetCapabilitiesHandler(APIHandler):
                 ),
                 DEFAULT_CHATBOOK_MAX_EXECUTION_MODE,
             ),
-            "chatbook_enabled": self.chatbook_enabled,
             # Single source of truth lives on each domain's base handler so
             # `_setup_handlers` only writes one site per flag.
             "allow_github_skill_import": SkillsBaseHandler.allow_github_skill_import,
@@ -4409,16 +4409,18 @@ class NotebookIntelligence(ExtensionApp):
         config=True,
     )
 
-    enable_chatbook = Bool(
-        default_value=True,
+    chatbook_policy = TraitletEnum(
+        list(VALID_POLICIES),
+        default_value=POLICY_USER_CHOICE,
         help="""
-        Enable Chatbook (natural-language notebooks). Default True so users
-        need no extra env var. Set False (or NBI_ENABLE_CHATBOOK=false) to
-        hide the Chatbook kernelspec, Settings tab, launcher tile, and
-        generate/mention APIs. Overridden by the NBI_ENABLE_CHATBOOK env
-        var.
+        Org-wide policy for Chatbook (natural-language notebook cells).
+        "user-choice" (default) and "force-on" both leave Chatbook available;
+        there is no user toggle, so the three-value shape is kept for symmetry
+        with the other feature_policies. "force-off" hides the Chatbook
+        kernelspec, launcher tile, Settings tab, and commands, and returns 403
+        from the generate and mention APIs. Overridden by the
+        NBI_CHATBOOK_POLICY env var.
         """,
-        allow_none=True,
         config=True,
     )
 
@@ -4714,10 +4716,7 @@ class NotebookIntelligence(ExtensionApp):
         GetCapabilitiesHandler.enable_chat_feedback_always_visible = (
             self.enable_chat_feedback_always_visible
         )
-        chatbook_enabled = _resolve_bool_with_env(
-            "NBI_ENABLE_CHATBOOK", self.enable_chatbook
-        )
-        GetCapabilitiesHandler.chatbook_enabled = chatbook_enabled
+        chatbook_enabled = not is_force_off(feature_policies, "chatbook")
         ChatbookGenerateHandler.chatbook_enabled = chatbook_enabled
         ChatbookMentionsHandler.chatbook_enabled = chatbook_enabled
         if not chatbook_enabled:

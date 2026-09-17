@@ -204,6 +204,19 @@ class TestBuildFeaturePoliciesResponse:
             "locked": True,
         }
 
+    def test_chatbook_is_an_admin_only_gate(self):
+        # No user toggle: open by default, closed and locked only by force-off.
+        assert _build_feature_policies_response({}, _config())["chatbook"] == {
+            "enabled": True,
+            "locked": False,
+        }
+        assert _build_feature_policies_response(
+            {"chatbook": POLICY_FORCE_ON}, _config()
+        )["chatbook"] == {"enabled": True, "locked": True}
+        assert _build_feature_policies_response(
+            {"chatbook": POLICY_FORCE_OFF}, _config()
+        )["chatbook"] == {"enabled": False, "locked": True}
+
 
 class TestBuildSettingLocksResponse:
     def test_empty_overrides_means_nothing_locked(self):

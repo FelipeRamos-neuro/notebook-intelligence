@@ -557,16 +557,22 @@ describe('chatbook-core', () => {
 });
 
 describe('NBIConfig.chatbookEnabled', () => {
-  it('defaults on when capabilities omit the flag', () => {
+  it('defaults on when the backend sends no chatbook policy', () => {
     const config = new NBIConfig();
+    expect(config.chatbookEnabled).toBe(true);
+    config.capabilities = { feature_policies: {} };
     expect(config.chatbookEnabled).toBe(true);
   });
 
-  it('is false only when capabilities explicitly disable Chatbook', () => {
+  it('follows the chatbook feature policy', () => {
     const config = new NBIConfig();
-    config.capabilities = { chatbook_enabled: false };
+    config.capabilities = {
+      feature_policies: { chatbook: { enabled: false, locked: true } }
+    };
     expect(config.chatbookEnabled).toBe(false);
-    config.capabilities = { chatbook_enabled: true };
+    config.capabilities = {
+      feature_policies: { chatbook: { enabled: true, locked: true } }
+    };
     expect(config.chatbookEnabled).toBe(true);
   });
 });

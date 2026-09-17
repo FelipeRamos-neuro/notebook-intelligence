@@ -8,20 +8,55 @@ from jupyter_client.kernelspec import NoSuchKernel
 
 from notebook_intelligence.extension import (
     CHATBOOK_DISABLED_MESSAGE,
+    FEATURE_POLICY_DEFAULTS,
+    FEATURE_POLICY_SPEC,
     ChatbookGenerateHandler,
     ChatbookMentionsHandler,
-    GetCapabilitiesHandler,
+    NotebookIntelligence,
     _finish_if_chatbook_disabled,
     _hide_chatbook_kernelspec,
     _required_chatbook_generate_field,
+    _resolve_policy_with_env,
     _set_chatbook_kernelspec_execution_cap,
+)
+from notebook_intelligence.feature_flags import (
+    POLICY_FORCE_OFF,
+    POLICY_FORCE_ON,
+    POLICY_USER_CHOICE,
+    is_force_off,
 )
 
 
 def test_chatbook_enabled_defaults_on():
-    assert GetCapabilitiesHandler.chatbook_enabled is True
     assert ChatbookGenerateHandler.chatbook_enabled is True
     assert ChatbookMentionsHandler.chatbook_enabled is True
+
+
+def test_chatbook_policy_is_a_standard_feature_policy():
+    assert ("chatbook", "NBI_CHATBOOK_POLICY", "chatbook_policy") in FEATURE_POLICY_SPEC
+    assert FEATURE_POLICY_DEFAULTS["chatbook"] == POLICY_USER_CHOICE
+    assert NotebookIntelligence.class_traits()["chatbook_policy"].default_value == (
+        POLICY_USER_CHOICE
+    )
+    assert "enable_chatbook" not in NotebookIntelligence.class_traits()
+
+
+@pytest.mark.parametrize(
+    "env_value, gate_open",
+    [
+        (None, True),
+        (POLICY_USER_CHOICE, True),
+        (POLICY_FORCE_ON, True),
+        (POLICY_FORCE_OFF, False),
+    ],
+)
+def test_nbi_chatbook_policy_env_resolves_the_gate(monkeypatch, env_value, gate_open):
+    if env_value is None:
+        monkeypatch.delenv("NBI_CHATBOOK_POLICY", raising=False)
+    else:
+        monkeypatch.setenv("NBI_CHATBOOK_POLICY", env_value)
+    policy = _resolve_policy_with_env("NBI_CHATBOOK_POLICY", POLICY_USER_CHOICE)
+    assert (not is_force_off({"chatbook": policy}, "chatbook")) is gate_open
 
 
 def test_finish_if_chatbook_disabled_is_noop_when_enabled():
@@ -50,19 +85,6 @@ def test_hide_chatbook_kernelspec_drops_chatbook_and_is_idempotent():
 
     _hide_chatbook_kernelspec(manager)
     assert "chatbook" not in manager.find_kernel_specs()
-
-
-def test_nbi_enable_chatbook_env_overrides_traitlet(monkeypatch):
-    from notebook_intelligence.extension import _resolve_bool_with_env
-
-    monkeypatch.delenv("NBI_ENABLE_CHATBOOK", raising=False)
-    assert _resolve_bool_with_env("NBI_ENABLE_CHATBOOK", True) is True
-
-    monkeypatch.setenv("NBI_ENABLE_CHATBOOK", "false")
-    assert _resolve_bool_with_env("NBI_ENABLE_CHATBOOK", True) is False
-
-    monkeypatch.setenv("NBI_ENABLE_CHATBOOK", "true")
-    assert _resolve_bool_with_env("NBI_ENABLE_CHATBOOK", False) is True
 
 
 def test_hide_chatbook_kernelspec_accepts_none():
