@@ -223,6 +223,324 @@ class TestModelDefaults:
         assert kwargs["model"] == "claude-haiku-4-5"
 
 
+class TestInlineCompletionCredentialGuard:
+    """Issue #425: Claude Code mode signs in through the Claude CLI, so a user
+    can have no Anthropic API key at all and still get a Claude
+    inline-completion model. Inline completions call the Anthropic API
+    directly, and the SDK raises TypeError only when it builds the request, so
+    every completion attempt crashed, once per pause in typing.
+    """
+
+    @pytest.fixture(autouse=True)
+    def no_ambient_credentials(self, monkeypatch):
+        # By prefix, not by a list: the SDK keeps growing credential sources,
+        # and a fixed list silently stops isolating the day it gains one more.
+        import os
+
+        for var in [name for name in os.environ if name.startswith("ANTHROPIC_")]:
+            monkeypatch.delenv(var, raising=False)
+        # An SDK profile on disk (~/.config/anthropic/configs/default.json)
+        # authenticates with no environment variable at all, so clearing the
+        # environment does not isolate these tests on a machine that has one.
+        # Pointing ANTHROPIC_CONFIG_DIR at an empty directory is not a way out
+        # either: the SDK then raises while constructing the client.
+        monkeypatch.setattr(
+            "anthropic._client.default_credentials",
+            lambda *args, **kwargs: None,
+            raising=False,
+        )
+        import notebook_intelligence.claude as claude_module
+        monkeypatch.setattr(
+            claude_module, "_inline_completion_credential_warned", False
+        )
+        monkeypatch.setattr(
+            claude_module, "_inline_model_construction_warned", False
+        )
+
+    def _model(self, api_key=None):
+        from notebook_intelligence.claude import ClaudeCodeInlineCompletionModel
+        # An explicit id keeps the constructor off resolve_default_model, which
+        # would spawn a background model fetch.
+        return ClaudeCodeInlineCompletionModel("claude-haiku-4-5", api_key=api_key)
+
+    def _token(self):
+        token = Mock()
+        token.is_cancel_requested = False
+        return token
+
+    @pytest.mark.parametrize("api_key", [None, "", "   "])
+    def test_no_credential_yields_no_completion_instead_of_raising(self, api_key):
+        model = self._model(api_key)
+        assert model.can_authenticate is False
+        # The reported crash: this call raised TypeError from the SDK.
+        assert model.inline_completions(
+            "import os\n", "", "python", "f.py", None, self._token()
+        ) == ''
+
+    def test_settings_api_key_counts_as_configured(self):
+        assert self._model("sk-ant-settings").can_authenticate is True
+
+    def test_api_key_env_var_counts_as_configured(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+        assert self._model().can_authenticate is True
+
+    def test_auth_token_env_var_counts_as_configured(self, monkeypatch):
+        # ANTHROPIC_AUTH_TOKEN alone is valid SDK auth. Treating only api_key
+        # as a credential would disable completions for a working setup.
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok-env")
+        assert self._model().can_authenticate is True
+
+    def test_warning_is_logged_once_per_process_across_both_paths(self, caplog):
+        """The model-selection path and the request path share one warning.
+
+        Selection re-runs on every /capabilities GET, so a per-model flag
+        would coalesce nothing.
+        """
+        import logging
+
+        from notebook_intelligence.claude import (
+            warn_no_inline_completion_credential_once,
+        )
+
+        model = self._model()
+        with caplog.at_level(logging.WARNING, logger="notebook_intelligence.claude"):
+            for _ in range(3):
+                model.inline_completions("a", "b", "python", "f.py", None, self._token())
+            warn_no_inline_completion_credential_once()
+            warn_no_inline_completion_credential_once()
+        warnings = [
+            record for record in caplog.records
+            if "inline completions are disabled" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+
+    @patch("anthropic.Anthropic")
+    def test_configured_model_still_issues_the_request(self, mock_anthropic_cls):
+        """A configured credential reaches the request, via the fast path.
+
+        A bare Mock makes this vacuous twice over: it auto-creates a truthy
+        api_key, and its auto-created _validate_headers returns a Mock instead
+        of raising, so the test would pass however the guard decided. Pinning
+        the credential and making the validator refuse leaves the static
+        credential as the only thing that can allow this request, which is
+        what pins that branch.
+        """
+        from notebook_intelligence.claude import ClaudeCodeInlineCompletionModel
+
+        mock_message = Mock()
+        mock_message.content = []
+        client = mock_anthropic_cls.return_value
+        client.messages.create.return_value = mock_message
+        client.api_key = "test-key"
+        client.auth_token = None
+        client.credentials = None
+        client._validate_headers = Mock(
+            side_effect=TypeError("Could not resolve authentication method")
+        )
+        model = ClaudeCodeInlineCompletionModel("claude-haiku-4-5", api_key="test-key")
+
+        model.inline_completions("prefix", "suffix", "python", "nb.ipynb", None, self._token())
+
+        assert client.messages.create.call_count == 1
+
+    @patch("anthropic.Anthropic")
+    def test_unauthenticated_client_issues_no_request(self, mock_anthropic_cls):
+        """The negative counterpart: the guard must block, not just allow.
+
+        Without this, a gate that wrongly permits an unauthenticated client
+        would still pass the positive test above.
+        """
+        from notebook_intelligence.claude import ClaudeCodeInlineCompletionModel
+
+        client = mock_anthropic_cls.return_value
+        client.api_key = None
+        client.auth_token = None
+        client.credentials = None
+        client.default_headers = {}
+        client.auth_headers = {}
+        client._validate_headers = Mock(
+            side_effect=TypeError("Could not resolve authentication method")
+        )
+        model = ClaudeCodeInlineCompletionModel("claude-haiku-4-5", api_key=None)
+
+        result = model.inline_completions(
+            "prefix", "suffix", "python", "nb.ipynb", None, self._token()
+        )
+
+        assert result == ''
+        assert client.messages.create.call_count == 0
+
+    def test_credentials_provider_counts_as_authenticated(self, monkeypatch):
+        """A credentials provider authenticates with both attributes unset.
+
+        The workload-identity variables make the SDK resolve a provider and a
+        token cache while api_key and auth_token stay None. Judging the client
+        by those two attributes reported "no credential" and switched
+        auto-complete off for a deployment where it works.
+
+        This asserts the outcome rather than the route: the provider attribute
+        and the validator's token-cache early return both allow it, so the
+        test stays green if either one alone does the work.
+        """
+        # The class fixture stubs out default_credentials to keep an ambient
+        # profile from reaching the other tests, but that is the very call
+        # that turns these variables into a provider. Restore the real one
+        # here, or this test asserts against a client the SDK was never
+        # allowed to resolve a credential for.
+        from anthropic.lib.credentials import default_credentials
+
+        monkeypatch.setattr(
+            "anthropic._client.default_credentials", default_credentials
+        )
+        monkeypatch.setenv("ANTHROPIC_IDENTITY_TOKEN", "idtok-placeholder")
+        monkeypatch.setenv("ANTHROPIC_FEDERATION_RULE_ID", "rule-placeholder")
+        monkeypatch.setenv("ANTHROPIC_ORGANIZATION_ID", "org-placeholder")
+
+        model = self._model()
+
+        assert model._client.api_key is None
+        assert getattr(model._client, "auth_token", None) is None
+        assert model.can_authenticate is True
+
+    @pytest.mark.parametrize(
+        "header",
+        ["X-Api-Key: hdr-placeholder", "Authorization: Bearer placeholder"],
+    )
+    def test_custom_header_credential_counts_as_authenticated(self, monkeypatch, header):
+        # ANTHROPIC_CUSTOM_HEADERS puts the credential on default_headers,
+        # leaving api_key and auth_token None while requests authenticate.
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", header)
+
+        model = self._model()
+
+        assert model._client.api_key is None
+        assert model.can_authenticate is True
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"ANTHROPIC_AUTH_TOKEN": ""},
+            {"ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": ""},
+        ],
+    )
+    def test_blank_env_credential_does_not_count(self, monkeypatch, env):
+        """``VAR=`` is how .env and compose files usually spell "unset".
+
+        The SDK turns a blank ANTHROPIC_AUTH_TOKEN into a bare
+        ``Authorization: Bearer`` header that its own validator accepts, so
+        requests would reach the API and fail with a 401 apiece: the same
+        flood this guard exists to stop.
+        """
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+
+        model = self._model()
+
+        assert model.can_authenticate is False
+        assert model.inline_completions(
+            "a", "b", "python", "f.py", None, self._token()
+        ) == ''
+
+    @pytest.mark.parametrize("value", ["   ", "\t"])
+    def test_whitespace_env_credential_does_not_count(self, monkeypatch, value):
+        """The settings path strips whitespace; the environment does not.
+
+        A whitespace-only key reaches the SDK verbatim, so it sends a blank
+        header and takes a 401 for every completion request, which is the
+        same flood in a different exception.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", value)
+
+        assert self._model().can_authenticate is False
+
+    def test_blank_custom_header_credential_does_not_count(self, monkeypatch):
+        # The SDK's auth_headers covers only its own two attributes, so a
+        # blank credential arriving through custom headers has to be caught on
+        # the merged headers instead.
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer ")
+
+        assert self._model().can_authenticate is False
+
+    def test_validator_of_another_shape_allows_the_request(self, monkeypatch):
+        """A one-argument validator must not read as "no credential".
+
+        Catching that signature TypeError as though it were the
+        authentication one would switch auto-complete off for a deployment
+        whose credential works.
+        """
+        from notebook_intelligence.claude import _client_can_authenticate
+
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: hdr-placeholder")
+        model = self._model()
+
+        def one_arg(headers):
+            raise TypeError("takes 1 positional argument but 2 were given")
+
+        monkeypatch.setattr(
+            model._client, "_validate_headers", one_arg, raising=False
+        )
+
+        assert _client_can_authenticate(model._client) is True
+
+    def test_unexpected_validator_error_allows_the_request(self):
+        """An unrecognized failure from the SDK allows the request.
+
+        Only the authentication TypeError means "no credential". Anything else
+        is this check failing to understand the SDK, where switching off a
+        working deployment is the worse outcome.
+        """
+        from notebook_intelligence.claude import _client_can_authenticate
+
+        class OddFailure:
+            api_key = None
+            auth_token = None
+            default_headers: dict = {}
+
+            def _validate_headers(self, headers, custom_headers):
+                raise ValueError("something the SDK never documented")
+
+        assert _client_can_authenticate(OddFailure()) is True
+
+    def test_non_mapping_headers_allow_the_request(self):
+        from notebook_intelligence.claude import _client_can_authenticate
+
+        class OddHeaders:
+            api_key = None
+            auth_token = None
+            default_headers = [("X-Api-Key", "hdr-placeholder")]
+
+            def _validate_headers(self, headers, custom_headers):
+                raise TypeError("Could not resolve authentication method")
+
+        assert _client_can_authenticate(OddHeaders()) is True
+
+    def test_absent_validator_allows_the_request(self):
+        # If the SDK stops exposing the validator, allow the request. The old
+        # failure is a recoverable error; silently disabling a working setup
+        # is not.
+        from notebook_intelligence.claude import _client_can_authenticate
+
+        class NoValidator:
+            api_key = None
+            auth_token = None
+            default_headers: dict = {}
+
+        assert _client_can_authenticate(NoValidator()) is True
+
+    def test_validator_rejection_is_honored(self):
+        from notebook_intelligence.claude import _client_can_authenticate
+
+        class Rejects:
+            api_key = None
+            auth_token = None
+            default_headers: dict = {}
+
+            def _validate_headers(self, headers, custom_headers):
+                raise TypeError("Could not resolve authentication method")
+
+        assert _client_can_authenticate(Rejects()) is False
+
+
 class TestFetchClaudeModelsContextWindow:
     def _make_mock_model(self, model_id, display_name, max_input_tokens=None):
         m = Mock()
