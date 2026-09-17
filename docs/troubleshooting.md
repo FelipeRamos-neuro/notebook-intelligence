@@ -88,6 +88,8 @@ MCP stdio servers run as subprocesses of the user's Jupyter Server. If a server 
 3. For `npx -y` servers, confirm Node.js is installed (`node --version`).
 4. Use the **Reload MCP servers** action from NBI Settings → MCP after fixing the config — this re-runs discovery without restarting JupyterLab.
 
+If the configured command is not an MCP server at all, it never answers the MCP handshake. NBI gives up on it after 60 seconds (`NBI_MCP_CONNECT_TIMEOUT`), marks the server failed, and logs that the command may not be an MCP server. A command that writes non-JSON output in a loop would otherwise fill the log with one parse error per line, so those records are capped at a few per 10 seconds and the number withheld is reported with the failure.
+
 If the LLM is connected but tools aren't being called, confirm the model supports tool calling. All GitHub Copilot models do; for other providers, check the provider's docs.
 
 ## Where do logs live, and how do I turn on debug?
