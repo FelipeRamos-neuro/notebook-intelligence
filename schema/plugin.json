@@ -35,7 +35,7 @@
     },
     {
       "command": "inline-completer:accept",
-      "selector": ".jp-Notebook.jp-mod-editMode .jp-mod-completer-enabled",
+      "selector": ".jp-Notebook.jp-mod-editMode .jp-mod-inline-completer-active",
       "keys": ["Tab"]
     }
   ]
