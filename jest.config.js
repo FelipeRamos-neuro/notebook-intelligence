@@ -21,6 +21,7 @@ module.exports = {
   // The tests don't depend on real tokenization, so stub it out.
   moduleNameMapper: {
     '^tiktoken$': '<rootDir>/tests/ts/__mocks__/tiktoken.ts',
+    '^strip-ansi$': '<rootDir>/tests/ts/__mocks__/strip-ansi.ts',
     '\\.svg$': '<rootDir>/tests/ts/__mocks__/svg.ts',
     '^@jupyterlab/apputils$':
       '<rootDir>/tests/ts/__mocks__/jupyterlab-apputils.ts',

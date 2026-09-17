@@ -53,6 +53,7 @@ from notebook_intelligence import perf
 from notebook_intelligence.acp_registry import (
     AcpAgentSpec,
     codex_approval_args,
+    codex_auth_args,
     codex_model_args,
     resolve_acp_agent,
     resolve_acp_agent_command,
@@ -190,7 +191,11 @@ class _NbiAcpClient(acp.Client):
         resp = self._response
         allow = next((o for o in options if o.kind == "allow_once"), None) \
             or next((o for o in options if str(o.kind).startswith("allow")), None)
-        if resp is None or allow is None:
+        if (
+            resp is None
+            or allow is None
+            or not getattr(self._owner, "current_permissions_enabled", True)
+        ):
             # No UI to ask, or no allow option offered: fail closed (reject).
             return acp.RequestPermissionResponse(
                 outcome=schema.DeniedOutcome(outcome="cancelled")
@@ -261,6 +266,49 @@ class _NbiAcpClient(acp.Client):
     # success, which an agent would read as "handled".
     async def ext_method(self, method, params):
         raise acp.RequestError.method_not_found(method)
+
+
+def _is_link(path: str) -> bool:
+    # Windows directory junctions are not symlinks to os.path.islink.
+    isjunction = getattr(os.path, "isjunction", None)
+    return os.path.islink(path) or bool(isjunction and isjunction(path))
+
+
+def _remove_persisted_codex_credentials(codex_home: str) -> None:
+    """Delete key copies earlier NBI versions let Codex write to its CODEX_HOME.
+
+    NBI points Codex at this directory only when it supplies the API key, so
+    its ``auth.json`` and shell snapshots (which captured the environment,
+    key included) came from those launches. Codex no longer writes either
+    (``codex_auth_args``), but the old files would otherwise stay on disk.
+    Nothing is followed through a symlink or junction, and a failure is
+    logged rather than raised, so it never stops the agent from starting.
+    """
+    if _is_link(codex_home):
+        log.warning("Not cleaning %s: it is a link, not NBI's own directory", codex_home)
+        return
+    if not os.path.isdir(codex_home):
+        return
+    paths = [os.path.join(codex_home, "auth.json")]
+    snapshots = os.path.join(codex_home, "shell_snapshots")
+    if os.path.isdir(snapshots) and not _is_link(snapshots):
+        try:
+            with os.scandir(snapshots) as entries:
+                paths += [
+                    entry.path for entry in entries
+                    if entry.is_symlink() or entry.is_file(follow_symlinks=False)
+                ]
+        except OSError as e:
+            log.warning("Could not list old Codex shell snapshots in %s: %s", snapshots, e)
+    for path in paths:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            log.warning("Could not remove an old Codex key copy at %s: %s", path, e)
+            continue
+        log.info("Removed an old Codex key copy at %s", path)
 
 
 def _block_text(block) -> str:
@@ -388,8 +436,9 @@ class AcpAgentClient:
     """Persistent ACP client: one agent-adapter subprocess + session on a
     worker thread, prompted once per chat request."""
 
-    def __init__(self, host: Host):
+    def __init__(self, host: Host, *, force_safe_mode: bool = False):
         self._host = host
+        self._force_safe_mode = force_safe_mode
         self.websocket_connector: Optional[ThreadSafeWebSocketConnector] = (
             host.websocket_connector
         )
@@ -399,6 +448,7 @@ class AcpAgentClient:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._conn = None
         self._session_id: Optional[str] = None
+        self._active_prompt_session_id: Optional[str] = None
         self._proc = None
         self._stderr_task = None
         self._started = threading.Event()
@@ -408,6 +458,7 @@ class AcpAgentClient:
         self._client: Optional[_NbiAcpClient] = None
         self._agent_capabilities = None
         self._lock = threading.Lock()
+        self.current_permissions_enabled = True
         # Serializes turns: the ACP session runs one prompt at a time, and
         # current_response is shared, so a second concurrent turn must not
         # interleave with the first.
@@ -415,6 +466,8 @@ class AcpAgentClient:
 
     def _mcp_servers(self) -> list:
         """The NBI MCP server config passed to every session create/load."""
+        if self._force_safe_mode:
+            return []
         # Launched by file path rather than ``-m``: the agent starts this server
         # outside its sandbox with the workspace as cwd, and ``-m`` puts the cwd
         # first on sys.path, so a ``notebook_intelligence`` package the agent
@@ -430,6 +483,10 @@ class AcpAgentClient:
     @property
     def acp_settings(self) -> dict:
         return self._host.nbi_config.acp_settings
+
+    @property
+    def safe_mode(self) -> bool:
+        return self._force_safe_mode
 
     @property
     def agent_spec(self) -> AcpAgentSpec:
@@ -476,8 +533,12 @@ class AcpAgentClient:
         env = self._child_env(spec)
         cmd = list(resolve_acp_agent_command(spec))
         if spec.id == "codex":
+            # First, so they stay clear of the pins that follow.
+            cmd += codex_auth_args(spec.api_key_env if self._api_key(spec) else "")
             cmd += codex_approval_args(
-                bool(self.acp_settings.get("full_access", False))
+                False
+                if self._force_safe_mode
+                else bool(self.acp_settings.get("full_access", False))
             )
             # acp_settings already folds in the OPENAI_BASE_URL /
             # NBI_ACP_CHAT_MODEL env overrides (ACP_SETTINGS_OVERRIDES),
@@ -527,6 +588,12 @@ class AcpAgentClient:
     def _child_env(self, spec: AcpAgentSpec) -> dict:
         env = {k: v for k, v in os.environ.items()
                if k != "CLAUDECODE" and not k.startswith("CLAUDE_CODE_")}
+        if spec.id == "codex":
+            # Whatever the sign-in, so old copies do not outlive a switch away
+            # from an API key.
+            _remove_persisted_codex_credentials(
+                os.path.join(self._host.nbi_config.nbi_user_dir, "codex-home")
+            )
         api_key = self._api_key(spec)
         if api_key:
             env[spec.api_key_env] = api_key
@@ -587,15 +654,34 @@ class AcpAgentClient:
         self._loop = None
 
     async def _run_prompt(self, text: str):
-        await self._conn.prompt(
-            prompt=[schema.TextContentBlock(type="text", text=text)],
-            session_id=self._session_id,
+        self._active_prompt_session_id = self._session_id
+        try:
+            await self._conn.prompt(
+                prompt=[schema.TextContentBlock(type="text", text=text)],
+                session_id=self._session_id,
+            )
+        finally:
+            self._active_prompt_session_id = None
+
+    async def _run_isolated_prompt(self, text: str):
+        """Run a one-shot prompt outside the sidebar's conversation."""
+        session = await self._conn.new_session(
+            cwd=get_jupyter_root_dir(), mcp_servers=[]
         )
+        self._active_prompt_session_id = session.session_id
+        try:
+            await self._conn.prompt(
+                prompt=[schema.TextContentBlock(type="text", text=text)],
+                session_id=session.session_id,
+            )
+        finally:
+            self._active_prompt_session_id = None
 
     async def _cancel(self):
         try:
-            if self._conn and self._session_id:
-                await self._conn.cancel(session_id=self._session_id)
+            session_id = self._active_prompt_session_id or self._session_id
+            if self._conn and session_id:
+                await self._conn.cancel(session_id=session_id)
         except Exception as e:
             log.debug("ACP cancel failed: %s", e)
 
@@ -786,6 +872,7 @@ class AcpAgentClient:
                 self._client._tool_state.clear()
                 self._client._tool_perf_spans.clear()
             self.current_response = response
+            self.current_permissions_enabled = True
             try:
                 fut = asyncio.run_coroutine_threadsafe(
                     self._run_prompt(self.assemble_query(request)), loop
@@ -811,6 +898,51 @@ class AcpAgentClient:
                         return f"{self.agent_spec.label} agent response timeout"
             finally:
                 self.current_response = None
+                self.current_permissions_enabled = True
+        finally:
+            self._turn_lock.release()
+
+    def query_isolated(
+        self, text: str, response: ChatResponse
+    ) -> Optional[str]:
+        """Run a stateless prompt for a non-chat feature such as Chatbook.
+
+        The prompt gets a fresh ACP session, does not alter the sidebar's
+        session, and rejects permission requests because no confirmation UI is
+        attached to the originating operation.
+        """
+        if not self._turn_lock.acquire(blocking=False):
+            return f"{self.agent_spec.label} is busy with another request"
+        try:
+            if not self._ensure_started():
+                return self._start_error or (
+                    f"{self.agent_spec.label} agent is not available"
+                )
+            loop = self._loop
+            if loop is None:
+                return f"{self.agent_spec.label} agent is not available"
+            if self._client is not None:
+                self._client._tool_state.clear()
+            self.current_response = response
+            self.current_permissions_enabled = False
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._run_isolated_prompt(text), loop
+                )
+                try:
+                    fut.result(timeout=_RESPONSE_TIMEOUT)
+                    return None
+                except concurrent.futures.TimeoutError:
+                    self._schedule(self._cancel(), loop)
+                    return f"{self.agent_spec.label} agent response timeout"
+                except Exception as e:
+                    log.error(
+                        "ACP isolated agent turn failed: %s", e, exc_info=True
+                    )
+                    return f"{self.agent_spec.label} agent error: {e}"
+            finally:
+                self.current_response = None
+                self.current_permissions_enabled = True
         finally:
             self._turn_lock.release()
 

@@ -49,6 +49,7 @@ export interface IRevertDecisionInputs {
   isDirty: boolean;
   isReady: boolean;
   isDisposed: boolean;
+  isKernelBusy: boolean;
 }
 
 /**
@@ -61,9 +62,28 @@ export interface IRevertDecisionInputs {
  *   2. Skip if the user has unsaved local edits (`isDirty`). Silently
  *      clobbering their work would be hostile; the standard
  *      JupyterLab "newer on disk" prompt will surface on save.
- *   3. Skip if we can't parse either timestamp (either side missing
+ *   3. Skip while the document's kernel is busy (`isKernelBusy`).
+ *      Starting an execution marks the model dirty, so rule 2 covers a
+ *      run by itself. What it does not cover is autosave: JupyterLab
+ *      saves every 120s by default (docmanager's SaveHandler), and a
+ *      save landing mid-execution clears `dirty` while the kernel is
+ *      still working, so any cell running longer than that interval
+ *      spends the rest of its life clean and busy. Reverting there
+ *      swaps the model out from under the running execution and the
+ *      result the user was waiting for lands nowhere (#429). Unlike
+ *      the dirty case there is no prompt and no way back.
+ *
+ *      Confirmed in a live JupyterLab rather than argued from the
+ *      types: a 600s cell, saved mid-run to stand in for autosave,
+ *      then edited on disk, kept its content across four poll ticks.
+ *
+ *      `busy` is a deliberately conservative proxy: the kernel also
+ *      reports it for completion and kernel-info requests, not only
+ *      cell execution. That errs toward skipping a revert, which is
+ *      the safe direction, and the next poll retries seconds later.
+ *   4. Skip if we can't parse either timestamp (either side missing
  *      or unparseable).
- *   4. Revert iff disk's `last_modified` parses to a strictly greater
+ *   5. Revert iff disk's `last_modified` parses to a strictly greater
  *      epoch ms than the context's last-known value. Equal means
  *      already current (a save we initiated, or a no-op re-read).
  *
@@ -91,12 +111,16 @@ export function shouldRevertContext({
   contextLastModified,
   isDirty,
   isReady,
-  isDisposed
+  isDisposed,
+  isKernelBusy
 }: IRevertDecisionInputs): boolean {
   if (isDisposed || !isReady) {
     return false;
   }
   if (isDirty) {
+    return false;
+  }
+  if (isKernelBusy) {
     return false;
   }
   if (!diskLastModified || !contextLastModified) {
@@ -236,20 +260,26 @@ async function checkOneContext(
       contextLastModified: context.contentsModel?.last_modified,
       isDirty: context.model.dirty,
       isReady: context.isReady,
-      isDisposed: context.isDisposed
+      isDisposed: context.isDisposed,
+      isKernelBusy: isContextKernelBusy(context)
     });
     if (!decision) {
       return;
     }
-    // Defense in depth: re-read dirty/disposed immediately before the
-    // revert call. Today this is strictly belt-and-suspenders — no
-    // microtask boundary exists between the dirty read inside
-    // shouldRevertContext above and the await on revert() below, so a
-    // keystroke cannot land in that window. The re-check survives a
-    // future refactor that inserts an await (telemetry, an instrument
-    // hook, etc.) between the decision and the revert call without
-    // anyone having to re-derive the safety argument.
-    if (context.model.dirty || context.isDisposed) {
+    // Defense in depth: re-read dirty, disposed and kernel-busy
+    // immediately before the revert call. Today this is strictly
+    // belt-and-suspenders, and provably so: no microtask boundary exists
+    // between the reads inside shouldRevertContext above and the await on
+    // revert() below, so neither a keystroke nor an execution can land in
+    // that window. The re-check survives a future refactor that inserts
+    // an await (telemetry, an instrument hook, etc.) between the decision
+    // and the revert call without anyone having to re-derive the safety
+    // argument.
+    if (
+      context.model.dirty ||
+      context.isDisposed ||
+      isContextKernelBusy(context)
+    ) {
       return;
     }
     await context.revert();
@@ -257,4 +287,70 @@ async function checkOneContext(
   } catch (error) {
     options.onError?.(context.path, error);
   }
+}
+
+/**
+ * Whether the document's own kernel is mid-request.
+ *
+ * Read through optional chaining the whole way down rather than
+ * assumed: a document with no kernel at all is the common case here
+ * (any text file the watcher walks), and during startup or a kernel
+ * restart `session` is null while the context is otherwise live.
+ * Anything we cannot read reads as not busy, so an unknown state
+ * still gets the pre-#429 behavior rather than freezing the watcher
+ * for a document whose kernel state we cannot see.
+ */
+function isContextKernelBusy(
+  context: Pick<DocumentRegistry.Context, 'sessionContext'>
+): boolean {
+  return context.sessionContext?.session?.kernel?.status === 'busy';
+}
+
+/**
+ * Whether a revert of `revertedPath` deserves a notification.
+ *
+ * Only the document the user is looking at earns one. The reason to
+ * notify at all is that a revert moves their cursor and scroll position
+ * with no input from them, and that is only disorienting for the visible
+ * document; a background tab simply shows current content the next time
+ * they switch to it.
+ *
+ * Scoping also keeps the notification usable. Every revert in a tick runs
+ * in `Promise.all` batches with no delay between them, so an agent
+ * rewriting six open files produced six toasts at once; JupyterLab renders
+ * them with `role="alert"`, an assertive live region, so a screen-reader
+ * user got six interruptions overwriting each other. The kernel guard
+ * makes that worse, not better: reverts deferred for a busy kernel bunch
+ * up and fire together on the first idle tick.
+ *
+ * An empty or absent active path matches nothing, so a session with no
+ * open document stays silent rather than notifying for everything.
+ */
+export function shouldNotifyRevert(
+  revertedPath: string,
+  activeDocumentPath: string | null | undefined
+): boolean {
+  if (!revertedPath || !activeDocumentPath) {
+    return false;
+  }
+  return revertedPath === activeDocumentPath;
+}
+
+/**
+ * The notification text for a reverted document.
+ *
+ * Carries the full workspace-relative path, not the basename, matching
+ * what JupyterLab itself does in the closest analogous message: its
+ * "File Changed" conflict dialog interpolates `this.path` into `"%1" has
+ * changed on disk since the last time it was opened or saved`
+ * (docregistry/lib/context.js). Two open files sharing a basename would
+ * otherwise produce identical text with no way to tell which one moved.
+ *
+ * Names the effect and its cause, since "why did my cursor jump" is the
+ * question being answered, but stays agnostic about the writer: the
+ * watcher only ever sees a newer mtime, which a terminal command, a sync
+ * client or a git checkout produces just as readily as an agent.
+ */
+export function formatRevertNotification(path: string): string {
+  return `${path} changed on disk and was reloaded`;
 }
