@@ -288,7 +288,8 @@ export type FeaturePolicyName =
   | 'claude_bypass_permissions'
   | 'terminal_drag_drop'
   | 'refresh_open_files_on_disk_change'
-  | 'perf_diagnostics';
+  | 'perf_diagnostics'
+  | 'chatbook';
 
 export type IFeaturePolicies = Record<
   FeaturePolicyName,
@@ -518,9 +519,9 @@ export class NBIConfig {
   }
 
   get chatbookEnabled(): boolean {
-    // Default-on: a missing key (older backend) must not hide Chatbook.
-    // Admins turn it off with NBI_ENABLE_CHATBOOK=false.
-    return this.capabilities.chatbook_enabled !== false;
+    // Admins turn it off with NBI_CHATBOOK_POLICY=force-off. Default-open in
+    // featurePolicies, so a backend without the policy keeps Chatbook visible.
+    return this.featurePolicies.chatbook.enabled;
   }
 
   // Admin-supplied tour-copy overrides, served from the capabilities
@@ -590,7 +591,8 @@ export class NBIConfig {
       'claude_bypass_permissions',
       'terminal_drag_drop',
       'refresh_open_files_on_disk_change',
-      'perf_diagnostics'
+      'perf_diagnostics',
+      'chatbook'
     ];
     // Policies that default *open* when the capability field is missing,
     // covering two cases: admin-only management gates (no user toggle) where
@@ -603,6 +605,7 @@ export class NBIConfig {
       'skills_management',
       'claude_mcp_management',
       'claude_plugins_management',
+      'chatbook',
       'refresh_open_files_on_disk_change'
     ]);
     const result = {} as IFeaturePolicies;
