@@ -854,6 +854,37 @@ class MCPChatParticipant(BaseChatParticipant):
         else:
             await self.handle_chat_request_with_tools(request, response, options)
 
+
+def _config_section(mcp_config: dict, key: str) -> dict:
+    """Read a mapping section out of the MCP config, tolerating a bad value.
+
+    ``.get(key, {})`` returns the default only when the key is *absent*, so
+    an explicit ``"mcpServers": null`` in mcp.json yielded ``None`` and the
+    loader then raised ``AttributeError`` on ``.keys()``, taking MCP setup
+    out for the whole session (#433). The shape validator rejects that
+    value, but it runs only when the settings dialog saves the file, never
+    when a file already on disk is read, so a hand-edited or
+    older-build config broke every session start with no error at the point
+    the user caused it.
+
+    Degrades to empty, because no servers is a state the loader already
+    handles. A present-but-unusable value is warned about and names the
+    key; an absent key is silent, since that is the ordinary shape for an
+    install that configures only one of the two sections.
+    """
+    if key not in mcp_config:
+        return {}
+    value = mcp_config[key]
+    if isinstance(value, dict):
+        return value
+    log.warning(
+        "Ignoring invalid mcp.json section %r: expected an object, got %s",
+        key,
+        type(value).__name__,
+    )
+    return {}
+
+
 class MCPManager:
     def __init__(self, mcp_config: dict, stdio_command_allowlist: Optional[list[str]] = None):
         self._websocket_connector: ThreadSafeWebSocketConnector = None
@@ -875,8 +906,8 @@ class MCPManager:
 
     def update_mcp_servers(self, mcp_config):
         # TODO: dont reuse servers, recreate with same config
-        servers_config = mcp_config.get("mcpServers", {})
-        participants_config = mcp_config.get("participants", {})
+        servers_config = _config_section(mcp_config, "mcpServers")
+        participants_config = _config_section(mcp_config, "participants")
         self._mcp_participants = []
         for server in self._mcp_servers:
             server.disconnect()
