@@ -235,31 +235,16 @@ class _NbiAcpClient(acp.Client):
             )
         return acp.RequestPermissionResponse(outcome=schema.DeniedOutcome(outcome="cancelled"))
 
-    # fs/*: implemented so an agent that delegates file ops (e.g. claude-acp)
-    # routes through NBI. codex-acp self-applies, so these may not fire for it.
+    # fs/*: not offered. These would run in the Jupyter server process, outside
+    # any agent sandbox, so serving them would let an agent read or write any
+    # path the server can reach. The spec requires an agent to do its own file
+    # I/O when the capability is not advertised. The acp router registers these
+    # handlers whatever NBI advertises, so they must refuse rather than go unused.
     async def read_text_file(self, path, session_id, limit=None, line=None, **kw):
-        if getattr(self._owner, "safe_mode", False):
-            raise acp.RequestError.internal_error(
-                "Filesystem access is disabled for this agent"
-            )
-        try:
-            with open(path, encoding="utf-8") as f:
-                return acp.ReadTextFileResponse(content=f.read())
-        except Exception as e:
-            raise acp.RequestError.internal_error(str(e))
+        raise acp.RequestError.method_not_found("fs/read_text_file")
 
     async def write_text_file(self, content, path, session_id, **kw):
-        if getattr(self._owner, "safe_mode", False):
-            raise acp.RequestError.internal_error(
-                "Filesystem access is disabled for this agent"
-            )
-        try:
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
-            return acp.WriteTextFileResponse()
-        except Exception as e:
-            raise acp.RequestError.internal_error(str(e))
+        raise acp.RequestError.method_not_found("fs/write_text_file")
 
     # terminal/*: not emulated in Phase 1 (Codex runs shell internally).
     async def create_terminal(self, command, session_id, **kw):
@@ -276,6 +261,11 @@ class _NbiAcpClient(acp.Client):
 
     async def release_terminal(self, session_id, terminal_id, **kw):
         return None
+
+    # The inherited acp.Client stub answers any extension request with a null
+    # success, which an agent would read as "handled".
+    async def ext_method(self, method, params):
+        raise acp.RequestError.method_not_found(method)
 
 
 def _is_link(path: str) -> bool:
@@ -568,7 +558,7 @@ class AcpAgentClient:
             init = await self._conn.initialize(
                 protocol_version=acp.PROTOCOL_VERSION,
                 client_capabilities=schema.ClientCapabilities(
-                    fs=schema.FileSystemCapabilities(read_text_file=True, write_text_file=True),
+                    fs=schema.FileSystemCapabilities(read_text_file=False, write_text_file=False),
                 ),
                 client_info=schema.Implementation(name="notebook-intelligence", version="1.0.0"),
             )
