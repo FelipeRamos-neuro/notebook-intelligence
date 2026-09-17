@@ -13,6 +13,8 @@ from pathlib import Path
 from queue import Queue
 import threading
 import time
+import inspect
+from collections.abc import Mapping
 from typing import Any, Optional, TYPE_CHECKING
 import unicodedata
 import uuid
@@ -954,6 +956,168 @@ def _create_anthropic_client(api_key: str = None, base_url: str = None) -> "Anth
     )
 
 
+CLAUDE_INLINE_COMPLETION_NO_CREDENTIAL_MESSAGE = (
+    "Claude inline completions are disabled: no Anthropic credential is "
+    "visible to the Jupyter server. Claude Code mode can sign in through the "
+    "Claude CLI, but inline completions call the Anthropic API directly and "
+    "need a credential of their own. Add an API key in the Claude settings, "
+    "or set the auto-complete model to None or to Inherit from general "
+    "settings. Where an administrator pins the auto-complete model, give the "
+    "server a credential instead."
+)
+
+_inline_completion_credential_warned = False
+
+
+def warn_no_inline_completion_credential_once() -> None:
+    """Emit the missing-credential WARNING once per credential-less spell.
+
+    ``update_models_from_config`` re-selects the model on every
+    ``/capabilities`` GET, and the front end refetches that on startup, after
+    a settings save, and on every Claude CLI status change, so a per-model
+    flag coalesces nothing: each pass builds a fresh model.
+
+    The message is specific to auto-complete. Other surfaces sharing this root
+    cause need their own wording rather than this one.
+    """
+    global _inline_completion_credential_warned
+    if _inline_completion_credential_warned:
+        return
+    _inline_completion_credential_warned = True
+    log.warning(CLAUDE_INLINE_COMPLETION_NO_CREDENTIAL_MESSAGE)
+
+
+def reset_inline_completion_credential_warning() -> None:
+    """Re-arm the warning once a credential is seen again.
+
+    A key can be added in Settings and removed later with no restart, so
+    latching for the life of the process would make the second removal
+    silent. This is why the warning tracks the state rather than the process,
+    unlike ``github_copilot``'s default-password notice, where the condition
+    cannot come back.
+    """
+    global _inline_completion_credential_warned
+    _inline_completion_credential_warned = False
+
+
+_inline_model_construction_warned = False
+
+
+def warn_inline_completion_model_unavailable_once() -> None:
+    """Log a model-construction failure once per process.
+
+    The SDK reads profile files while resolving credentials, so a bad
+    ``ANTHROPIC_PROFILE`` or ``ANTHROPIC_CONFIG_DIR`` raises on every pass.
+    Selection re-runs on every ``/capabilities`` GET, so an unguarded
+    traceback here is the same flood this module just fixed for the
+    credential warning.
+    """
+    global _inline_model_construction_warned
+    if _inline_model_construction_warned:
+        return
+    _inline_model_construction_warned = True
+    log.warning("Could not create the Claude inline completion model", exc_info=True)
+
+
+_AUTH_SCHEME_WORDS = frozenset({"bearer", "basic", "token"})
+# The header names the SDK's own validation accepts as proof of auth.
+_AUTH_HEADER_NAMES = ("X-Api-Key", "Authorization")
+
+
+def _auth_header_carries_a_secret(value: Any) -> bool:
+    """Whether an SDK auth header actually carries a credential.
+
+    ``ANTHROPIC_AUTH_TOKEN=`` with no value, the usual way .env and compose
+    files spell "unset", leaves the SDK sending a bare ``Authorization:
+    Bearer``, so a scheme word alone does not count.
+    """
+    parts = str(value or "").split()
+    if parts and parts[0].lower() in _AUTH_SCHEME_WORDS:
+        parts = parts[1:]
+    return bool(parts)
+
+
+def _has_static_credential(client: Any) -> bool:
+    """Whether the client holds a non-blank credential of its own.
+
+    Strings are stripped. The settings path normalizes whitespace before the
+    client is built, but ``ANTHROPIC_API_KEY="   "`` reaches the SDK verbatim,
+    and treating that as a credential sends a blank header that the API
+    answers with a 401 for every completion request.
+    """
+    for name in ("api_key", "auth_token", "credentials"):
+        value = getattr(client, name, None)
+        if isinstance(value, str):
+            if value.strip():
+                return True
+        elif value:
+            return True
+    return False
+
+
+def _client_can_authenticate(client: Any) -> bool:
+    """Whether an Anthropic client resolved a credential to authenticate with.
+
+    Reading ``api_key``/``auth_token`` is not enough. The SDK also
+    authenticates from a credentials provider (an ``ANTHROPIC_PROFILE`` or
+    config-dir profile, or the workload-identity env trio) and from an
+    ``X-Api-Key``/``Authorization`` header supplied through
+    ``ANTHROPIC_CUSTOM_HEADERS``. Each of those leaves both attributes
+    ``None`` while requests succeed, so an attribute check would disable
+    auto-complete for deployments where it works today.
+
+    Ask the SDK instead. ``_validate_headers`` is the method that raises the
+    ``TypeError`` behind #425, and handing it the client's own merged
+    ``default_headers`` reproduces what ``_build_request`` would see: the
+    static key headers, any custom headers, and the token-cache early return
+    that covers a credentials provider.
+
+    Every step that cannot be carried out confidently allows the request,
+    because the cost of a wrong "no" (auto-complete switched off for a working
+    deployment) is worse than the cost of a wrong "yes" (the error this guard
+    exists to prevent). So a validator that is absent, that will not accept
+    two header arguments, or headers that are not a mapping all read as
+    authenticated. The arity is checked rather than assumed: catching a
+    signature ``TypeError`` as if it were the authentication one would
+    disable a working setup on an SDK whose validator changed shape.
+
+    One deliberate departure from the SDK: it accepts an auth header that
+    exists but carries nothing, and such a request fails at the API with a
+    401 apiece, which is the same log flood #425 is about wearing a different
+    exception. A blank credential therefore reads as no credential here.
+    """
+    if _has_static_credential(client):
+        return True
+    validate = getattr(client, "_validate_headers", None)
+    headers = getattr(client, "default_headers", None)
+    if not callable(validate) or not isinstance(headers, Mapping):
+        return True
+    try:
+        inspect.signature(validate).bind(headers, headers)
+    except (TypeError, ValueError):
+        return True
+    try:
+        validate(headers, headers)
+    except TypeError:
+        return False
+    except Exception:
+        log.debug("Anthropic header validation failed unexpectedly", exc_info=True)
+        return True
+    # Read the auth headers off the mapping the validator just accepted, not
+    # off ``auth_headers``, which covers only the SDK's own two attributes: a
+    # blank credential arriving through ANTHROPIC_CUSTOM_HEADERS would
+    # otherwise slip past. A credentials provider signs each request instead
+    # of setting these headers, so it sets none of them and keeps its verdict.
+    present = [
+        headers.get(name)
+        for name in _AUTH_HEADER_NAMES
+        if headers.get(name) is not None
+    ]
+    if present and not any(_auth_header_carries_a_secret(value) for value in present):
+        return False
+    return True
+
+
 def fetch_claude_models(api_key: str = None, base_url: str = None) -> list[dict]:
     """Fetch available models from the Anthropic API and update cache.
 
@@ -1097,6 +1261,11 @@ class ClaudeCodeInlineCompletionModel(InlineCompletionModel):
         self._client = _create_anthropic_client(api_key, base_url)
 
     @property
+    def can_authenticate(self) -> bool:
+        """Whether a completion request has a credential to send."""
+        return _client_can_authenticate(self._client)
+
+    @property
     def id(self) -> str:
         return self._model_id
     
@@ -1134,6 +1303,15 @@ class ClaudeCodeInlineCompletionModel(InlineCompletionModel):
 
     def inline_completions(self, prefix, suffix, language, filename, context: CompletionContext, cancel_token: CancelToken) -> str:
         if cancel_token.is_cancel_requested:
+            return ''
+
+        if not self.can_authenticate:
+            # NBI's own wiring does not reach this: the manager declines to
+            # select a model that cannot authenticate, so the request never
+            # starts. It covers callers that build the model directly,
+            # including extensions, returning no suggestion rather than
+            # raising inside the SDK (#425).
+            warn_no_inline_completion_credential_once()
             return ''
 
         from anthropic.types.text_block import TextBlock as AnthropicTextBlock

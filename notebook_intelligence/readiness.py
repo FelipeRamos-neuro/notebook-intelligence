@@ -102,16 +102,18 @@ def _row(
     return row
 
 
-def _credential_source(settings_value: Any, env_var: str) -> Optional[str]:
+def _credential_source(settings_value: Any, *env_vars: str) -> Optional[str]:
     """Where a credential is coming from, or None if it is absent.
 
     Returns a source label rather than the value: this document is meant to
-    be pasted into a support ticket.
+    be pasted into a support ticket. More than one environment variable can
+    carry one, so they are checked in order once the settings field misses.
     """
     if isinstance(settings_value, str) and settings_value.strip():
         return "settings"
-    if os.environ.get(env_var, "").strip():
-        return f"environment ({env_var})"
+    for env_var in env_vars:
+        if os.environ.get(env_var, "").strip():
+            return f"environment ({env_var})"
     return None
 
 
@@ -435,7 +437,11 @@ def _claude_rows(nbi_config: Any, pool: concurrent.futures.ThreadPoolExecutor) -
                 )
             )
 
-    source = _credential_source(settings.get("api_key"), "ANTHROPIC_API_KEY")
+    # ANTHROPIC_AUTH_TOKEN authenticates the SDK just as an API key does, so
+    # reporting "no credential" for a server holding one is a false alarm.
+    source = _credential_source(
+        settings.get("api_key"), "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"
+    )
     if source:
         rows.append(
             _row(
@@ -443,22 +449,31 @@ def _claude_rows(nbi_config: Any, pool: concurrent.futures.ThreadPoolExecutor) -
                 "claude",
                 LEVEL_OK,
                 "Anthropic credentials",
-                f"API key present from {source}.",
+                f"Credential present from {source}.",
             )
         )
     else:
         # Not blocked: the CLI may hold a subscription login of its own, which
-        # NBI cannot see and must not call broken.
+        # NBI cannot see and must not call broken. This row sees one settings
+        # field and two environment variables, while the SDK can also
+        # authenticate from a profile, the workload-identity variables, or an
+        # ANTHROPIC_CUSTOM_HEADERS header. Those leave this row reporting "not
+        # visible" while inline completions are in fact running, so it names
+        # the symptom to look for rather than asserting a feature is off
+        # (issue #425).
         rows.append(
             _row(
                 "claude.credentials",
                 "claude",
                 LEVEL_WARN,
                 "Anthropic credentials",
-                "No API key is configured in NBI.",
+                "No Anthropic API key or auth token is visible to NBI.",
                 "This is fine if the Claude CLI is signed in with a "
-                "subscription login. If turns fail with a 401, add a key in "
-                "NBI Settings under Claude or set ANTHROPIC_API_KEY.",
+                "subscription login, or if the SDK resolves a credential of "
+                "its own from a profile or custom headers. If chat turns fail "
+                "with a 401, or Claude auto-complete produces nothing, add a "
+                "key in NBI Settings under Claude or set ANTHROPIC_API_KEY "
+                "before starting JupyterLab.",
             )
         )
     return rows
