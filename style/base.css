@@ -1999,6 +1999,12 @@ svg.access-token-warning {
 .nbi-settings-panel {
   display: flex;
   height: 100%;
+
+  /* Scroll the row rather than squeezing the content pane when the panel is
+     narrower than its two columns need. `overflow-y` stays hidden so this
+     does not add a second vertical scrollbar outside the one the content
+     pane already has. */
+  overflow: auto hidden;
 }
 
 .nbi-settings-panel-tabs {
@@ -2013,6 +2019,11 @@ svg.access-token-warning {
      like "Claude MCP" wrap mid-word. */
   flex-shrink: 0;
   background-color: var(--jp-layout-color2);
+
+  /* The column is taller than a short panel, and the panel itself no longer
+     overflows vertically, so scroll the tabs here. Otherwise the bottom tabs
+     are unreachable by mouse when the panel is short. */
+  overflow-y: auto;
 }
 
 .nbi-settings-panel-tab {
@@ -2047,6 +2058,12 @@ svg.access-token-warning {
   flex-grow: 1;
   padding: 20px;
   overflow-y: auto;
+
+  /* `overflow-y: auto` makes `overflow-x` compute to `auto` too, which
+     cancels the automatic minimum size a flex item normally gets from
+     `min-width: auto`. Without a floor the pane shrinks to nothing in a
+     narrow window while the fixed-width tab column keeps its space. */
+  min-width: 320px;
 }
 
 .nbi-subtab-bar {
