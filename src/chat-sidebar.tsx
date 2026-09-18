@@ -98,6 +98,7 @@ import { TourOverlay } from './tour/tour-overlay';
 import { TOUR_ANCHOR } from './tour/tour-anchors';
 import { TOUR_START_EVENT, TOUR_STOP_EVENT } from './tour/tour-events';
 import { hasCompletedTour } from './tour/tour-state';
+import { recordStoppedTurn, restoreStoppedMarkers } from './chat-stopped-turn';
 import { IClaudeSessionInfo } from './api';
 import {
   isPrefixPopoverUsable,
@@ -378,6 +379,7 @@ interface IChatMessage {
   participant?: IChatParticipant;
   feedback?: 'positive' | 'negative';
   chatModel?: { provider: string; model: string };
+  stopped?: boolean;
 }
 
 interface IWorkspaceFileOption {
@@ -873,6 +875,9 @@ function ChatResponse(props: any) {
                   : 'Generating'}
             </div>
           </div>
+          {msg.stopped && (
+            <div className="chat-message-stopped">Stopped by you</div>
+          )}
         </div>
         <div className="chat-message-timestamp">{timestamp}</div>
       </div>
@@ -1142,6 +1147,10 @@ function ChatResponse(props: any) {
         )}
       </div>
       {msg.from === 'copilot' &&
+        // A turn stopped before anything streamed has no response to rate,
+        // and rating it would emit feedback telemetry against an empty
+        // message.
+        !(msg.stopped && msg.contents.length === 0) &&
         (NBIAPI.config.chatFeedbackAlwaysVisible || !props.showGenerating) &&
         NBIAPI.config.chatFeedbackEnabled && (
           <div
@@ -1388,6 +1397,15 @@ function SidebarComponent(props: any) {
   const [promptHistoryIndex, setPromptHistoryIndex] = useState(0);
   const [chatId, setChatId] = useState(UUID.uuid4());
   const lastMessageId = useRef<string>('');
+  // Id of the response message this turn is streaming into, so stopping the
+  // turn can mark that message rather than guess at the last one in the list.
+  // Cleared when the stream ends so a later stop marks nothing.
+  const inFlightResponseId = useRef<string>('');
+  // Response ids the user stopped. `promptRequestHandler` rebuilds its whole
+  // response message on every delta and does not filter by message id, so a
+  // delta that arrives after the stop would otherwise restore the content and
+  // drop the stopped marker with it.
+  const stoppedResponseIds = useRef<Set<string>>(new Set());
   const lastRequestTime = useRef<Date>(new Date());
   const [contextOn, setContextOn] = useState(false);
   const [activeDocumentInfo, setActiveDocumentInfo] =
@@ -3038,6 +3056,7 @@ function SidebarComponent(props: any) {
     // which re-runs ToolCallGroup's collapse heuristic and flickers the group
     // open/closed as calls stream in (issue #363).
     const responseMessageId = UUID.uuid4();
+    inFlightResponseId.current = responseMessageId;
     const app = props.getApp();
     const additionalContext: IContextItem[] = [];
     let currentFileUsesWholeDocument = false;
@@ -3215,6 +3234,9 @@ function SidebarComponent(props: any) {
             }
           } else if (response.type === BackendMessageType.StreamEnd) {
             setCopilotRequestInProgress(false);
+            if (inFlightResponseId.current === responseMessageId) {
+              inFlightResponseId.current = '';
+            }
             const timeElapsed =
               (new Date().getTime() - lastRequestTime.current.getTime()) / 1000;
             telemetryEmitter.emitTelemetryEvent({
@@ -3320,7 +3342,25 @@ function SidebarComponent(props: any) {
       { chatId }
     );
 
+    // Record the stop in the transcript. Whatever streamed before the stop
+    // stays, but without this marker a stopped turn reads exactly like a model
+    // that returned nothing, which is also what a failure looks like.
+    const stoppedResponseId = inFlightResponseId.current;
+    if (stoppedResponseId !== '') {
+      stoppedResponseIds.current.add(stoppedResponseId);
+    }
+    setChatMessages(prev =>
+      recordStoppedTurn(prev, stoppedResponseId, id => ({
+        id,
+        date: new Date(),
+        from: 'copilot',
+        contents: [],
+        stopped: true
+      }))
+    );
+
     lastMessageId.current = '';
+    inFlightResponseId.current = '';
     setCopilotRequestInProgress(false);
   };
 
@@ -3620,7 +3660,9 @@ function SidebarComponent(props: any) {
             }
           ];
       if (!hideInChat) {
-        setChatMessages(newList);
+        setChatMessages(
+          restoreStoppedMarkers(newList, stoppedResponseIds.current)
+        );
         setCopilotRequestInProgress(true);
       }
 
@@ -3629,9 +3671,19 @@ function SidebarComponent(props: any) {
       // handleUserInputSubmit. Reused on every delta so the message keeps one
       // React key and the response subtree is not remounted each chunk (#363).
       const responseMessageId = UUID.uuid4();
+      // Only claim the marker slot when no turn holds it. An editor command
+      // fired while a sidebar response streams would otherwise take the slot,
+      // and Stop, which cancels the sidebar turn, would mark this turn's
+      // message instead of the one it cancelled.
+      if (!hideInChat && inFlightResponseId.current === '') {
+        inFlightResponseId.current = responseMessageId;
+      }
 
       submitCompletionRequest(request, {
         emit: async response => {
+          if (stoppedResponseIds.current.has(responseMessageId)) {
+            return;
+          }
           if (response.type === BackendMessageType.StreamMessage) {
             const delta = response.data['choices']?.[0]?.['delta'];
             if (!delta) {
@@ -3700,6 +3752,11 @@ function SidebarComponent(props: any) {
           } else if (response.type === BackendMessageType.StreamEnd) {
             if (!hideInChat) {
               setCopilotRequestInProgress(false);
+              // Only release the slot this turn claimed, so ending here does
+              // not strip the marker target from another turn still running.
+              if (inFlightResponseId.current === responseMessageId) {
+                inFlightResponseId.current = '';
+              }
             }
             emitProgress(false);
           } else if (response.type === BackendMessageType.RunUICommand) {
@@ -3744,19 +3801,26 @@ function SidebarComponent(props: any) {
           if (hideInChat) {
             return;
           }
-          setChatMessages([
-            ...newList,
-            {
-              id: responseMessageId,
-              date: new Date(),
-              from: 'copilot',
-              contents: contents,
-              participant: NBIAPI.config.chatParticipants.find(participant => {
-                return participant.id === response.participant;
-              }),
-              chatModel: getActiveChatModel()
-            }
-          ]);
+          setChatMessages(
+            restoreStoppedMarkers(
+              [
+                ...newList,
+                {
+                  id: responseMessageId,
+                  date: new Date(),
+                  from: 'copilot',
+                  contents: contents,
+                  participant: NBIAPI.config.chatParticipants.find(
+                    participant => {
+                      return participant.id === response.participant;
+                    }
+                  ),
+                  chatModel: getActiveChatModel()
+                }
+              ],
+              stoppedResponseIds.current
+            )
+          );
         }
       });
     },
@@ -3982,6 +4046,13 @@ function SidebarComponent(props: any) {
         { chatId }
       );
       lastMessageId.current = '';
+      // No marker here: the transcript this would annotate is cleared below.
+      // The id still has to be remembered as stopped, so a late delta cannot
+      // repopulate the cleared list (the note on the send above says why).
+      if (inFlightResponseId.current !== '') {
+        stoppedResponseIds.current.add(inFlightResponseId.current);
+      }
+      inFlightResponseId.current = '';
       setCopilotRequestInProgress(false);
     }
     setChatMessages([]);
