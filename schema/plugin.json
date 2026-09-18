@@ -37,6 +37,16 @@
       "command": "inline-completer:accept",
       "selector": ".jp-Notebook.jp-mod-editMode .jp-mod-inline-completer-active",
       "keys": ["Tab"]
+    },
+    {
+      "command": "notebook-intelligence:toggle-chatbook-cell-mode",
+      "keys": ["Ctrl J"],
+      "selector": ".jp-Notebook"
+    },
+    {
+      "command": "notebook-intelligence:toggle-all-chatbook-cell-modes",
+      "keys": ["Ctrl Shift J"],
+      "selector": ".jp-Notebook"
     }
   ]
 }
