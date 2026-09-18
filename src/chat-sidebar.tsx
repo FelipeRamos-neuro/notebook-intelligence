@@ -100,6 +100,10 @@ import { TOUR_START_EVENT, TOUR_STOP_EVENT } from './tour/tour-events';
 import { hasCompletedTour } from './tour/tour-state';
 import { IClaudeSessionInfo } from './api';
 import {
+  isPrefixPopoverUsable,
+  prefixesMatching
+} from './chat-prefix-suggestions';
+import {
   NOTEBOOK_GENERATION_PROGRESS_EVENT,
   type INotebookGenerationProgressDetail
 } from './notebook-generation';
@@ -2879,6 +2883,8 @@ function SidebarComponent(props: any) {
     }
   };
 
+  const popoverUsable = isPrefixPopoverUsable(showPopover, prefixSuggestions);
+
   const applyPrefixSuggestion = async (prefix: string) => {
     let mcpArguments = '';
     if (prefix.startsWith('/mcp:')) {
@@ -3334,14 +3340,7 @@ function SidebarComponent(props: any) {
   );
 
   const filterPrefixSuggestions = (prmpt: string) => {
-    const userInput = prmpt.trimStart();
-    if (userInput === '') {
-      setPrefixSuggestions(originalPrefixes);
-    } else {
-      setPrefixSuggestions(
-        originalPrefixes.filter(prefix => prefix.includes(userInput))
-      );
-    }
+    setPrefixSuggestions(prefixesMatching(originalPrefixes, prmpt));
   };
 
   const resetPrefixSuggestions = () => {
@@ -3408,15 +3407,16 @@ function SidebarComponent(props: any) {
       }
       event.stopPropagation();
       event.preventDefault();
-      if (showPopover) {
+      if (popoverUsable) {
         applyPrefixSuggestion(prefixSuggestions[selectedPrefixSuggestionIndex]);
         return;
       }
 
+      setShowPopover(false);
       setSelectedPrefixSuggestionIndex(0);
       handleSubmitStopChatButtonClick();
     } else if (event.key === 'Tab') {
-      if (showPopover) {
+      if (popoverUsable) {
         event.stopPropagation();
         event.preventDefault();
         applyPrefixSuggestion(prefixSuggestions[selectedPrefixSuggestionIndex]);
@@ -3433,7 +3433,7 @@ function SidebarComponent(props: any) {
       event.stopPropagation();
       event.preventDefault();
 
-      if (showPopover) {
+      if (popoverUsable) {
         setSelectedPrefixSuggestionIndex(
           (selectedPrefixSuggestionIndex - 1 + prefixSuggestions.length) %
             prefixSuggestions.length
@@ -3464,7 +3464,7 @@ function SidebarComponent(props: any) {
       event.stopPropagation();
       event.preventDefault();
 
-      if (showPopover) {
+      if (popoverUsable) {
         setSelectedPrefixSuggestionIndex(
           (selectedPrefixSuggestionIndex + 1 + prefixSuggestions.length) %
             prefixSuggestions.length
@@ -4535,7 +4535,7 @@ function SidebarComponent(props: any) {
               </button>
             </div>
           </div>
-          {showPopover && prefixSuggestions.length > 0 && (
+          {popoverUsable && (
             <div className="user-input-autocomplete" ref={autocompleteRef}>
               {prefixSuggestions.map((prefix, index) => (
                 <div
