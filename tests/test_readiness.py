@@ -783,16 +783,17 @@ def test_home_paths_and_the_login_name_are_scrubbed_from_the_document():
 
 class _PlaceholderIdModel:
     """Mirrors the openai-compatible provider: a constant `.id` with the real
-    model name in a `model_id` property."""
+    model name in a required `model_id` property."""
 
     id = "openai-compatible-chat-model"
 
-    def __init__(self, real_name):
+    def __init__(self, real_name, optional=False):
         self._real = real_name
+        self._optional = optional
 
     def get_property(self, name):
         assert name == "model_id"
-        return SimpleNamespace(value=self._real)
+        return SimpleNamespace(value=self._real, optional=self._optional)
 
 
 def test_placeholder_id_providers_report_the_model_the_user_actually_typed():
@@ -824,6 +825,132 @@ def test_placeholder_id_providers_do_not_get_a_bogus_stale_model_warning():
     )
     assert "provider.model_exists" not in _by_id(doc)
     assert doc["verdict"] == rd.VERDICT_READY
+
+
+def test_a_blank_required_model_blocks_rather_than_reporting_ready():
+    """A required field left empty is exactly what this document is for.
+
+    `chat_model.model` holds the provider class's placeholder id whatever the
+    user typed, so nothing else in the payload reveals the blank.
+    """
+    doc = rd.run_readiness(
+        _config(
+            chat_model={
+                "provider": "openai-compatible",
+                "model": "openai-compatible-chat-model",
+            }
+        ),
+        _manager(provider=SimpleNamespace(chat_models=[_PlaceholderIdModel("")])),
+    )
+
+    rows = _by_id(doc)
+    assert rows["provider.model_configured"]["level"] == rd.LEVEL_BLOCKED
+    assert "NBI Settings" in rows["provider.model_configured"]["remedy"]
+    assert doc["verdict"] != rd.VERDICT_READY
+    # Reporting the placeholder id as the model would read as configured.
+    assert "no model selected" in rows["provider.configured"]["detail"]
+
+
+def test_a_stale_configured_id_keeps_the_row_that_names_it():
+    """The blank row must not hide the one that explains why it is blank.
+
+    A configured id this provider cannot resolve leaves the property empty,
+    so the field looks cleared while the real cause is the stale id.
+    """
+    doc = rd.run_readiness(
+        _config(chat_model={"provider": "openai-compatible", "model": "stale-id"}),
+        _manager(provider=SimpleNamespace(chat_models=[_PlaceholderIdModel("")])),
+    )
+
+    rows = _by_id(doc)
+    assert rows["provider.model_configured"]["level"] == rd.LEVEL_BLOCKED
+    assert "stale-id" in rows["provider.model_exists"]["detail"]
+    assert "NBI_CHAT_MODEL_ID" in rows["provider.model_exists"]["remedy"]
+
+
+def test_a_provider_whose_model_has_no_model_id_property_is_left_alone():
+    """Only the providers that send a property as the model name are checked.
+
+    ollama and github-copilot models carry no properties at all, so their
+    `get_property` answers None and must not read as a blank field.
+    """
+
+    class _NoPropertyModel:
+        id = "llama3"
+
+        def get_property(self, name):
+            return None
+
+    doc = rd.run_readiness(
+        _config(chat_model={"provider": "ollama", "model": "llama3"}),
+        _manager(provider=SimpleNamespace(chat_models=[_NoPropertyModel()])),
+    )
+
+    assert "provider.model_configured" not in _by_id(doc)
+    assert doc["verdict"] == rd.VERDICT_READY
+
+
+def test_a_null_property_value_reads_as_a_blank():
+    """A hand-written config can carry `"value": null` rather than ""."""
+
+    class _NullValueModel:
+        id = "openai-compatible-chat-model"
+
+        def get_property(self, name):
+            return SimpleNamespace(value=None, optional=False)
+
+    doc = rd.run_readiness(
+        _config(
+            chat_model={
+                "provider": "openai-compatible",
+                "model": "openai-compatible-chat-model",
+            }
+        ),
+        _manager(provider=SimpleNamespace(chat_models=[_NullValueModel()])),
+    )
+
+    assert _by_id(doc)["provider.model_configured"]["level"] == rd.LEVEL_BLOCKED
+
+
+def test_an_unrecognized_property_shape_does_not_read_as_a_blank():
+    """This row blocks, so guessing from an unknown shape is not acceptable."""
+
+    class _OddPropertyModel:
+        id = "openai-compatible-chat-model"
+
+        def get_property(self, name):
+            return SimpleNamespace(value=123, optional=False)
+
+    doc = rd.run_readiness(
+        _config(
+            chat_model={
+                "provider": "openai-compatible",
+                "model": "openai-compatible-chat-model",
+            }
+        ),
+        _manager(provider=SimpleNamespace(chat_models=[_OddPropertyModel()])),
+    )
+
+    assert "provider.model_configured" not in _by_id(doc)
+
+
+def test_a_blank_optional_model_property_is_not_treated_as_missing():
+    """Only a required property means the request cannot be sent."""
+    doc = rd.run_readiness(
+        _config(
+            chat_model={
+                "provider": "openai-compatible",
+                "model": "openai-compatible-chat-model",
+            }
+        ),
+        _manager(
+            provider=SimpleNamespace(
+                chat_models=[_PlaceholderIdModel("", optional=True)]
+            )
+        ),
+    )
+
+    assert "provider.model_configured" not in _by_id(doc)
 
 
 class TestLiveCheckGating:

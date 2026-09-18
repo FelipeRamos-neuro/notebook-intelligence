@@ -3211,6 +3211,12 @@ svg.access-token-warning {
   border-color: var(--jp-error-color1, #d32f2f);
 }
 
+/* The provider property rows in the settings dialog use their own wrapper,
+   so they need the same invalid border as the form fields above. */
+.form-field-row input[aria-invalid='true'] {
+  border-color: var(--jp-error-color1, #d32f2f);
+}
+
 .nbi-form-field input:disabled,
 .nbi-form-field select:disabled {
   background-color: var(--jp-layout-color2);

@@ -112,6 +112,97 @@ function useNbiPolicies() {
 }
 
 const OPENAI_COMPATIBLE_CHAT_MODEL_ID = 'openai-compatible-chat-model';
+
+/**
+ * A required provider property left empty. The value persists as an empty
+ * string and requests then go out with that field blank, which the endpoint
+ * rejects, so the field has to say so rather than looking saved.
+ */
+export function isBlankRequiredProperty(property: {
+  optional?: boolean;
+  value?: string;
+}): boolean {
+  return !property.optional && !(property.value || '').trim();
+}
+
+/**
+ * One provider property input. The required-field error waits for the user to
+ * touch the field: these start empty whenever a provider is first selected,
+ * and painting errors on fields nobody has typed in yet reads as broken
+ * rather than as guidance.
+ */
+/**
+ * The provider property inputs for one model.
+ *
+ * Keyed by provider, model and property id rather than by position: the
+ * providers order their properties differently, so a positional key would
+ * carry one field's state onto whatever field lands in that slot next.
+ */
+export function ModelPropertyList(props: {
+  properties: {
+    id: string;
+    name: string;
+    description: string;
+    value: string;
+    optional?: boolean;
+  }[];
+  providerId: string;
+  modelId: string;
+  inputName: string;
+  onPropertyChange: (propertyId: string, value: string) => void;
+}): JSX.Element {
+  return (
+    <>
+      {props.properties.map(property => (
+        <ModelPropertyField
+          key={`${props.providerId}:${props.modelId}:${property.id}`}
+          property={property}
+          inputName={props.inputName}
+          onChange={value => props.onPropertyChange(property.id, value)}
+        />
+      ))}
+    </>
+  );
+}
+
+export function ModelPropertyField(props: {
+  property: {
+    id: string;
+    name: string;
+    description: string;
+    value: string;
+    optional?: boolean;
+  };
+  inputName: string;
+  onChange: (value: string) => void;
+}): JSX.Element {
+  const { property, inputName, onChange } = props;
+  const [touched, setTouched] = useState(false);
+  const showError = touched && isBlankRequiredProperty(property);
+  return (
+    <div className="form-field-row">
+      <div className="form-field-description">
+        {property.name} {property.optional ? '(optional)' : ''}
+      </div>
+      <input
+        name={inputName}
+        placeholder={property.description}
+        className="jp-mod-styled"
+        spellCheck={false}
+        value={property.value}
+        aria-invalid={showError ? true : undefined}
+        onChange={event => {
+          setTouched(true);
+          onChange(event.target.value);
+        }}
+        onBlur={() => setTouched(true)}
+      />
+      {showError && (
+        <div className="nbi-form-field-error">{property.name} is required.</div>
+      )}
+    </div>
+  );
+}
 const LITELLM_COMPATIBLE_CHAT_MODEL_ID = 'litellm-compatible-chat-model';
 const OPENAI_COMPATIBLE_INLINE_COMPLETION_MODEL_ID =
   'openai-compatible-inline-completion-model';
@@ -710,27 +801,15 @@ function SettingsPanelComponentGeneral(props: any) {
 
               <div className="model-config-section-row">
                 <div className="model-config-section-column">
-                  {chatModelProperties.map((property: any, index: number) => (
-                    <div className="form-field-row" key={index}>
-                      <div className="form-field-description">
-                        {property.name} {property.optional ? '(optional)' : ''}
-                      </div>
-                      <input
-                        name="chat-model-id-input"
-                        placeholder={property.description}
-                        className="jp-mod-styled"
-                        spellCheck={false}
-                        value={property.value}
-                        onChange={event =>
-                          onModelPropertyChange(
-                            'chat',
-                            property.id,
-                            event.target.value
-                          )
-                        }
-                      />
-                    </div>
-                  ))}
+                  <ModelPropertyList
+                    properties={chatModelProperties}
+                    providerId={chatModelProvider}
+                    modelId={chatModel}
+                    inputName="chat-model-id-input"
+                    onPropertyChange={(propertyId, value) =>
+                      onModelPropertyChange('chat', propertyId, value)
+                    }
+                  />
                 </div>
               </div>
             </div>
@@ -828,29 +907,19 @@ function SettingsPanelComponentGeneral(props: any) {
 
             <div className="model-config-section-row">
               <div className="model-config-section-column">
-                {inlineCompletionModelProperties.map(
-                  (property: any, index: number) => (
-                    <div className="form-field-row" key={index}>
-                      <div className="form-field-description">
-                        {property.name} {property.optional ? '(optional)' : ''}
-                      </div>
-                      <input
-                        name="inline-completion-model-id-input"
-                        placeholder={property.description}
-                        className="jp-mod-styled"
-                        spellCheck={false}
-                        value={property.value}
-                        onChange={event =>
-                          onModelPropertyChange(
-                            'inline-completion',
-                            property.id,
-                            event.target.value
-                          )
-                        }
-                      />
-                    </div>
-                  )
-                )}
+                <ModelPropertyList
+                  properties={inlineCompletionModelProperties}
+                  providerId={inlineCompletionModelProvider}
+                  modelId={inlineCompletionModel}
+                  inputName="inline-completion-model-id-input"
+                  onPropertyChange={(propertyId, value) =>
+                    onModelPropertyChange(
+                      'inline-completion',
+                      propertyId,
+                      value
+                    )
+                  }
+                />
               </div>
             </div>
           </div>

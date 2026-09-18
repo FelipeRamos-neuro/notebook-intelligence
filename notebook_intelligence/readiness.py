@@ -173,6 +173,33 @@ def _effective_model_name(models: list, configured_id: str) -> str:
     return configured_id
 
 
+def _required_model_property_is_blank(models: list) -> bool:
+    """True when the provider's model carries an empty required "model_id".
+
+    These providers send that property as the model name, so an empty value
+    means every turn goes out with no model at all. Nothing else notices:
+    `chat_model.model` still holds the class's constant placeholder id, so
+    the configuration looks complete from the outside.
+    """
+    if len(models) != 1:
+        return False
+    try:
+        prop = models[0].get_property("model_id")
+    except Exception:
+        return False
+    if prop is None or getattr(prop, "optional", False):
+        return False
+    value = getattr(prop, "value", None)
+    if value is None:
+        # What a hand-written config.json with `"value": null` leaves behind.
+        return True
+    if not isinstance(value, str):
+        # Any other shape this code does not recognize is not evidence of a
+        # blank, and this row escalates to blocked.
+        return False
+    return not value.strip()
+
+
 def _copilot_signed_in() -> Optional[bool]:
     """True/False for GitHub Copilot's login state, None if undeterminable.
 
@@ -285,6 +312,7 @@ def _provider_rows(
     # typed lives in a "model_id" property. Reporting the placeholder tells a
     # support engineer nothing.
     effective_model = _effective_model_name(model_objects, model_id)
+    model_is_blank = _required_model_property_is_blank(model_objects)
     rows.append(
         _row(
             "provider.configured",
@@ -292,7 +320,11 @@ def _provider_rows(
             LEVEL_OK,
             "Chat model provider",
             f"{provider_id}"
-            + (f", model '{effective_model}'" if effective_model else ", no model selected"),
+            + (
+                f", model '{effective_model}'"
+                if effective_model and not model_is_blank
+                else ", no model selected"
+            ),
         )
     )
 
@@ -350,6 +382,24 @@ def _provider_rows(
             f"{len(models)} model(s) available.",
         )
     )
+
+    if model_is_blank:
+        # Not necessarily because the field was cleared: a configured id this
+        # provider cannot resolve leaves the property empty too, and the
+        # stale-id warning below is what names that cause, so both rows run.
+        rows.append(
+            _row(
+                "provider.model_configured",
+                "provider",
+                LEVEL_BLOCKED,
+                "Model name",
+                "No model name is set for this provider, so requests carry "
+                "none.",
+                "Open NBI Settings and set a model for this provider under "
+                "General. The endpoint rejects a request with no model, so "
+                "every turn fails until it is set.",
+            )
+        )
 
     placeholder_id_provider = len(models) == 1 and effective_model != model_id
     if model_id and not placeholder_id_provider and model_id not in models:
