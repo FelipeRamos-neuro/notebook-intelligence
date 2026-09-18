@@ -611,6 +611,19 @@ pre:has(.code-block-header) {
   gap: 6px;
 }
 
+/* Says a turn was stopped on purpose. Muted rather than an error color: the
+   user did this deliberately, and whatever streamed before the stop is still
+   worth reading. */
+.chat-message-stopped {
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--jp-ui-font-color2);
+  background-color: var(--jp-layout-color2);
+  white-space: nowrap;
+}
+
 /* The React `key` prop on this span is keyed to the heartbeat tick, so
    each beat remounts the element and the animation runs from t=0. */
 .generating-pulse {
