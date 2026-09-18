@@ -56,6 +56,170 @@ MCP_ICON_URL = f"data:image/png;base64,{MCP_ICON_SRC}"
 MCP_SERVER_RESPONSE_TIMEOUT = _read_float_env("NBI_MCP_SERVER_RESPONSE_TIMEOUT", 30)
 MCP_CAPABILITY_RETRY_DELAY = _read_float_env("NBI_MCP_CAPABILITY_RETRY_DELAY", 5)
 MCP_CAPABILITY_RETRY_LIMIT = 3
+# A command that is not an MCP server never answers `initialize`, so the
+# handshake has to have its own ceiling: without one the worker parks inside
+# client startup forever, holding the subprocess open. Generous by default
+# because a cold `npx` server legitimately takes tens of seconds to start.
+MCP_CONNECT_TIMEOUT = _read_float_env("NBI_MCP_CONNECT_TIMEOUT", 60)
+# A worker parked in the handshake never reads StopServer, so waiting the full
+# response timeout for an ack it cannot send is what left orphaned subprocesses
+# behind. This shorter ceiling applies only while the server is still
+# connecting; a connected server keeps the full response timeout so a long
+# tool call is not aborted by an ordinary disconnect.
+MCP_DISCONNECT_TIMEOUT = _read_float_env("NBI_MCP_DISCONNECT_TIMEOUT", 5)
+# The SDK logs one traceback per unparseable line from a stdio server, so a
+# process that writes non-JSON in a loop writes the Jupyter log at its own
+# output rate. Cap the burst and report the suppressed count, so the failure
+# stays visible without filling the disk.
+MCP_STDIO_LOG_BURST = 5
+MCP_STDIO_LOG_INTERVAL = 10.0
+# How often a teardown re-sends its cancellation while the worker has not
+# finished unwinding. See _TaskDeadline for why one delivery can be absorbed.
+MCP_CANCEL_RETRY_INTERVAL = 1.0
+
+
+class _BurstLimitingFilter(logging.Filter):
+    """Allow a few records per interval from a chatty third-party logger."""
+
+    def __init__(self, burst: int, interval: float):
+        super().__init__()
+        self._burst = burst
+        self._interval = interval
+        self._lock = threading.Lock()
+        self._window_start = 0.0
+        self._seen = 0
+        self._dropped = 0
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            if now - self._window_start >= self._interval:
+                dropped = self._dropped
+                self._window_start = now
+                self._seen = 1
+                self._dropped = 0
+                if dropped:
+                    # Format now: appending to an unformatted msg would strip
+                    # the record's own args along with their placeholders.
+                    record.msg = (
+                        f"{record.getMessage()} ({dropped} similar "
+                        f"message{'s' if dropped > 1 else ''} suppressed)"
+                    )
+                    record.args = None
+                return True
+            if self._seen < self._burst:
+                self._seen += 1
+                return True
+            self._dropped += 1
+            return False
+
+    def drain_dropped(self) -> int:
+        with self._lock:
+            dropped = self._dropped
+            self._dropped = 0
+            return dropped
+
+
+_stdio_log_filter_lock = threading.Lock()
+_stdio_log_filter: Optional[_BurstLimitingFilter] = None
+
+
+def _install_stdio_log_burst_limit() -> None:
+    global _stdio_log_filter
+    # connect() runs on Tornado handler threads, so two servers can race here.
+    with _stdio_log_filter_lock:
+        if _stdio_log_filter is not None:
+            return
+        installed = _BurstLimitingFilter(MCP_STDIO_LOG_BURST, MCP_STDIO_LOG_INTERVAL)
+        logging.getLogger("mcp.client.stdio").addFilter(installed)
+        _stdio_log_filter = installed
+
+
+def _drain_stdio_log_drops() -> int:
+    """Records the filter dropped and has not reported yet.
+
+    A burst that ends when the offending server is killed leaves its tail
+    unreported, because nothing rolls the window afterwards.
+    """
+    with _stdio_log_filter_lock:
+        installed = _stdio_log_filter
+    return installed.drain_dropped() if installed is not None else 0
+
+
+class _TaskDeadline:
+    """Cancel the running task if the guarded block outlives `seconds`.
+
+    `asyncio.wait_for` cannot be used to bound a transport's enter or exit:
+    before Python 3.12 it runs the awaitable in a child task, and the anyio
+    cancel scopes the MCP SDK opens must be exited by the same task that
+    entered them. Cancelling this task delivers the cancellation inside the
+    block instead, which unwinds in the right task on every version.
+
+    The cancellation is re-sent while the block runs, because anyio can
+    re-deliver one cancellation into its own teardown and park there; a
+    follow-up cancel is what breaks that out.
+    """
+
+    def __init__(self, seconds: float, retry_interval: float = 1.0):
+        self._seconds = seconds
+        self._retry_interval = retry_interval
+        self._handle = None
+        self._task = None
+        self.expired = False
+
+    def __enter__(self) -> "_TaskDeadline":
+        loop = asyncio.get_running_loop()
+        self._task = asyncio.current_task()
+        self._handle = loop.call_later(self._seconds, self._fire, loop)
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        # No await runs between the block ending and here, so a single-threaded
+        # loop cannot slip a cancellation in after this point.
+        if self._handle is not None:
+            self._handle.cancel()
+            self._handle = None
+        return False
+
+    def _fire(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.expired = True
+        if self._task is not None:
+            self._task.cancel()
+        self._handle = loop.call_later(self._retry_interval, self._fire, loop)
+
+
+def _is_cancellation(error: BaseException) -> bool:
+    """True if `error` is a cancellation, including one anyio wrapped up.
+
+    A task group re-raises cancellation as an exception group, which is a
+    BaseExceptionGroup when any leaf is one, so neither the type nor the base
+    class alone identifies it.
+    """
+    if isinstance(error, asyncio.CancelledError):
+        return True
+    split = getattr(error, "split", None)
+    if split is None:
+        return False
+    matched, _ = split(asyncio.CancelledError)
+    return matched is not None
+
+
+def _drain_cancel_requests() -> None:
+    """Clear the cancellation requests counted against the running task.
+
+    Only the counter: `uncancel` does not clear the flag that makes the next
+    await raise (it does before 3.13), so a caller that swallowed a
+    cancellation still has to expect one more. What this does buy is that an
+    anyio task group entered afterwards does not see the task as cancelling
+    and abandon its own body. A no-op before 3.11, which has neither call.
+    """
+    task = asyncio.current_task()
+    uncancel = getattr(task, "uncancel", None)
+    cancelling = getattr(task, "cancelling", None)
+    if uncancel is None or cancelling is None:
+        return
+    while cancelling() > 0:
+        uncancel()
 
 
 def _is_method_not_found(error: Exception) -> bool:
@@ -241,6 +405,10 @@ class MCPServerImpl(MCPServer):
         self._client_queue = None
         self._client_thread_signal = None
         self._client_thread = None
+        self._client_loop = None
+        self._client_task = None
+        self._client_cancel_requested = None
+        self._client_handshake_done = None
         self._status = MCPServerStatus.NotConnected
         self._tool_prompt_list_lock = threading.Lock()
         self._connection_state_lock = threading.RLock()
@@ -267,6 +435,7 @@ class MCPServerImpl(MCPServer):
         return self._client_thread is not None
 
     def connect(self):
+        _install_stdio_log_burst_limit()
         try:
             with self._connection_state_lock:
                 if self._client_thread is not None:
@@ -280,8 +449,14 @@ class MCPServerImpl(MCPServer):
                 generation = self._connection_generation
                 queue = Queue()
                 signal = SignalImpl()
+                cancel_requested = threading.Event()
+                handshake_done = threading.Event()
                 self._client_queue = queue
                 self._client_thread_signal = signal
+                self._client_cancel_requested = cancel_requested
+                self._client_handshake_done = handshake_done
+                self._client_loop = None
+                self._client_task = None
                 self._client_thread = threading.Thread(
                     name="MCP Server Thread",
                     target=asyncio.run,
@@ -290,6 +465,8 @@ class MCPServerImpl(MCPServer):
                         queue,
                         signal,
                         generation,
+                        cancel_requested,
+                        handshake_done,
                     ),)
                 )
                 self._client_thread.start()
@@ -312,8 +489,14 @@ class MCPServerImpl(MCPServer):
                 e,
             )
             # The worker is already alive. Queue a terminal event before
-            # invalidating the generation so it cannot leak indefinitely.
-            self._send_mcp_request(MCPServerEventType.StopServer)
+            # invalidating the generation so it cannot leak indefinitely. The
+            # server has not connected yet, so use the same bounded stop the
+            # disconnect path uses rather than waiting out a request timeout.
+            stop = self._send_mcp_request(
+                MCPServerEventType.StopServer, timeout=MCP_DISCONNECT_TIMEOUT
+            )
+            if not stop["success"]:
+                self._cancel_client_worker(generation)
             with self._connection_state_lock:
                 if generation == self._connection_generation:
                     self._connection_generation += 1
@@ -326,11 +509,35 @@ class MCPServerImpl(MCPServer):
         if not self.is_connected():
             return
 
+        with self._connection_state_lock:
+            generation = self._connection_generation
+            # A worker that never finished the handshake cannot read StopServer
+            # at all, so its stop is bounded tightly and escalates to a cancel.
+            # Once the handshake completes, StopServer only queues behind real
+            # work, so it keeps the full response timeout: cancelling there
+            # would abort an in-flight tool call. Status cannot answer this,
+            # because a healthy server moves straight on through the capability
+            # refresh states and does not sit at Connected.
+            handshake_done = self._client_handshake_done
+            stuck_connecting = (
+                handshake_done is None or not handshake_done.is_set()
+            )
+
         self._set_status(MCPServerStatus.Disconnecting)
 
-        response = self._send_mcp_request(MCPServerEventType.StopServer)
+        response = self._send_mcp_request(
+            MCPServerEventType.StopServer,
+            timeout=MCP_DISCONNECT_TIMEOUT if stuck_connecting else None,
+        )
         if not response["success"]:
             log.error(f"MCP server '{self.name}' failed to stop: {response['error']}")
+            # Whichever window applied, it has now elapsed and this connection
+            # is about to be invalidated, so there is no in-flight work left
+            # to protect. Cancelling the worker's task unwinds the client
+            # context, which is what terminates the stdio subprocess; without
+            # it the worker and its child outlive the config entry for the
+            # life of the Jupyter process.
+            self._cancel_client_worker(generation)
 
         with self._connection_state_lock:
             # Invalidate in-flight refreshes before publishing the completed
@@ -343,7 +550,48 @@ class MCPServerImpl(MCPServer):
                 self._capability_retry_timer.cancel()
                 self._capability_retry_timer = None
             self._capability_retry_attempts = 0
+            self._client_loop = None
+            self._client_task = None
+            self._client_cancel_requested = None
+            self._client_handshake_done = None
             self._set_status(MCPServerStatus.NotConnected)
+
+    def _cancel_client_worker(self, generation: int) -> None:
+        """Cancel one generation's worker task so its client context unwinds.
+
+        Best effort: a worker suspended at an await receives the cancellation,
+        while one blocked in `queue.get` only sees it after its next event.
+        """
+        with self._connection_state_lock:
+            # Every other cross-thread mutation here is generation-guarded.
+            # Without the same guard a slow disconnect could cancel the
+            # replacement connection a concurrent connect() just installed.
+            if generation != self._connection_generation:
+                return
+            loop = self._client_loop
+            task = self._client_task
+            cancel_requested = self._client_cancel_requested
+            self._client_task = None
+            self._client_loop = None
+        if cancel_requested is not None:
+            # anyio surfaces a cancellation as an ExceptionGroup, so the worker
+            # cannot tell an intentional teardown from a crash by exception
+            # type. Record the intent before delivering it.
+            cancel_requested.set()
+        if loop is None or task is None or loop.is_closed():
+            return
+
+        def _cancel_until_it_lands() -> None:
+            # One cancellation is not always enough, for the reason
+            # _TaskDeadline documents: anyio can re-deliver it into its own
+            # teardown and park there. Keep asking until the task is done.
+            if task.done():
+                return
+            task.cancel()
+            loop.call_later(MCP_CANCEL_RETRY_INTERVAL, _cancel_until_it_lands)
+
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(_cancel_until_it_lands)
 
     def _update_tool_and_prompt_list_async(self, generation: int):
         thread = threading.Thread(
@@ -430,6 +678,8 @@ class MCPServerImpl(MCPServer):
         queue: Optional[Queue] = None,
         signal: Optional[SignalImpl] = None,
         generation: Optional[int] = None,
+        cancel_requested: Optional[threading.Event] = None,
+        handshake_done: Optional[threading.Event] = None,
     ):
         # Each worker owns immutable connection-generation resources. A stale
         # worker that finishes after disconnect/reconnect must never consume
@@ -440,96 +690,166 @@ class MCPServerImpl(MCPServer):
             signal = self._client_thread_signal
         if generation is None:
             generation = self._connection_generation
+        if cancel_requested is None:
+            cancel_requested = threading.Event()
+        if handshake_done is None:
+            handshake_done = threading.Event()
         worker = threading.current_thread()
+        with self._connection_state_lock:
+            if (
+                generation == self._connection_generation
+                and self._client_thread is worker
+            ):
+                # disconnect() needs a handle on this worker to cancel it when
+                # the queue cannot be drained (a handshake that never ends).
+                self._client_loop = asyncio.get_running_loop()
+                self._client_task = asyncio.current_task()
+        client = None
+        connected = False
         try:
-            async with await self._get_client() as client:
-                with self._connection_state_lock:
-                    if (
-                        generation != self._connection_generation
-                        or self._client_thread is not worker
-                    ):
-                        return
-                    self._set_status(MCPServerStatus.Connected)
-                while True:
-                    event = queue.get(block=True)
-                    event_id = event["id"]
-                    event_type = event["type"]
-                    if event_type == MCPServerEventType.ListTools:
-                        if not getattr(client, "supports_tools", True):
-                            log.debug(
-                                "MCP server '%s' did not advertise tools; "
-                                "using an empty tool list",
-                                self.name,
-                            )
+            if cancel_requested.is_set():
+                # A disconnect that landed before this worker registered above
+                # found no task to cancel. Without this check the handshake
+                # would still run to its ceiling, holding a subprocess the
+                # caller has already disowned.
+                log.debug(
+                    "MCP server '%s' worker generation %s stopped before start",
+                    self.name,
+                    generation,
+                )
+                return
+            client = await self._get_client()
+            with _TaskDeadline(MCP_CONNECT_TIMEOUT) as deadline:
+                try:
+                    await client.__aenter__()
+                except BaseException as e:
+                    if cancel_requested.is_set():
+                        raise
+                    if deadline.expired:
+                        _drain_cancel_requests()
+                        target = (
+                            "command"
+                            if self._stdio_params is not None
+                            else "url"
+                        )
+                        raise TimeoutError(
+                            f"MCP server '{self.name}' did not complete the "
+                            f"MCP handshake within {MCP_CONNECT_TIMEOUT}s; the "
+                            f"configured {target} may not be an MCP server"
+                        ) from e
+                    raise
+            connected = True
+            handshake_done.set()
+            with self._connection_state_lock:
+                if (
+                    generation != self._connection_generation
+                    or self._client_thread is not worker
+                ):
+                    return
+                self._set_status(MCPServerStatus.Connected)
+            while True:
+                event = queue.get(block=True)
+                event_id = event["id"]
+                event_type = event["type"]
+                if event_type == MCPServerEventType.ListTools:
+                    if not getattr(client, "supports_tools", True):
+                        log.debug(
+                            "MCP server '%s' did not advertise tools; "
+                            "using an empty tool list",
+                            self.name,
+                        )
+                        _emit_mcp_response(signal, event_id, data=[])
+                        continue
+                    try:
+                        tool_list = await client.list_tools()
+                    except Exception as e:
+                        if _is_method_not_found(e):
                             _emit_mcp_response(signal, event_id, data=[])
-                            continue
-                        try:
-                            tool_list = await client.list_tools()
-                        except Exception as e:
-                            if _is_method_not_found(e):
-                                _emit_mcp_response(signal, event_id, data=[])
-                            else:
-                                error = f"Error occurred while listing MCP tools: {str(e)}"
-                                log.error(error)
-                                _emit_mcp_response(signal, event_id, error=error)
                         else:
-                            _emit_mcp_response(signal, event_id, data=tool_list)
-                    elif event_type == MCPServerEventType.CallTool:
-                        try:
-                            result = await client.call_tool(event["args"]["tool_name"], event["args"]["tool_args"])
-                        except Exception as e:
-                            error = f"Error occurred while calling MCP tool {event['args']['tool_name']}: {str(e)}"
+                            error = f"Error occurred while listing MCP tools: {str(e)}"
                             log.error(error)
                             _emit_mcp_response(signal, event_id, error=error)
-                        else:
-                            _emit_mcp_response(signal, event_id, data=result)
-                    elif event_type == MCPServerEventType.StopServer:
-                        _emit_mcp_response(signal, event_id, data="stopped")
-                        return
-                    elif event_type == MCPServerEventType.ListPrompts:
-                        if not getattr(client, "supports_prompts", True):
-                            log.debug(
-                                "MCP server '%s' did not advertise prompts; "
-                                "using an empty prompt list",
-                                self.name,
-                            )
-                            _emit_mcp_response(signal, event_id, data=[])
-                            continue
-                        try:
-                            prompts = await client.list_prompts()
-                        except Exception as e:
-                            if _is_method_not_found(e):
-                                _emit_mcp_response(signal, event_id, data=[])
-                            else:
-                                error = f"Error occurred while listing MCP prompts: {str(e)}"
-                                log.error(error)
-                                _emit_mcp_response(signal, event_id, error=error)
-                        else:
-                            _emit_mcp_response(signal, event_id, data=prompts)
-                    elif event_type == MCPServerEventType.GetPromptValue:
-                        try:
-                            prompt = await client.get_prompt(event["args"]["prompt_name"], event["args"]["prompt_args"])
-                        except Exception as e:
-                            error = f"Error occurred while getting MCP prompt value {event['args']['prompt_name']}: {str(e)}"
-                            log.error(error)
-                            _emit_mcp_response(signal, event_id, error=error)
-                        else:
-                            messages = getattr(prompt, "messages", None)
-                            if not isinstance(messages, list):
-                                error = (
-                                    "MCP server returned invalid messages for prompt "
-                                    f"'{event['args']['prompt_name']}'"
-                                )
-                                log.error(error)
-                                _emit_mcp_response(signal, event_id, error=error)
-                            else:
-                                _emit_mcp_response(signal, event_id, data=messages)
                     else:
-                        error = f"Unknown MCP server event type: {event_type}"
+                        _emit_mcp_response(signal, event_id, data=tool_list)
+                elif event_type == MCPServerEventType.CallTool:
+                    try:
+                        result = await client.call_tool(event["args"]["tool_name"], event["args"]["tool_args"])
+                    except Exception as e:
+                        error = f"Error occurred while calling MCP tool {event['args']['tool_name']}: {str(e)}"
                         log.error(error)
                         _emit_mcp_response(signal, event_id, error=error)
-        except Exception as e:
-            log.error(f"Error occurred while running MCP server thread: {str(e)}")
+                    else:
+                        _emit_mcp_response(signal, event_id, data=result)
+                elif event_type == MCPServerEventType.StopServer:
+                    _emit_mcp_response(signal, event_id, data="stopped")
+                    return
+                elif event_type == MCPServerEventType.ListPrompts:
+                    if not getattr(client, "supports_prompts", True):
+                        log.debug(
+                            "MCP server '%s' did not advertise prompts; "
+                            "using an empty prompt list",
+                            self.name,
+                        )
+                        _emit_mcp_response(signal, event_id, data=[])
+                        continue
+                    try:
+                        prompts = await client.list_prompts()
+                    except Exception as e:
+                        if _is_method_not_found(e):
+                            _emit_mcp_response(signal, event_id, data=[])
+                        else:
+                            error = f"Error occurred while listing MCP prompts: {str(e)}"
+                            log.error(error)
+                            _emit_mcp_response(signal, event_id, error=error)
+                    else:
+                        _emit_mcp_response(signal, event_id, data=prompts)
+                elif event_type == MCPServerEventType.GetPromptValue:
+                    try:
+                        prompt = await client.get_prompt(event["args"]["prompt_name"], event["args"]["prompt_args"])
+                    except Exception as e:
+                        error = f"Error occurred while getting MCP prompt value {event['args']['prompt_name']}: {str(e)}"
+                        log.error(error)
+                        _emit_mcp_response(signal, event_id, error=error)
+                    else:
+                        messages = getattr(prompt, "messages", None)
+                        if not isinstance(messages, list):
+                            error = (
+                                "MCP server returned invalid messages for prompt "
+                                f"'{event['args']['prompt_name']}'"
+                            )
+                            log.error(error)
+                            _emit_mcp_response(signal, event_id, error=error)
+                        else:
+                            _emit_mcp_response(signal, event_id, data=messages)
+                else:
+                    error = f"Unknown MCP server event type: {event_type}"
+                    log.error(error)
+                    _emit_mcp_response(signal, event_id, error=error)
+        except BaseException as e:
+            # A cancellation we asked for is not a crash, and anyio reshapes it
+            # into an exception group, so the flag rather than the exception
+            # type decides. disconnect() owns the connection fields in that
+            # case and has already published the terminal status.
+            _drain_cancel_requests()
+            if cancel_requested.is_set() or _is_cancellation(e):
+                log.debug(
+                    "MCP server '%s' worker generation %s stopped on request",
+                    self.name,
+                    generation,
+                )
+                return
+            log.error(
+                f"Error occurred while running MCP server thread: {str(e)}",
+                exc_info=True,
+            )
+            suppressed = _drain_stdio_log_drops()
+            if suppressed:
+                log.error(
+                    "MCP server '%s' also produced %s unparseable output "
+                    "message(s) that were not logged",
+                    self.name,
+                    suppressed,
+                )
             # Publish the terminal state before clearing the worker pointer.
             # Request waiters use the pointer change as their release signal;
             # reversing these writes lets a waiter overwrite this status with
@@ -550,7 +870,55 @@ class MCPServerImpl(MCPServer):
                 self._capability_retry_attempts = 0
                 self._set_status(MCPServerStatus.FailedToConnect)
                 self._client_thread = None
+                self._client_loop = None
+                self._client_task = None
+                self._client_cancel_requested = None
+                self._client_handshake_done = None
                 self._connection_generation += 1
+            if not isinstance(e, Exception):
+                # Nothing here handles a KeyboardInterrupt, or a group
+                # carrying one, so let it out. Only after the state above
+                # says this worker is gone: otherwise the server keeps a
+                # pointer to a dead thread and connect() never replaces it.
+                raise
+        finally:
+            # Unwinding the client context is what terminates a stdio
+            # subprocess. Only a completed handshake needs it here: the client
+            # unwinds itself when its own startup fails.
+            if client is not None and connected:
+                _drain_cancel_requests()
+                with _TaskDeadline(MCP_DISCONNECT_TIMEOUT) as deadline:
+                    try:
+                        await client.__aexit__(None, None, None)
+                    except BaseException as e:
+                        _drain_cancel_requests()
+                        if not _is_cancellation(e) and not isinstance(
+                            e, Exception
+                        ):
+                            raise
+                        if deadline.expired:
+                            log.warning(
+                                "MCP server '%s' did not release its transport "
+                                "within %ss; abandoning it",
+                                self.name,
+                                MCP_DISCONNECT_TIMEOUT,
+                            )
+                        elif _is_cancellation(e):
+                            # A cancel queued while the worker sat in
+                            # queue.get is delivered here, at its first await.
+                            # That is the teardown the caller asked for, not a
+                            # failure to release anything.
+                            log.debug(
+                                "MCP server '%s' transport released under "
+                                "cancellation",
+                                self.name,
+                            )
+                        else:
+                            log.warning(
+                                "Error releasing MCP server '%s' transport: %s",
+                                self.name,
+                                e,
+                            )
 
     def _create_client(self) -> Client:
         if self._stdio_params is not None:
@@ -574,7 +942,12 @@ class MCPServerImpl(MCPServer):
         # a local for the lifetime of that worker.
         return self._create_client()
 
-    def _send_mcp_request(self, event_type: MCPServerEventType, event_args: dict = None):
+    def _send_mcp_request(
+        self,
+        event_type: MCPServerEventType,
+        event_args: dict = None,
+        timeout: Optional[float] = None,
+    ):
         event_id = uuid.uuid4().hex
         event = {
             "id": event_id,
@@ -618,6 +991,9 @@ class MCPServerImpl(MCPServer):
         # turning a successful request into a 30-second timeout.
         queue.put(event)
 
+        wait_limit = (
+            MCP_SERVER_RESPONSE_TIMEOUT if timeout is None else timeout
+        )
         start_time = time.time()
 
         while True:
@@ -635,7 +1011,7 @@ class MCPServerImpl(MCPServer):
                     "success": False,
                     "error": f"MCP server '{self.name}' worker stopped",
                 }
-            if time.time() - start_time > MCP_SERVER_RESPONSE_TIMEOUT:
+            if time.time() - start_time > wait_limit:
                 signal.disconnect(_on_client_response)
                 return {
                     "data": None,
