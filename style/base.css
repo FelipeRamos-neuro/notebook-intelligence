@@ -2660,6 +2660,30 @@ svg.access-token-warning {
   gap: 8px;
 }
 
+/* A button's contents are a block container, so a button holding an inline
+   icon and a block-level `jp-Dialog-buttonLabel` lays them out as two line
+   boxes. `button.jp-mod-styled` fixes the height at 32px and
+   `.jp-Dialog-button` leaves overflow visible, so the second line, the label,
+   paints below the button on the panel background, in the button's own
+   light-on-dark text color. A flex row keeps the icon and its label on one
+   line. `.nbi-perf-copy-button` declares the same layout for the copy button
+   itself; both of its call sites sit in the row below, so that rule is
+   currently redundant rather than load-bearing. */
+.nbi-readiness-actions > button,
+.nbi-perf-header-actions > button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+/* As flex items these labels no longer wrap their text, so a narrow panel
+   would have the buttons overlap rather than reflow. */
+.nbi-readiness-actions,
+.nbi-perf-header-actions {
+  flex-wrap: wrap;
+}
+
 .nbi-readiness-confirm {
   display: flex;
   align-items: center;
