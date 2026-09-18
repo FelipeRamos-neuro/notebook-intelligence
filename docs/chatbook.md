@@ -74,7 +74,7 @@ The confirm bar names the mode that produced it and links to Settings → **Chat
 
 Code-authored cells are unchanged in every mode: the user typed the source, so Run executes it.
 
-Re-running a prompt whose generated code was already approved (via Run on the confirm bar, or under Auto-run / a clean Confirm-if-risky scan) skips another confirm and executes that code directly, without reopening the bar.
+Re-running a prompt whose generated code was already approved (via Run on the confirm bar, or under Auto-run / a clean Confirm-if-risky scan) can skip another confirm and execute that code directly. This applies within the session only, and only when the prompt is self-contained: a prompt carrying an `@` mention, a registered context provider, or applicable rules is regenerated instead, because its inputs may have changed. Even then the kernel reuses the approved code only when regeneration produces exactly the same code; anything else reopens the bar.
 
 ## Confirm-if-risky detection
 
@@ -84,8 +84,9 @@ The scan is a speed bump, not a security boundary. False positives (for example 
 
 - `ast.parse` failure → risky (fail closed).
 - Imports such as `os`, `subprocess`, `socket`, `requests`, `http`, `urllib`, `ctypes`, `importlib`, `pickle`, `webbrowser`.
-- Calls such as `eval`, `exec`, `compile`, `__import__`, `Path.unlink` / `rmdir`, `shutil.rmtree` / `move`, `open(..., "w"|"a"|"x")`, `to_csv` / `to_parquet` / `to_sql`.
-- IPython/shell: lines starting with `!`, and magics `%run`, `%env`, `%set_env`, `%pip`, `%conda`, `%%bash` / `%%sh` / `%%script`.
+- Calls such as `eval`, `exec`, `compile`, `__import__`, `Path.unlink` / `rmdir` / `remove` / `rename`, `shutil.rmtree` / `move`, `open(..., "w"|"a"|"x")`, `to_csv` / `to_parquet` / `to_sql`.
+- Calls that reach a shell through IPython: `.system()`, `.getoutput()`, `.run_line_magic()`, `.run_cell_magic()`, `.run_cell()`.
+- IPython/shell: lines starting with `!`, and magics `%run`, `%env`, `%set_env`, `%pip`, `%conda`, `%sx`, `%system`, `%%bash` / `%%sh` / `%%script`.
 
 For other backend languages the static scan fails closed (treats the cell as risky) so Confirm if risky still prompts. Optional **Also classify with the chat model** (off by default): a second JSON classifier may raise risk. A static hit always wins. Classifier timeout or invalid output confirms instead of auto-running. Mention and dynamic context are not sent to the classifier, only the generated code.
 
@@ -99,4 +100,4 @@ Chatbook is on by default. Users do not set an environment variable. An admin ca
 
 The cap applies to natural-language generation. A cell explicitly switched to **Cd** is user-authored code and executes like a normal notebook code cell, without generation, scanning, or confirmation. It is not a sandbox or a restriction on code the user can run directly.
 
-User preference is stored as `chatbook_execution_mode` and `chatbook_backend_kernel` in `~/.jupyter/nbi/config.json`.
+User preference is stored as `chatbook_execution_mode`, `chatbook_backend_kernel`, and `chatbook_llm_danger_scan` in `~/.jupyter/nbi/config.json`.

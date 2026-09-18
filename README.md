@@ -176,7 +176,7 @@ Use the sparkle icon on the cell toolbar or the keyboard shortcut to show the in
 
 ### Auto-complete
 
-Auto-complete suggestions are shown as you type. `Tab` accepts. NBI provides auto-complete in code cells and Python file editors.
+Auto-complete suggestions are shown as you type. `Tab` accepts one while it is on screen, and indents otherwise. NBI provides auto-complete in code cells and Python file editors.
 
 <img src="media/inline-completion.gif" alt="Auto-complete" width=700 />
 
@@ -195,6 +195,8 @@ Right-click a cell output (or hover for the toolbar) to send it straight into th
 - **Show output toolbar** — the floating toolbar above each output with quick **Explain** / **Ask** / **Troubleshoot** actions.
 
 Each is per-user toggleable from Settings (saved as `enable_explain_error`, `enable_output_followup`, `enable_output_toolbar` in `config.json`, default on) and admin-lockable via `NBI_EXPLAIN_ERROR_POLICY` / `NBI_OUTPUT_FOLLOWUP_POLICY` / `NBI_OUTPUT_TOOLBAR_POLICY`.
+
+A revert is skipped while that document's kernel is busy, so a change landing mid-execution is applied when the cell finishes rather than swapped in under it, and the notice naming the reloaded file is shown only for the document you are looking at.
 
 ### Notebook toolbar generation
 
