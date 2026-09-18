@@ -468,6 +468,31 @@ class AIServiceManager(Host):
         return self.active_agent_mode == "acp"
 
     @property
+    def perf_backend_label(self) -> str:
+        """Which backend serves a chat turn, for diagnostics.
+
+        The native path is named by the configured provider, because a report
+        that calls every non-agent turn "copilot" names a provider the user
+        may not have. Read from config rather than from the resolved model:
+        a model id the provider's current catalogue does not list leaves that
+        model None, and the turn would then be labelled as if no provider
+        were configured at all. "chat" covers only the case where none is.
+        """
+        if self.is_acp_mode:
+            return "acp"
+        if self.is_claude_code_mode:
+            return "claude"
+        # Tolerant of a hand-edited config: this runs on the chat path, and
+        # diagnostics must not be what fails a request that would otherwise
+        # degrade to "Chat model is not set!".
+        chat_model = self.nbi_config.chat_model
+        provider_id = chat_model.get("provider") if isinstance(chat_model, dict) else None
+        provider_id = provider_id.strip() if isinstance(provider_id, str) else ""
+        if provider_id in ("", "none"):
+            return "chat"
+        return provider_id
+
+    @property
     def claude_models(self) -> list[dict]:
         return get_claude_models()
 
@@ -620,6 +645,10 @@ class AIServiceManager(Host):
     async def handle_chat_request(self, request: ChatRequest, response: ChatResponse, options: dict = {}) -> None:
         is_claude_code_mode = self.is_claude_code_mode
         is_acp_mode = self.is_acp_mode
+        # Read alongside the mode snapshot the participant is chosen from, so
+        # a settings save landing mid-request has a much smaller window to
+        # label the span with a backend this dispatch is not using.
+        dispatch_label = self.perf_backend_label
         if not is_claude_code_mode and not is_acp_mode and self.chat_model is None:
             response.stream(MarkdownData("Chat model is not set!"))
             response.stream(ButtonData("Configure", "notebook-intelligence:open-configuration-dialog"))
@@ -704,8 +733,7 @@ class AIServiceManager(Host):
         turn = perf.get_turn(_perf_message_id) if _perf_message_id else None
         if turn is None:
             return await participant.handle_chat_request(request, response, options)
-        provider = "acp" if is_acp_mode else ("claude" if is_claude_code_mode else "copilot")
-        with turn.span("dispatch", provider=provider):
+        with turn.span("dispatch", provider=dispatch_label):
             return await participant.handle_chat_request(request, response, options)
 
     async def get_completion_context(self, request: ContextRequest) -> CompletionContext:
