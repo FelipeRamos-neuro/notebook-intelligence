@@ -439,7 +439,7 @@ function SettingsPanelComponent(props: any) {
   );
 }
 
-function SettingsPanelTabsComponent(props: {
+export function SettingsPanelTabsComponent(props: {
   tabs: TabSpec[];
   activeTab: string;
   onTabSelected: (tab: string) => void;
@@ -474,7 +474,14 @@ function SettingsPanelTabsComponent(props: {
             tabIndex={selected ? 0 : -1}
             onClick={() => props.onTabSelected(tab.id)}
           >
-            {tab.icon && tab.icon()}
+            {tab.icon && (
+              // The icon is decoration: the label beside it is the name. Left
+              // exposed, the svg is an unnamed image node inside the tab,
+              // which some screen readers voice as "image", and accessible
+              // name computations disagree about whether it suppresses the
+              // name entirely. Hiding it settles both.
+              <span aria-hidden="true">{tab.icon()}</span>
+            )}
             {tab.label}
           </button>
         );
