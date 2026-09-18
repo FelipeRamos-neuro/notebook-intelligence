@@ -77,6 +77,10 @@ class OpenAICompatibleChatModel(ChatModel):
         api_key = self.get_property("api_key").value
 
         client = OpenAI(base_url=base_url, api_key=api_key)
+        if stream and cancel_token is not None and cancel_token.is_cancel_requested:
+            # Cancelled while the context was still being gathered: never ask.
+            response.finish()
+            return
         resp = client.chat.completions.create(
             model=model_id,
             messages=messages.copy(),
@@ -86,22 +90,33 @@ class OpenAICompatibleChatModel(ChatModel):
         )
 
         if stream:
-            for chunk in resp:
-                if len(chunk.choices) == 0:
-                    continue
-                delta = chunk.choices[0].delta
-                reasoning = getattr(delta, 'reasoning_content', None) or getattr(delta, 'reasoning', None)
-                if reasoning is not None:
-                    reasoning = str(reasoning)
-                response.stream({
-                        "choices": [{
-                            "delta": {
-                                "role": delta.role,
-                                "content": delta.content,
-                                "reasoning_content": reasoning
-                            }
-                        }]
-                    })
+            # `with` matters as much as the token check below. Breaking out of
+            # the iteration does not disconnect: the SDK's Stream wraps its
+            # iterator in a generator that references the Stream, and that
+            # cycle keeps refcounting from ever closing the response, so the
+            # provider goes on generating (and billing) until the cyclic
+            # collector happens to run. Closing it here tears the socket down
+            # at the stop, and covers the same leak when streaming raises.
+            with resp:
+                for chunk in resp:
+                    # The user pressing Stop marks the token.
+                    if cancel_token is not None and cancel_token.is_cancel_requested:
+                        break
+                    if len(chunk.choices) == 0:
+                        continue
+                    delta = chunk.choices[0].delta
+                    reasoning = getattr(delta, 'reasoning_content', None) or getattr(delta, 'reasoning', None)
+                    if reasoning is not None:
+                        reasoning = str(reasoning)
+                    response.stream({
+                            "choices": [{
+                                "delta": {
+                                    "role": delta.role,
+                                    "content": delta.content,
+                                    "reasoning_content": reasoning
+                                }
+                            }]
+                        })
             response.finish()
             return
         else:
