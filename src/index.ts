@@ -130,6 +130,7 @@ import {
 } from './utils';
 import { cellOutputAsContextBundle } from './cell-output-bundle';
 import { claimMCPTempFileName } from './mcp-config-temp-file';
+import { saveMCPConfig } from './mcp-config-save';
 import { UUID } from '@lumino/coreutils';
 
 import * as path from 'path';
@@ -908,23 +909,20 @@ class MCPConfigEditor {
   }
 
   private async _onSave() {
-    const mcpConfig = this._docWidget.context.model.toJSON();
-    try {
-      await NBIAPI.setMCPConfigFile(mcpConfig);
-    } catch (reason: any) {
-      // Surface server-side validation rejections (400 from the
-      // shape validator, 500 from a downstream save / reconcile
-      // failure) to the user. Without this, the document model
-      // goes clean on save and the user has no signal that their
-      // edit did not actually persist. ServerConnection.ResponseError
-      // carries the handler's JSON `message` field on reason.message.
-      Notification.error(
-        `Failed to save MCP config: ${reason?.message ?? reason}`,
-        { autoClose: 5000 }
-      );
-      return;
+    // Reading the document is `JSON.parse` on the editor's text, so it is
+    // passed as a thunk rather than called here: a syntax error in the user's
+    // edit has to reach the same notification as a server-side rejection
+    // (400 from the shape validator, 500 from a downstream save / reconcile
+    // failure). Otherwise the document model goes clean on save and the user
+    // has no signal that their edit did not persist.
+    const error = await saveMCPConfig(NBIAPI, () =>
+      this._docWidget.context.model.toJSON()
+    );
+    if (error !== null) {
+      Notification.error(`Failed to save MCP config: ${error}`, {
+        autoClose: 5000
+      });
     }
-    await NBIAPI.fetchCapabilities();
   }
 
   private _docManager: IDocumentManager;
