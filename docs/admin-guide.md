@@ -309,7 +309,16 @@ c.NotebookIntelligence.disabled_providers = [
 c.NotebookIntelligence.allow_enabling_providers_with_env = False  # users cannot override
 c.NotebookIntelligence.disabled_tools = ["nbi-command-execute", "nbi-file-edit"]
 c.NotebookIntelligence.allow_enabling_tools_with_env = False
+
+# Both agent modes reach a cloud provider without going through the provider
+# list above, so disabling providers alone does not make a deployment
+# local-only. acp_mode is already force-off by default; it is pinned here so
+# the preset keeps working if that default is ever relaxed.
+c.NotebookIntelligence.claude_mode_policy = "force-off"
+c.NotebookIntelligence.acp_mode_policy = "force-off"
 ```
+
+> **`disabled_providers` does not gate Claude mode or ACP mode.** Whether an agent mode handles a turn is read from its own settings (`claude_settings.enabled` / `acp_settings.enabled`), not from the provider list, and `claude_mode_policy` otherwise defaults to `user-choice`. Without the two policy lines above, a user can enable Claude mode and send data to Anthropic through the Claude Code CLI, which can hold a subscription login the deployment never issued a key for.
 
 Pair with `<env-prefix>/share/jupyter/nbi/config.json` selecting the Ollama provider and your local models:
 

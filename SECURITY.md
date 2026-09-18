@@ -18,8 +18,8 @@ NBI follows semantic versioning starting with 4.0.0. Security fixes land on the 
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 4.x     | Yes (latest minor) |
-| < 4.0   | No                 |
+| 6.x     | Yes (latest minor) |
+| < 6.0   | No                 |
 
 ## Scope
 

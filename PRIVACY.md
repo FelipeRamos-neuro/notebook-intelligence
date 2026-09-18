@@ -74,7 +74,7 @@ LLM outputs are non-deterministic. Pinning the model name, temperature, and seed
 
 For HIPAA, FedRAMP, classroom, or otherwise restricted environments:
 
-- **Force local-only models.** Disable every cloud provider via `disabled_providers` and use Ollama. See the [HIPAA / sensitive-data preset](docs/admin-guide.md#hipaa--sensitive-data-preset) in the admin guide.
+- **Force local-only models.** Disable every cloud provider via `disabled_providers`, force both agent modes off with `claude_mode_policy` and `acp_mode_policy`, and use Ollama. Disabling providers is not sufficient on its own: neither agent mode is a provider, and Claude mode is available to users unless an admin turns it off. See the [HIPAA / sensitive-data preset](docs/admin-guide.md#hipaa--sensitive-data-preset) in the admin guide.
 - **Restrict skill imports.** Block egress to `github.com` and serve managed skills from an internal manifest URL.
 - **Disable "remember GitHub Copilot login"** for shared systems where users share home directories.
 - **Pre-pull MCP servers** rather than allowing `npx -y` (which downloads from npmjs).

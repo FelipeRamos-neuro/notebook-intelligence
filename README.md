@@ -41,7 +41,7 @@ NBI is free and open-source. Connect it to a free or paid LLM provider of your c
 
 - Python 3.10+
 - JupyterLab 4.x
-- Node.js — only required for [Claude mode](#claude-mode) (the Claude Code CLI) and for MCP servers that launch via `npx`.
+- Node.js — required for [Claude mode](#claude-mode) (the Claude Code CLI), for [ACP agent mode](#agent-mode), which launches its adapter with `npx` on every start, and for MCP servers that launch via `npx`.
 - A fresh virtualenv or conda env is recommended so NBI doesn't conflict with system Python.
 
 ## Quick start
@@ -504,7 +504,7 @@ Full guide, including the span and event reference, the probe thresholds, worked
 
 ## Roadmap
 
-NBI 5.x is stable. New features land in minor releases (5.1, 5.2, …); breaking changes are reserved for the next major (6.x) and will be announced in the [changelog](CHANGELOG.md). Upgrading from 4.x? See the [5.0.0 migration note](CHANGELOG.md#migration-note) for the `fastmcp` → `mcp` dependency swap, the new path sandboxes, and the workspace-file-attach behavior change.
+NBI 6.x is the current line. New features land in minor releases (6.1, 6.2, …); breaking changes are reserved for a major release and announced in the [changelog](CHANGELOG.md). 6.0 itself is not a breaking release: it marks Chatbook's arrival, and no traitlet, env var, REST route, or on-disk format was renamed or removed, so upgrading from 5.x needs no migration. Upgrading from 4.x? See the [5.0.0 migration note](CHANGELOG.md#migration-note) for the `fastmcp` → `mcp` dependency swap, the new path sandboxes, and the workspace-file-attach behavior change.
 
 ## License
 
