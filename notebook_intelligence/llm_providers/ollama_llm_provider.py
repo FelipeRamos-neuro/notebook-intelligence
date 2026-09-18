@@ -71,6 +71,8 @@ class OllamaChatModel(ChatModel):
 
         if stream:
             for chunk in ollama_response:
+                if cancel_token is not None and cancel_token.is_cancel_requested:
+                    break
                 delta = chunk['message']
                 reasoning = delta.get('reasoning_content') or delta.get('reasoning')
                 if reasoning is not None:
