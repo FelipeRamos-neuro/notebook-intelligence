@@ -16,6 +16,7 @@ from notebook_intelligence.chatbook_kernel.codegen import (
     extract_code_cell,
 )
 from notebook_intelligence.chatbook_kernel.danger import scan_generated_code
+from notebook_intelligence.chatbook_kernel.nbi_client import NBIClientError
 from notebook_intelligence.chatbook_kernel.kernel import ChatbookKernel, is_code_execute
 
 
@@ -229,6 +230,9 @@ def test_kernel_reply_forwards_child_error():
     reply = [item for item in kernel.session.sent if item[0] == 'execute_reply']
     assert reply[0][1]['ename'] == 'ValueError'
     assert reply[0][1]['traceback'] == ['line']
+    # The code ran and the child numbered it, so the failure keeps that
+    # number; only a request that never reached the child reports none.
+    assert reply[0][1]['execution_count'] == 1
 
 
 def test_backend_execute_relays_iopub_and_returns_reply():
@@ -344,6 +348,7 @@ def test_interrupt_during_generation_does_not_run_code(monkeypatch):
     )
     monkeypatch.delenv('NBI_CHATBOOK_MAX_EXECUTION_MODE', raising=False)
     kernel = _kernel_with_backend({'status': 'ok'})
+    kernel.execution_count = 5
     ran = []
 
     def execute_in_backend(stream, ident, parent, code):
@@ -374,6 +379,9 @@ def test_interrupt_during_generation_does_not_run_code(monkeypatch):
     assert ran == []
     replies = [item for item in kernel.session.sent if item[0] == 'execute_reply']
     assert replies[-1][1]['status'] == 'error'
+    # Nothing ran, so the cell must not be stamped with the number the last
+    # real run earned; the interrupt reply goes out through `_reply_error`.
+    assert replies[-1][1]['execution_count'] is None
     assert replies[-1][1]['ename'] == 'KeyboardInterrupt'
 
 
@@ -440,6 +448,73 @@ def test_kernel_confirms_when_regenerated_code_differs_from_approved(monkeypatch
     assert reply['status'] == 'ok'
     assert published[-1]['executed'] is False
     assert published[-1]['generatedCode'] == 'value = 1'
+
+
+def test_kernel_awaiting_confirmation_reports_no_execution_count(monkeypatch):
+    """A cell whose code has not run must stay unnumbered.
+
+    The frontend stamps the cell from this reply, so the number the last cell
+    that really ran earned would be shown again here, on a cell the user has
+    not answered for and that has no output.
+    """
+    kernel = _always_confirm_kernel(monkeypatch)
+    kernel._publish_chatbook_code = lambda parent, payload: None
+    # A code cell already ran in this session, which is what makes the stale
+    # number visible; on a fresh kernel the counter is 0 and renders blank.
+    kernel.execution_count = 3
+
+    reply = _run_prompt(kernel, {'executionPolicy': 'always-confirm'})
+
+    assert kernel._backend.relayed == []
+    assert reply['status'] == 'ok'
+    assert reply['execution_count'] is None
+    # Nothing ran, so the wrapper's own counter must not move either.
+    assert kernel.execution_count == 3
+
+
+def test_kernel_rerun_left_awaiting_confirmation_drops_the_old_number(monkeypatch):
+    """A re-run cell must lose the number its earlier run earned.
+
+    The frontend clears the outputs when the request starts, so keeping the
+    number would leave a numbered cell with nothing to show for it.
+    """
+    kernel = _always_confirm_kernel(monkeypatch)
+    kernel._backend = _StubBackend({'status': 'ok', 'execution_count': 4})
+    kernel._publish_chatbook_code = lambda parent, payload: None
+
+    first = _run_prompt(
+        kernel, {'executionPolicy': 'always-confirm', 'approvedCode': 'value = 1'}
+    )
+    # Guards the other direction: the approved run still reports the child's
+    # number, so this is not a blanket None on every reply.
+    assert first['execution_count'] == 4
+
+    second = _run_prompt(kernel, {'executionPolicy': 'always-confirm'})
+
+    assert kernel._backend.relayed == ['value = 1']
+    assert second['execution_count'] is None
+
+
+def test_kernel_error_reply_reports_no_execution_count(monkeypatch):
+    """A request that failed before running code must not be numbered either.
+
+    Generation failures reach the error reply with the counter still holding
+    the last real run's number, which would show twice in the notebook.
+    """
+    kernel = _always_confirm_kernel(monkeypatch)
+    kernel._publish_chatbook_code = lambda parent, payload: None
+    kernel.execution_count = 4
+
+    def _boom(prompt, meta):
+        raise NBIClientError('generate is unreachable')
+
+    kernel._generate = _boom
+
+    reply = _run_prompt(kernel, {'executionPolicy': 'always-confirm'})
+
+    assert reply['status'] == 'error'
+    assert reply['execution_count'] is None
+    assert kernel._backend.relayed == []
 
 
 def test_kernel_payload_reports_the_policy_it_resolved(monkeypatch):

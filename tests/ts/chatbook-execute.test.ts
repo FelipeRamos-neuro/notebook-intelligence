@@ -166,6 +166,7 @@ class FakeKernel {
   policy = 'always-confirm';
   level: 'clean' | 'risky' = 'clean';
   omitExecutedField = false;
+  failCodeExecute = false;
   generate: (prompt: string) => string = prompt => `print(${prompt})`;
   log: string[] = [];
   anyMessage = signal();
@@ -198,6 +199,20 @@ class FakeKernel {
       const code = meta.codeSource || request.code;
       this.log.push(`exec:${code}`);
       await tick();
+      if (this.failCodeExecute) {
+        // A child kernel that dies mid-run: the wrapper reports the failure
+        // and no count, because nothing of this request ran.
+        request.future.resolve({
+          content: {
+            status: 'error',
+            ename: 'RuntimeError',
+            evalue: 'backend kernel died',
+            traceback: [],
+            execution_count: null
+          }
+        });
+        return;
+      }
       request.future.resolve({
         content: { status: 'ok', execution_count: ++this.executionCount }
       });
@@ -238,7 +253,7 @@ class FakeKernel {
       request.future.resolve({
         content: {
           status: 'ok',
-          execution_count: willExecute ? ++this.executionCount : undefined
+          execution_count: willExecute ? ++this.executionCount : null
         }
       });
     }
@@ -246,6 +261,7 @@ class FakeKernel {
 }
 
 function makeCell(source: string) {
+  const prompts: string[] = [];
   const model: any = {
     id: `cell-${Math.random().toString(36).slice(2)}`,
     type: 'code',
@@ -266,7 +282,11 @@ function makeCell(source: string) {
     node: document.createElement('div'),
     parent: null,
     outputArea: { future: null as IFuture | null },
-    isDisposed: false
+    isDisposed: false,
+    prompts,
+    setPrompt(value: string) {
+      prompts.push(value);
+    }
   };
 }
 
@@ -372,6 +392,9 @@ beforeAll(() => {
       previous.dispose();
     }
     cell.outputArea.future = future;
+    // JupyterLab marks the cell running before the reply arrives; the prompt
+    // assertions below are about what happens to that marker.
+    cell.setPrompt('*');
     sessionContext.session.kernel.enqueue({
       cell,
       code,
@@ -627,6 +650,53 @@ describe('chatbook execute: unanswered confirm bar', () => {
     expect(cell.model.metadata.nbi.chatbook.generatedCode).toBeUndefined();
     expect(cell.model.metadata.nbi.chatbook.promptHash).toBeUndefined();
     expect(cell.model.metadata.nbi.chatbook.prompt).toBe('plot the values');
+  });
+});
+
+describe('chatbook execute: the running marker', () => {
+  it('clears the running marker when nothing ran', async () => {
+    const cell = makeCell('plot the values');
+    const { sessionContext } = makeNotebook(kernel, [cell]);
+
+    await runCell(cell, sessionContext, executed);
+    await settle();
+
+    // JupyterLab painted the running marker before the request and repaints
+    // the prompt only on a count change, so a reply with no count needs this
+    // or the cell claims to be running while the bar waits for an answer.
+    expect(confirmBar(cell)).not.toBeNull();
+    expect(cell.prompts[cell.prompts.length - 1]).toBe('');
+  });
+
+  it('leaves the prompt alone when the code did run', async () => {
+    cfg.chatbookExecutionMode = 'auto-run';
+    kernel.policy = 'auto-run';
+    const cell = makeCell('plot the values');
+    const { sessionContext } = makeNotebook(kernel, [cell]);
+
+    await runCell(cell, sessionContext, executed);
+    await settle();
+
+    // The reply carries the child kernel's number, so JupyterLab paints the
+    // prompt itself and nothing here should interfere.
+    expect(kernel.log).toContain('exec:print(plot the values)');
+    expect(cell.prompts).not.toContain('');
+  });
+
+  it('clears the running marker when approved code fails to run', async () => {
+    const cell = makeCell('plot the values');
+    const { sessionContext } = makeNotebook(kernel, [cell]);
+    await runCell(cell, sessionContext, executed);
+    await settle();
+    cell.prompts.length = 0;
+
+    // The confirm bar runs code through CodeCell.execute directly, so the
+    // marker has to come off here: nothing in Run All is watching this one.
+    kernel.failCodeExecute = true;
+    await clickRun(cell);
+    await settle();
+
+    expect(cell.prompts[cell.prompts.length - 1]).toBe('');
   });
 });
 

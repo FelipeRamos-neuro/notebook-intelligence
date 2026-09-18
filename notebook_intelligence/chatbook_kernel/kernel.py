@@ -350,10 +350,22 @@ class ChatbookKernel(Kernel):
         self.send_response(self.iopub_socket, CHATBOOK_MSG_TYPE, payload)
 
     def _reply_ok_without_execute(self, stream, ident, parent):
-        """Complete execute_request without running generated code."""
+        """Complete execute_request without running generated code.
+
+        The count is null because nothing ran. The frontend stamps the cell
+        from this reply, so reporting the counter would leave a cell that is
+        awaiting confirmation, or that the user declined, numbered as if it
+        had executed, with no output to match. The counter holds the number
+        the last cell that did run earned, so that cell's number would appear
+        twice.
+
+        The messaging spec types this field as an integer; null is the value
+        JupyterLab and nbformat use for a cell that has not run, and it is
+        also what tells the frontend to take the running marker back off.
+        """
         reply_content = {
             "status": "ok",
-            "execution_count": self.execution_count,
+            "execution_count": None,
             "user_expressions": {},
             "payload": [],
         }
@@ -364,6 +376,13 @@ class ChatbookKernel(Kernel):
     def _reply_error(
         self, stream, ident, parent, message: str, ename: str = "ChatbookError"
     ):
+        """Fail the request, reporting no execution count.
+
+        Nothing has reported a count for this request, and the counter still
+        holds the number the last cell that did run earned, so reporting it
+        stamps this cell with that cell's number. See
+        `_reply_ok_without_execute` for why null is the right answer.
+        """
         traceback = [str(message)]
         self.send_response(
             self.iopub_socket,
@@ -382,7 +401,7 @@ class ChatbookKernel(Kernel):
                 "ename": ename,
                 "evalue": str(message),
                 "traceback": traceback,
-                "execution_count": self.execution_count,
+                "execution_count": None,
                 "user_expressions": {},
                 "payload": [],
             },

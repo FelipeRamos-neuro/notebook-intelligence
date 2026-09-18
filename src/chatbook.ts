@@ -211,13 +211,29 @@ export function patchCodeCellExecute(): void {
     }
     const ticket = claimChatbookSendTicket();
     try {
-      return await executeChatbookCell(
+      const reply = await executeChatbookCell(
         original,
         cell,
         sessionContext,
         metadata,
         ticket
       );
+      // JupyterLab marks the cell running before the request and repaints the
+      // prompt only when the execution count changes, so a reply carrying no
+      // count leaves the running marker on a cell that is finished: nothing
+      // ran, because the confirm bar is waiting or the request failed before
+      // it got that far. Run All clears such cells itself, but the confirm
+      // bar runs code through this call directly, so do it for every path.
+      // `?? null` so a reply that omits the field, which is how an aborted
+      // request answers, also counts as carrying no number.
+      if (
+        reply &&
+        (reply.content.execution_count ?? null) === null &&
+        !cell.isDisposed
+      ) {
+        cell.setPrompt('');
+      }
+      return reply;
     } finally {
       ticket.release();
     }
