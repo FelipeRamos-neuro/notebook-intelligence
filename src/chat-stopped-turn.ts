@@ -16,31 +16,6 @@
  * is absent. Appending on the former would put two messages in the transcript
  * under one id.
  */
-/**
- * `promptRequestHandler` rebuilds the transcript from a snapshot it captured
- * when its own turn started. If the user stopped a different turn after that
- * snapshot was taken, writing it back would carry an unmarked copy of the
- * stopped message and the marker would vanish. Re-applying the marker from the
- * set of ids the user stopped keeps it, without trying to make that snapshot
- * fresh in general.
- */
-export function restoreStoppedMarkers<
-  T extends { id: string; stopped?: boolean }
->(messages: T[], stoppedIds: ReadonlySet<string>): T[] {
-  if (stoppedIds.size === 0) {
-    return messages;
-  }
-  let changed = false;
-  const next = messages.map(message => {
-    if (message.stopped || !stoppedIds.has(message.id)) {
-      return message;
-    }
-    changed = true;
-    return { ...message, stopped: true };
-  });
-  return changed ? next : messages;
-}
-
 export function recordStoppedTurn<T extends { id: string; stopped?: boolean }>(
   messages: T[],
   responseId: string,
