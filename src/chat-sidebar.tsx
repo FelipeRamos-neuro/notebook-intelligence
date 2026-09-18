@@ -99,7 +99,8 @@ import { TOUR_ANCHOR } from './tour/tour-anchors';
 import { TOUR_START_EVENT, TOUR_STOP_EVENT } from './tour/tour-events';
 import { hasCompletedTour } from './tour/tour-state';
 import { cancelInFlightTurns, registerInFlightTurn } from './chat-cancel';
-import { recordStoppedTurn, restoreStoppedMarkers } from './chat-stopped-turn';
+import { recordStoppedTurn } from './chat-stopped-turn';
+import { upsertMessageById } from './chat-transcript';
 import { IClaudeSessionInfo } from './api';
 import {
   isPrefixPopoverUsable,
@@ -3021,23 +3022,23 @@ function SidebarComponent(props: any) {
     const turnMessageId = lastMessageId.current;
     lastRequestTime.current = new Date();
 
-    const newList = [
-      ...chatMessages,
-      {
-        id: lastMessageId.current,
-        date: new Date(),
-        from: 'user',
-        contents: [
-          {
-            id: UUID.uuid4(),
-            type: ResponseStreamDataType.Markdown,
-            content: submitPrompt,
-            created: new Date()
-          }
-        ]
-      }
-    ];
-    setChatMessages(newList);
+    // Captured rather than read from the ref at delta time: the emit callback
+    // awaits in places, and a later turn moves the ref.
+    const turnUserMessageId = lastMessageId.current;
+    const userMessage = {
+      id: lastMessageId.current,
+      date: new Date(),
+      from: 'user',
+      contents: [
+        {
+          id: UUID.uuid4(),
+          type: ResponseStreamDataType.Markdown,
+          content: submitPrompt,
+          created: new Date()
+        }
+      ]
+    };
+    setChatMessages(prev => upsertMessageById(prev, userMessage));
 
     if (submitPrompt.startsWith('/clear')) {
       startNewChatSession();
@@ -3306,19 +3307,19 @@ function SidebarComponent(props: any) {
               data
             );
           }
-          setChatMessages([
-            ...newList,
-            {
-              id: responseMessageId,
-              date: new Date(),
-              from: 'copilot',
-              contents: contents,
-              participant: NBIAPI.config.chatParticipants.find(participant => {
-                return participant.id === response.participant;
-              }),
-              chatModel: getActiveChatModel()
-            }
-          ]);
+          const turnResponse = {
+            id: responseMessageId,
+            date: new Date(),
+            from: 'copilot',
+            contents: contents,
+            participant: NBIAPI.config.chatParticipants.find(participant => {
+              return participant.id === response.participant;
+            }),
+            chatModel: getActiveChatModel()
+          };
+          setChatMessages(prev =>
+            upsertMessageById(prev, turnResponse, turnUserMessageId)
+          );
         }
       }
     );
@@ -3659,28 +3660,21 @@ function SidebarComponent(props: any) {
       request.kernelDisplayName =
         request.kernelDisplayName || externalActiveDocInfo?.kernelDisplayName;
       const hideInChat = !!request.hideInChat;
-      const newList = hideInChat
-        ? chatMessages
-        : [
-            ...chatMessages,
+      if (!hideInChat) {
+        const userMessage = {
+          id: messageId,
+          date: new Date(),
+          from: 'user',
+          contents: [
             {
               id: messageId,
-              date: new Date(),
-              from: 'user',
-              contents: [
-                {
-                  id: messageId,
-                  type: ResponseStreamDataType.Markdown,
-                  content: message,
-                  created: new Date()
-                }
-              ]
+              type: ResponseStreamDataType.Markdown,
+              content: message,
+              created: new Date()
             }
-          ];
-      if (!hideInChat) {
-        setChatMessages(
-          restoreStoppedMarkers(newList, stoppedResponseIds.current)
-        );
+          ]
+        };
+        setChatMessages(prev => upsertMessageById(prev, userMessage));
         setCopilotRequestInProgress(true);
       }
 
@@ -3820,25 +3814,18 @@ function SidebarComponent(props: any) {
           if (hideInChat) {
             return;
           }
-          setChatMessages(
-            restoreStoppedMarkers(
-              [
-                ...newList,
-                {
-                  id: responseMessageId,
-                  date: new Date(),
-                  from: 'copilot',
-                  contents: contents,
-                  participant: NBIAPI.config.chatParticipants.find(
-                    participant => {
-                      return participant.id === response.participant;
-                    }
-                  ),
-                  chatModel: getActiveChatModel()
-                }
-              ],
-              stoppedResponseIds.current
-            )
+          const turnResponse = {
+            id: responseMessageId,
+            date: new Date(),
+            from: 'copilot',
+            contents: contents,
+            participant: NBIAPI.config.chatParticipants.find(participant => {
+              return participant.id === response.participant;
+            }),
+            chatModel: getActiveChatModel()
+          };
+          setChatMessages(prev =>
+            upsertMessageById(prev, turnResponse, messageId)
           );
         }
       });

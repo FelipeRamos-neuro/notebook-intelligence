@@ -2,10 +2,7 @@
 
 // Stopping a response used to leave the transcript untouched, so a stopped
 // turn was indistinguishable from a model that answered with nothing.
-import {
-  recordStoppedTurn,
-  restoreStoppedMarkers
-} from '../../src/chat-stopped-turn';
+import { recordStoppedTurn } from '../../src/chat-stopped-turn';
 
 interface ITestMessage {
   id: string;
@@ -102,49 +99,5 @@ describe('recordStoppedTurn', () => {
     const messages = recordStoppedTurn(twoResponses, 'r2', placeholder);
 
     expect(messages.map(m => m.stopped)).toEqual([undefined, true]);
-  });
-});
-
-describe('restoreStoppedMarkers', () => {
-  it('re-marks a message a stale snapshot carried back unmarked', () => {
-    // The snapshot promptRequestHandler writes was taken before the stop, so
-    // it holds an unmarked copy of the message the user has since stopped.
-    const stale: ITestMessage[] = [
-      { id: 'r1', from: 'copilot', contents: ['partial'] },
-      { id: 'r2', from: 'copilot', contents: ['other turn'] }
-    ];
-
-    const messages = restoreStoppedMarkers(stale, new Set(['r1']));
-
-    expect(messages.map(m => m.stopped)).toEqual([true, undefined]);
-    expect(messages[0].contents).toEqual(['partial']);
-  });
-
-  it('leaves the list alone when nothing was stopped', () => {
-    const before = transcript();
-
-    expect(restoreStoppedMarkers(before, new Set())).toBe(before);
-  });
-
-  it('returns the same list when every stopped id is already marked', () => {
-    const before: ITestMessage[] = [
-      { id: 'r1', from: 'copilot', contents: [], stopped: true }
-    ];
-
-    expect(restoreStoppedMarkers(before, new Set(['r1']))).toBe(before);
-  });
-
-  it('ignores stopped ids that are not in the list', () => {
-    const before = transcript();
-
-    expect(restoreStoppedMarkers(before, new Set(['gone']))).toBe(before);
-  });
-
-  it('does not mutate the messages it was given', () => {
-    const before = transcript();
-
-    restoreStoppedMarkers(before, new Set(['r1']));
-
-    expect(before[1].stopped).toBeUndefined();
   });
 });
