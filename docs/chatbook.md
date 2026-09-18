@@ -12,6 +12,41 @@ Tab completion and contextual help are proxied to that child kernel. Interrupt u
 
 Cell badges show **NL** (natural language) and **Cd** (code). Code cells use the backend language for highlighting.
 
+## Writing cells
+
+Every cell is either a natural-language prompt (**NL**) or ordinary code (**Cd**), and the badge at the top of the cell shows which. The badge is a button: click it to switch that cell. `Ctrl J` switches the active cell and `Ctrl Shift J` switches every cell in the notebook. Both are literal `Ctrl`, including on macOS, where most JupyterLab bindings use `Cmd`. The notebook toolbar carries the same switch-all action and an export button.
+
+Chatbook adds six commands, all reachable from the command palette:
+
+| Command                         | What it does                                                       |
+| ------------------------------- | ------------------------------------------------------------------ |
+| New Chatbook                    | Creates a notebook against the `chatbook` kernel.                  |
+| Switch cell to code / to prompt | Same as `Ctrl J`.                                                  |
+| Switch all cells                | Same as `Ctrl Shift J`.                                            |
+| Show generated code             | Opens the code a prompt cell generated, which is otherwise hidden. |
+| Refresh English representation  | Regenerates the English description of a code cell.                |
+| Export as code notebook         | Writes a plain notebook for the backend language.                  |
+
+**Running a code cell also sends it to the model.** The first time a **Cd** cell runs successfully, Chatbook asks the model for a one-line English description of that source and stores it in the cell's metadata, so the cell can be read as prose and switched back to **NL** later. It does not ask again on later runs, and it does not refresh the description when you edit the code: use **Refresh English representation** for that. This is worth knowing in a deployment where code is more sensitive than prompts, because it means hand-written code in a Chatbook reaches the model even under **Always confirm**.
+
+## Context with @ mentions
+
+Typing `@` in a prompt cell opens a menu of context to attach. The built-in **Files & folders** provider browses the Jupyter root, skipping dotfiles, `__pycache__`, and `node_modules`; a selected file is read and truncated at 16,000 characters. Extensions can register providers of their own, which appear in the same menu under their own root (see [`chatbook-extensions.md`](chatbook-extensions.md)).
+
+Mentions work only in prompt cells. A prompt that carries one is regenerated every run rather than reusing the previously approved code, because the mentioned content may have changed since.
+
+## Export as a code notebook
+
+**Export as code notebook** writes a plain notebook for the backend language next to the original, named after it with the language appended (`analysis.ipynb` becomes `analysis-python.ipynb`, and a number is added if that name is taken). The Chatbook itself is left untouched.
+
+Prompt cells become their generated code. A prompt cell whose code never ran, or whose prompt changed since it last ran, is written as line comments instead, so an export never passes off code as having been executed when it was not. The exported notebook's `kernelspec` and `language_info` are rewritten to the backend kernel. Export fails if the backend language has no line-comment syntax Chatbook knows, since there would be no way to write those cells safely.
+
+## What the notebook file holds
+
+Chatbook stores its state in cell metadata under `nbi.chatbook`: the prompt, the generated code, the code source, hashes of the prompt and context, and when generation happened. A Chatbook you share therefore carries the generated code and the model's English descriptions of your own code, not just the prompts.
+
+Treat a Chatbook from someone else as untrusted input. The persisted generated code is not re-derived on open, so it is whatever the file says it is, which is why approved-code reuse is scoped to the current session rather than read back from the file.
+
 ## Generation backend
 
 Chatbook follows NBI's active mode:

@@ -12,6 +12,8 @@ NBI is free and open-source. Connect it to a free or paid LLM provider of your c
 - [Feature highlights](#feature-highlights)
   - [Claude mode](#claude-mode)
   - [Agent mode](#agent-mode)
+  - [ACP agent mode](#acp-agent-mode)
+  - [Chatbook](#chatbook)
   - [Code generation with inline chat](#code-generation-with-inline-chat)
   - [Auto-complete](#auto-complete)
   - [Chat interface](#chat-interface)
@@ -41,7 +43,7 @@ NBI is free and open-source. Connect it to a free or paid LLM provider of your c
 
 - Python 3.10+
 - JupyterLab 4.x
-- Node.js — required for [Claude mode](#claude-mode) (the Claude Code CLI), for [ACP agent mode](#agent-mode), which launches its adapter with `npx` on every start, and for MCP servers that launch via `npx`.
+- Node.js — required for [Claude mode](#claude-mode) (the Claude Code CLI), for [ACP agent mode](#acp-agent-mode), which launches its adapter with `npx` on every start, and for MCP servers that launch via `npx`.
 - A fresh virtualenv or conda env is recommended so NBI doesn't conflict with system Python.
 
 ## Quick start
@@ -149,6 +151,20 @@ Tiles add and remove themselves as CLIs become available or unavailable; they do
 In Agent mode, the built-in AI agent creates, edits, and executes notebooks for you interactively. It can detect issues in cells and fix them.
 
 ![Agent mode](media/agent-mode.gif)
+
+### ACP agent mode
+
+An experimental second agent mode that drives an external coding agent over the [Agent Client Protocol](https://agentclientprotocol.com/), with OpenAI Codex as the only agent type today. The agent runs as a subprocess and does its own file and command work, asking for approval through NBI's confirmation cards; NBI deliberately does not lend it the Jupyter server's filesystem or terminal.
+
+It is off by default and the Settings tab stays hidden until an admin allows the mode, and it cannot be used at the same time as Claude mode. See [`docs/acp.md`](docs/acp.md).
+
+### Chatbook
+
+A Chatbook is a notebook whose cells can be written in English. Running a prompt cell generates code for the notebook's backend kernel and runs it; each cell carries a badge showing whether it is a prompt (**NL**) or ordinary code (**Cd**), and `Ctrl J` switches between them.
+
+What happens to generated code before it runs is yours to choose: **Always confirm** (the default) shows the code and waits, **Confirm if risky** waits only when a scan finds destructive calls, and **Auto-run** executes straight away. Admins can cap that choice fleet-wide, or turn Chatbook off entirely.
+
+Prompts can pull in context with `@` mentions, rules apply to generation the same way they apply to chat, the backend kernel need not be Python, and a Chatbook exports to a plain code notebook when you want to hand someone the result instead of the prompts. See [`docs/chatbook.md`](docs/chatbook.md).
 
 ### Code generation with inline chat
 
@@ -486,7 +502,8 @@ Full guide, including the span and event reference, the probe thresholds, worked
 - [`docs/admin-guide.md`](docs/admin-guide.md) — deployment, env vars, security model, air-gap, multi-tenancy.
 - [`docs/skills.md`](docs/skills.md) — Claude Skills management and the org-manifest reconciler.
 - [`docs/rulesets.md`](docs/rulesets.md) — ruleset frontmatter and discovery.
-- [`docs/chatbook.md`](docs/chatbook.md) — Chatbook execution modes and why there is no per-cell sandbox.
+- [`docs/acp.md`](docs/acp.md) — using the experimental ACP agent mode, and its limits.
+- [`docs/chatbook.md`](docs/chatbook.md) — writing Chatbook cells, execution modes, export, and why there is no per-cell sandbox.
 - [`docs/chatbook-extensions.md`](docs/chatbook-extensions.md) — dynamic Chatbook context and mention providers.
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — common problems with copy-pasteable fixes.
 - [`docs/performance-diagnostics.md`](docs/performance-diagnostics.md): turn timelines, the environment probe, and how to read both.
