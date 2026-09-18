@@ -102,6 +102,15 @@ const mentionNotebookPathField = StateField.define<string>({
   }
 });
 
+/**
+ * Whether the caret is in this editor. `view.hasFocus` would also answer no
+ * when only the browser window lost focus, which is not a reason to take a
+ * menu away from someone who alt-tabbed to look something up.
+ */
+function hasCaret(view: EditorView): boolean {
+  return view.root.activeElement === view.contentDOM;
+}
+
 class ChatbookMentionMenu {
   constructor(readonly view: EditorView) {}
 
@@ -109,6 +118,14 @@ class ChatbookMentionMenu {
     const enabled = update.state.field(mentionEnabledField);
     const wasEnabled = update.startState.field(mentionEnabledField);
     if (!enabled) {
+      this.close();
+      return;
+    }
+    // Running the cell, or clicking into another cell or panel, leaves the
+    // document and selection untouched, so nothing below fires. The menu
+    // lives on document.body, so without this it stays on screen over
+    // unrelated UI until the page is reloaded.
+    if (update.focusChanged && !hasCaret(this.view)) {
       this.close();
       return;
     }
@@ -166,6 +183,15 @@ class ChatbookMentionMenu {
   }
 
   private async refresh(): Promise<void> {
+    // The close above is edge triggered, so it cannot answer for a refresh
+    // that a later transaction schedules while the caret is elsewhere: a mode
+    // flip rewrites the cell source, and re-enabling mentions schedules one
+    // outright. Opening then would put the menu back over unrelated UI with
+    // no focus change left to take it away again.
+    if (!hasCaret(this.view)) {
+      this.close();
+      return;
+    }
     const selection = this.view.state.selection.main;
     if (!selection.empty) {
       this.close();
@@ -255,14 +281,22 @@ class ChatbookMentionMenu {
         .slice(2)}`;
       this._menu.className = 'nbi-chatbook-mention-menu';
       this._menu.setAttribute('role', 'listbox');
+      // The options keep the caret in the editor this way; the container has
+      // to do the same or a click on its padding, a few pixels wide, would
+      // move focus out and dismiss the menu the user was aiming at.
+      this._menu.addEventListener('mousedown', event => event.preventDefault());
       document.body.appendChild(this._menu);
       window.addEventListener('keydown', this._onKeyDown, true);
+      this.view.contentDOM.addEventListener('blur', this._onContentBlur);
       this.view.dom.setAttribute('aria-controls', this._menu.id);
     }
     this._menu.textContent = '';
     this._items.forEach((item, index) => {
       const option = document.createElement('button');
       option.type = 'button';
+      // Selection is driven from the editor via aria-activedescendant, so the
+      // options must not be tab stops of their own on document.body.
+      option.tabIndex = -1;
       option.id = `${this._menu!.id}-option-${index}`;
       option.className = 'nbi-chatbook-mention-option';
       option.classList.toggle('active', index === this._active);
@@ -287,6 +321,28 @@ class ChatbookMentionMenu {
       this._menu.style.top = `${position.bottom + 4}px`;
     }
   }
+
+  /**
+   * CodeMirror reports a focus change only when its own `hasFocus` flips, and
+   * that value also depends on the window being focused. A caret that leaves
+   * while the window is already unfocused, from alt-tabbing away and then
+   * clicking straight into another cell, therefore produces no update at all,
+   * and neither check above can run. This is what sees that case.
+   */
+  private _onContentBlur = (): void => {
+    // Focus reaches its new home after the blur, so read it a tick later.
+    window.setTimeout(() => {
+      const menu = this._menu;
+      if (!menu) {
+        return;
+      }
+      const active = this.view.root.activeElement;
+      if (hasCaret(this.view) || (active && menu.contains(active))) {
+        return;
+      }
+      this.close();
+    }, 0);
+  };
 
   /**
    * JupyterLab binds Tab on the document (completer invoke, inline completion
@@ -321,6 +377,7 @@ class ChatbookMentionMenu {
       return;
     }
     window.removeEventListener('keydown', this._onKeyDown, true);
+    this.view.contentDOM.removeEventListener('blur', this._onContentBlur);
     this._menu?.remove();
     this._menu = null;
     this._items = [];
