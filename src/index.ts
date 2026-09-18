@@ -1197,6 +1197,9 @@ const plugin: JupyterFrontEndPlugin<INotebookIntelligence> = {
       keys: ['Accel Shift L'],
       selector: 'body'
     });
+    // Ctrl J / Ctrl Shift J are registered via schema/plugin.json's
+    // "jupyter.lab.shortcuts" instead of addKeyBinding here, so they show
+    // up (and are user-overridable) in the Advanced Settings Editor.
 
     app.docRegistry.addWidgetExtension(
       'Notebook',
