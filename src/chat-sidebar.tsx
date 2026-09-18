@@ -98,6 +98,7 @@ import { TourOverlay } from './tour/tour-overlay';
 import { TOUR_ANCHOR } from './tour/tour-anchors';
 import { TOUR_START_EVENT, TOUR_STOP_EVENT } from './tour/tour-events';
 import { hasCompletedTour } from './tour/tour-state';
+import { cancelInFlightTurns, registerInFlightTurn } from './chat-cancel';
 import { recordStoppedTurn, restoreStoppedMarkers } from './chat-stopped-turn';
 import { IClaudeSessionInfo } from './api';
 import {
@@ -1406,6 +1407,12 @@ function SidebarComponent(props: any) {
   // delta that arrives after the stop would otherwise restore the content and
   // drop the stopped marker with it.
   const stoppedResponseIds = useRef<Set<string>>(new Set());
+  // Every turn currently streaming, by the websocket message id the backend
+  // keys its handlers under. Separate from the two above, which are about the
+  // transcript: this one answers "what can Stop cancel". `lastMessageId` only
+  // ever held the turn the sidebar input started, so a turn started by an
+  // editor command had no id to cancel with.
+  const inFlightMessageIds = useRef<Set<string>>(new Set());
   const lastRequestTime = useRef<Date>(new Date());
   const [contextOn, setContextOn] = useState(false);
   const [activeDocumentInfo, setActiveDocumentInfo] =
@@ -3011,6 +3018,7 @@ function SidebarComponent(props: any) {
     }
 
     lastMessageId.current = UUID.uuid4();
+    const turnMessageId = lastMessageId.current;
     lastRequestTime.current = new Date();
 
     const newList = [
@@ -3037,6 +3045,10 @@ function SidebarComponent(props: any) {
     }
 
     setCopilotRequestInProgress(true);
+    // Registered here rather than with the id above: `/clear` returns before
+    // this line without ever sending a request, and an id for a turn that
+    // never ran would sit in the set for the life of the sidebar.
+    registerInFlightTurn(inFlightMessageIds.current, turnMessageId);
 
     const activeDocInfo: IActiveDocumentInfo = props.getActiveDocumentInfo();
     // Snapshot the active notebook so cell-targeting tools the agent fires
@@ -3237,6 +3249,7 @@ function SidebarComponent(props: any) {
             if (inFlightResponseId.current === responseMessageId) {
               inFlightResponseId.current = '';
             }
+            inFlightMessageIds.current.delete(turnMessageId);
             const timeElapsed =
               (new Date().getTime() - lastRequestTime.current.getTime()) / 1000;
             telemetryEmitter.emitTelemetryEvent({
@@ -3336,10 +3349,12 @@ function SidebarComponent(props: any) {
   handleUserInputSubmitRef.current = handleUserInputSubmit;
 
   const handleUserInputCancel = async () => {
-    NBIAPI.sendWebSocketMessage(
-      lastMessageId.current,
-      RequestDataType.CancelChatRequest,
-      { chatId }
+    cancelInFlightTurns(inFlightMessageIds.current, messageId =>
+      NBIAPI.sendWebSocketMessage(
+        messageId,
+        RequestDataType.CancelChatRequest,
+        { chatId }
+      )
     );
 
     // Record the stop in the transcript. Whatever streamed before the stop
@@ -3608,6 +3623,9 @@ function SidebarComponent(props: any) {
       }
       const messageId = UUID.uuid4();
       request.messageId = messageId;
+      registerInFlightTurn(inFlightMessageIds.current, messageId, {
+        hideInChat: !!request.hideInChat
+      });
       request.content = message;
       const externalRequestId = request.externalRequestId;
       const emitProgress = (inProgress: boolean, error?: string) => {
@@ -3758,6 +3776,7 @@ function SidebarComponent(props: any) {
                 inFlightResponseId.current = '';
               }
             }
+            inFlightMessageIds.current.delete(messageId);
             emitProgress(false);
           } else if (response.type === BackendMessageType.RunUICommand) {
             const runUiMessageId = response.id;
@@ -4035,26 +4054,28 @@ function SidebarComponent(props: any) {
     // have to remember the slash command (issue #237). Also useful when
     // the Claude SDK client is wedged — restarting the session reconnects
     // the agent.
-    if (copilotRequestInProgress) {
-      // Cancel any in-flight response before clearing local state. Without
-      // this, stream deltas tied to the old messageId keep arriving against
-      // an empty chat-messages list and silently re-populate it from the
-      // old conversation.
+    // Cancel anything in flight before clearing local state. Without this,
+    // stream deltas tied to the old messageId keep arriving against an empty
+    // chat-messages list and silently re-populate it from the old
+    // conversation. Not gated on `copilotRequestInProgress`: that flag is one
+    // boolean for every path and is cleared by whichever turn ends first, so a
+    // turn can still be running while it reads false.
+    cancelInFlightTurns(inFlightMessageIds.current, messageId =>
       NBIAPI.sendWebSocketMessage(
-        lastMessageId.current,
+        messageId,
         RequestDataType.CancelChatRequest,
         { chatId }
-      );
-      lastMessageId.current = '';
-      // No marker here: the transcript this would annotate is cleared below.
-      // The id still has to be remembered as stopped, so a late delta cannot
-      // repopulate the cleared list (the note on the send above says why).
-      if (inFlightResponseId.current !== '') {
-        stoppedResponseIds.current.add(inFlightResponseId.current);
-      }
-      inFlightResponseId.current = '';
-      setCopilotRequestInProgress(false);
+      )
+    );
+    lastMessageId.current = '';
+    // No marker here: the transcript this would annotate is cleared below.
+    // The id still has to be remembered as stopped, so a late delta cannot
+    // repopulate the cleared list.
+    if (inFlightResponseId.current !== '') {
+      stoppedResponseIds.current.add(inFlightResponseId.current);
     }
+    inFlightResponseId.current = '';
+    setCopilotRequestInProgress(false);
     setChatMessages([]);
     setPrompt('');
     setSelectedContextFiles([]);
