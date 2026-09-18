@@ -129,6 +129,7 @@ import {
   waitForDuration
 } from './utils';
 import { cellOutputAsContextBundle } from './cell-output-bundle';
+import { claimMCPTempFileName } from './mcp-config-temp-file';
 import { UUID } from '@lumino/coreutils';
 
 import * as path from 'path';
@@ -846,18 +847,16 @@ class MCPConfigEditor {
     });
     const mcpConfig = await NBIAPI.getMCPConfigFile();
 
-    try {
-      await contents.delete(this._tmpMCPConfigFilename);
-    } catch (error) {
-      // ignore
-    }
-
     await contents.save(newJSONFile.path, {
       content: JSON.stringify(mcpConfig, null, 2),
       format: 'text',
       type: 'file'
     });
-    await contents.rename(newJSONFile.path, this._tmpMCPConfigFilename);
+    await claimMCPTempFileName(
+      contents,
+      newJSONFile.path,
+      this._tmpMCPConfigFilename
+    );
     this._docWidget = this._docManager.openOrReveal(
       this._tmpMCPConfigFilename,
       'Editor'
@@ -866,7 +865,11 @@ class MCPConfigEditor {
     // tab closed
     this._docWidget.disposed.connect((_, args) => {
       this._removeListeners();
-      contents.delete(this._tmpMCPConfigFilename);
+      contents.delete(this._tmpMCPConfigFilename).catch(() => {
+        // Best effort: the user may have removed the file already, or the
+        // workspace may be read-only. Either way there is nothing useful to
+        // say while a tab is closing.
+      });
     });
     this._isOpen = true;
   }
