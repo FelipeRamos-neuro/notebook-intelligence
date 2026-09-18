@@ -3532,8 +3532,12 @@ class WebsocketCopilotHandler(WebSocketMixin, websocket.WebSocketHandler, Jupyte
             # framing and per-turn history slicing below.
             is_agent_session_mode = is_claude_code_mode or ai_service_manager.is_acp_mode
 
-            perf_mode = "acp" if ai_service_manager.is_acp_mode else ("claude" if is_claude_code_mode else "copilot")
-            turn = perf.begin_turn(messageId, perf_mode, _perf_ingress_wall, _perf_ingress_mono)
+            turn = perf.begin_turn(
+                messageId,
+                ai_service_manager.perf_backend_label,
+                _perf_ingress_wall,
+                _perf_ingress_mono,
+            )
             # Covers all per-turn prep on this thread (attachment decoding,
             # history slicing, rule/skill discovery), which is the actual
             # filesystem cost; wrapping only the rule-context constructor

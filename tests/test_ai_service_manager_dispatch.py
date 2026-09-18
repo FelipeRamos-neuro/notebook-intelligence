@@ -1,6 +1,8 @@
 """Regression tests for terminal-safe chat participant dispatch."""
 
 import asyncio
+
+import pytest
 from unittest.mock import AsyncMock, Mock
 
 from notebook_intelligence.ai_service_manager import AIServiceManager
@@ -10,6 +12,20 @@ from notebook_intelligence.api import (
     ContextRequestType,
 )
 from notebook_intelligence.claude import CLAUDE_CODE_CHAT_PARTICIPANT_ID
+import time
+
+from notebook_intelligence import perf
+from notebook_intelligence.llm_providers.github_copilot_llm_provider import (
+    GitHubCopilotLLMProvider,
+)
+from notebook_intelligence.llm_providers.litellm_compatible_llm_provider import (
+    LiteLLMCompatibleLLMProvider,
+)
+from notebook_intelligence.llm_providers.ollama_llm_provider import OllamaLLMProvider
+from notebook_intelligence.llm_providers.openai_compatible_llm_provider import (
+    OpenAICompatibleLLMProvider,
+)
+
 
 
 class _RecordingResponse:
@@ -146,3 +162,119 @@ def test_completion_context_is_empty_when_no_participant_is_available():
     context = asyncio.run(manager.get_completion_context(request))
 
     assert context.items == []
+
+
+@pytest.fixture(autouse=True)
+def _reset_perf():
+    """This module records turns, and the recorder is process-global."""
+    yield
+    perf.configure({"enabled": False}, None)
+    perf._turns.clear()
+    perf._ring.clear()
+
+
+class TestPerfBackendLabel:
+    """The perf report names the backend that served a turn.
+
+    Calling every non-agent turn "copilot" names a provider the user may not
+    have, and the label is stored in reports people paste into support
+    tickets.
+    """
+
+    def _manager(self, provider_id):
+        manager, _ = _make_manager()
+        manager._nbi_config.chat_model = {
+            "provider": provider_id,
+            "model": "some-model",
+        }
+        return manager
+
+    def test_the_native_path_is_named_by_its_provider(self):
+        # The ids the shipped providers actually register.
+        assert GitHubCopilotLLMProvider().id == "github-copilot"
+        assert OpenAICompatibleLLMProvider().id == "openai-compatible"
+        assert LiteLLMCompatibleLLMProvider().id == "litellm-compatible"
+        assert OllamaLLMProvider().id == "ollama"
+
+        for provider_id in (
+            "github-copilot",
+            "openai-compatible",
+            "litellm-compatible",
+            "ollama",
+        ):
+            assert self._manager(provider_id).perf_backend_label == provider_id
+
+    def test_agent_modes_keep_their_own_labels(self):
+        manager = self._manager("openai-compatible")
+        manager._nbi_config.claude_settings = {"enabled": True}
+        assert manager.perf_backend_label == "claude"
+
+        manager = self._manager("openai-compatible")
+        manager._nbi_config.claude_settings = {"enabled": False}
+        manager._nbi_config.acp_settings = {"enabled": True, "agent": "gemini"}
+        assert manager.perf_backend_label == "acp"
+
+    def test_no_configured_provider_falls_back_to_the_path_not_a_name(self):
+        """A report must not invent a provider when none is configured."""
+        assert self._manager("").perf_backend_label == "chat"
+        assert self._manager("none").perf_backend_label == "chat"
+
+        manager, _ = _make_manager()
+        manager._nbi_config.chat_model = None
+        assert manager.perf_backend_label == "chat"
+
+    def test_a_malformed_config_does_not_fail_the_request(self):
+        """This runs on the chat path, so it must not be what raises.
+
+        A hand-edited config can carry any shape here, and before this label
+        existed such a config still reached the "Chat model is not set!"
+        reply rather than an exception.
+        """
+        for chat_model in ({"provider": 5}, {"provider": ["ollama"]}, "ollama", None, {}):
+            manager, _ = _make_manager()
+            manager._nbi_config.chat_model = chat_model
+            assert manager.perf_backend_label == "chat"
+
+    def test_a_model_the_provider_cannot_resolve_still_names_the_provider(self):
+        """Reading the resolved model instead would answer "chat" here.
+
+        A pinned model id that the provider's current catalogue does not list
+        leaves `chat_model` None, which says nothing about which provider the
+        user configured.
+        """
+        manager = self._manager("github-copilot")
+        manager._chat_model = None
+
+        assert manager.perf_backend_label == "github-copilot"
+
+    def test_the_dispatch_span_is_labelled_with_the_backend(self):
+        """The label reaches the report, not just the property."""
+        manager, participant = _make_manager()
+        manager._nbi_config.chat_model = {
+            "provider": "openai-compatible",
+            "model": "m",
+        }
+        response = _RecordingResponse()
+        response.message_id = "m-dispatch"
+
+        perf.configure({"enabled": True, "attr_detail": "full"}, None)
+        try:
+            turn = perf.begin_turn(
+                "m-dispatch",
+                manager.perf_backend_label,
+                time.time(),
+                time.monotonic(),
+            )
+            request = ChatRequest(prompt="hello", chat_history=[])
+            asyncio.run(manager.handle_chat_request(request, response))
+            turn.close("ok")
+            snapshot = perf.report_snapshot()
+        finally:
+            perf.configure({"enabled": False}, None)
+
+        recorded = [t for t in snapshot["turns"] if t["message_id"] == "m-dispatch"]
+        assert recorded, "the turn was not recorded"
+        assert recorded[-1]["mode"] == "openai-compatible"
+        dispatch = [s for s in recorded[-1]["spans"] if s["name"] == "dispatch"]
+        assert dispatch, "no dispatch span"
+        assert dispatch[0]["attrs"]["provider"] == "openai-compatible"

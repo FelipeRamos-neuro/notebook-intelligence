@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 import json
+
+from notebook_intelligence import perf
 from unittest.mock import Mock, patch, MagicMock
 from tornado.httputil import HTTPServerRequest
 from tornado.web import Application
@@ -97,6 +99,52 @@ class TestWebsocketHandlerIntegration:
             
             assert handler._context_factory is mock_factory
     
+    @patch('notebook_intelligence.extension.ai_service_manager')
+    @patch('notebook_intelligence.extension.NotebookIntelligence')
+    @patch('notebook_intelligence.extension.threading.Thread')
+    def test_on_message_labels_the_turn_with_the_backend(self, mock_thread, mock_nb_intel, mock_ai_manager):
+        """The Mode column comes from this call, so it is worth pinning here.
+
+        Labelling every non-agent turn "copilot" named a provider the user may
+        not have, and the label is stored in reports people paste into
+        support tickets.
+        """
+        mock_nb_intel.root_dir = "/workspace"
+        mock_ai_manager.handle_chat_request = Mock()
+        mock_ai_manager.is_claude_code_mode = False
+        mock_ai_manager.is_acp_mode = False
+        mock_ai_manager.perf_backend_label = "ollama"
+
+        with patch('notebook_intelligence.extension.ThreadSafeWebSocketConnector'):
+            handler = WebsocketCopilotHandler(
+                self._create_mock_application(),
+                self._create_mock_request(),
+            )
+
+        message = {
+            'id': 'labelled-message',
+            'type': 'chat-request',
+            'data': {
+                'chatId': 'labelled-chat',
+                'prompt': 'Test prompt',
+                'language': 'python',
+                'filename': 'test.ipynb',
+                'chatMode': 'ask',
+                'toolSelections': {},
+                'additionalContext': []
+            }
+        }
+
+        perf.configure({"enabled": True}, None)
+        try:
+            handler.on_message(json.dumps(message))
+            turn = perf.take_turn('labelled-message')
+        finally:
+            perf.configure({"enabled": False}, None)
+
+        assert turn is not None, "the handler recorded no turn"
+        assert turn.mode == "ollama"
+
     @patch('notebook_intelligence.extension.ai_service_manager')
     @patch('notebook_intelligence.extension.NotebookIntelligence')
     @patch('notebook_intelligence.extension.threading.Thread')
