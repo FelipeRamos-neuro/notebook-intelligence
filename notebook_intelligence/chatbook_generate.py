@@ -710,8 +710,13 @@ def _jupyter_root() -> str:
     return get_jupyter_root_dir() or ""
 
 
+CHATBOOK_RULE_KERNEL_FALLBACK = "chatbook"
+
+
 def chatbook_rule_context(
-    notebook_path: str = "", language: str = "python", kernel_name: str = "chatbook"
+    notebook_path: str = "",
+    language: str = "python",
+    kernel_name: str = CHATBOOK_RULE_KERNEL_FALLBACK,
 ) -> RuleContext:
     """Rule matching context for Chatbook code generation."""
     relative = (notebook_path or "").strip() or "untitled.ipynb"
@@ -720,10 +725,38 @@ def chatbook_rule_context(
     return RuleContext(
         filename=relative,
         language=(language or "python").strip() or "python",
-        kernel_name=kernel_name or "chatbook",
+        kernel_name=kernel_name or CHATBOOK_RULE_KERNEL_FALLBACK,
         mode="chatbook",
         directory=directory or None,
     )
+
+
+def chatbook_backend_kernel_name(manager: Any) -> str:
+    """The kernelspec Chatbook executes in, for rule matching.
+
+    Rules scoped with ``kernel_names`` name an installed kernelspec, so they
+    have to be matched against the backend kernel rather than the ``chatbook``
+    wrapper the notebook is open under. A configured name is taken at face
+    value; resolving the default costs a kernelspec scan and can fail on a
+    machine with none installed, and generation should not break over a rule
+    scope, so any failure falls back to the wrapper name.
+    """
+    nbi_config = getattr(manager, "nbi_config", None)
+    configured = str(getattr(nbi_config, "chatbook_backend_kernel", "") or "").strip()
+    # The wrapper cannot be its own backend, and a hand-edited config can still
+    # name it; `resolve_backend_kernel` drops it for the same reason.
+    if configured and configured != CHATBOOK_RULE_KERNEL_FALLBACK:
+        return configured
+    try:
+        from notebook_intelligence.chatbook_kernel.backend import (
+            load_kernel_specs,
+            resolve_backend_kernel,
+        )
+
+        return str(resolve_backend_kernel("", load_kernel_specs())["name"])
+    except Exception:
+        log.debug("Could not resolve the Chatbook backend kernel", exc_info=True)
+        return CHATBOOK_RULE_KERNEL_FALLBACK
 
 
 def chatbook_system_prompt(
@@ -733,7 +766,11 @@ def chatbook_system_prompt(
     return RuleInjector().inject_guidelines(
         cell_codegen_instructions(language),
         host=manager,
-        rule_context=chatbook_rule_context(notebook_path, language=language),
+        rule_context=chatbook_rule_context(
+            notebook_path,
+            language=language,
+            kernel_name=chatbook_backend_kernel_name(manager),
+        ),
     )
 
 

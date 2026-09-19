@@ -1087,3 +1087,157 @@ def test_format_chatbook_mention_context_marks_content_untrusted():
     assert escaped.count('</MENTION_CONTEXT>') == 1
     assert '\\u003c/MENTION_CONTEXT\\u003e' in escaped
 
+
+
+def _rule_host(rules_dir, backend_kernel=None):
+    from notebook_intelligence.rule_manager import RuleManager
+
+    class Cfg:
+        rules_enabled = True
+
+    if backend_kernel is not None:
+        Cfg.chatbook_backend_kernel = backend_kernel
+
+    class Host:
+        nbi_config = Cfg()
+
+        def get_rule_manager(self):
+            return RuleManager(str(rules_dir))
+
+    return Host()
+
+
+def _write_kernel_scoped_rule(rules_dir, kernel_name, marker):
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / f'{kernel_name}.md').write_text(
+        '---\n'
+        'active: true\n'
+        'scope:\n'
+        f'  kernel_names: ["{kernel_name}"]\n'
+        '---\n'
+        f'# Scoped\n- {marker}\n',
+        encoding='utf-8',
+    )
+
+
+def test_kernel_scoped_rule_matches_the_configured_backend_kernel(tmp_path):
+    # A rule scoped to the backend kernelspec never fired, because generation
+    # reported the `chatbook` wrapper as the kernel name whatever the notebook
+    # actually ran.
+    from notebook_intelligence.util import (
+        get_jupyter_root_dir,
+        set_jupyter_root_dir,
+    )
+
+    rules_dir = tmp_path / 'rules'
+    _write_kernel_scoped_rule(rules_dir, 'python3', 'Prefer pandas')
+
+    old_root = get_jupyter_root_dir()
+    set_jupyter_root_dir(str(tmp_path))
+    try:
+        prompt = chatbook_system_prompt(
+            _rule_host(rules_dir, backend_kernel='python3'),
+            'analysis.ipynb',
+        )
+    finally:
+        set_jupyter_root_dir(old_root)
+
+    assert 'Prefer pandas' in prompt
+
+
+def test_kernel_scoped_rule_for_another_kernel_still_does_not_match(tmp_path):
+    from notebook_intelligence.util import (
+        get_jupyter_root_dir,
+        set_jupyter_root_dir,
+    )
+
+    rules_dir = tmp_path / 'rules'
+    _write_kernel_scoped_rule(rules_dir, 'ir', 'Use data.table')
+
+    old_root = get_jupyter_root_dir()
+    set_jupyter_root_dir(str(tmp_path))
+    try:
+        prompt = chatbook_system_prompt(
+            _rule_host(rules_dir, backend_kernel='python3'),
+            'analysis.ipynb',
+        )
+    finally:
+        set_jupyter_root_dir(old_root)
+
+    assert 'Use data.table' not in prompt
+
+
+def test_backend_kernel_name_prefers_the_configured_value():
+    from notebook_intelligence.chatbook_generate import (
+        chatbook_backend_kernel_name,
+    )
+
+    class Host:
+        nbi_config = type('Cfg', (), {'chatbook_backend_kernel': ' ir '})()
+
+    assert chatbook_backend_kernel_name(Host()) == 'ir'
+
+
+def test_backend_kernel_name_falls_back_when_resolution_fails(monkeypatch):
+    # A machine with no kernelspecs installed raises out of resolution; a rule
+    # scope must not be able to break generation.
+    from notebook_intelligence import chatbook_generate
+    from notebook_intelligence.chatbook_kernel import backend
+
+    monkeypatch.setattr(
+        backend,
+        'load_kernel_specs',
+        lambda: (_ for _ in ()).throw(RuntimeError('no specs')),
+    )
+
+    class Host:
+        nbi_config = type('Cfg', (), {'chatbook_backend_kernel': ''})()
+
+    assert (
+        chatbook_generate.chatbook_backend_kernel_name(Host())
+        == chatbook_generate.CHATBOOK_RULE_KERNEL_FALLBACK
+    )
+
+
+def test_backend_kernel_name_resolves_the_default_when_config_is_blank():
+    # The blank setting is what an out-of-the-box install has, so this is the
+    # branch nearly every user takes.
+    from notebook_intelligence import chatbook_generate
+    from notebook_intelligence.chatbook_kernel import backend
+
+    specs = {
+        'chatbook': {'spec': {'language': 'python', 'display_name': 'Chatbook'}},
+        'python3': {'spec': {'language': 'python', 'display_name': 'Python 3'}},
+    }
+
+    class Host:
+        nbi_config = type('Cfg', (), {'chatbook_backend_kernel': ''})()
+
+    original = backend.load_kernel_specs
+    backend.load_kernel_specs = lambda: specs
+    try:
+        assert chatbook_generate.chatbook_backend_kernel_name(Host()) == 'python3'
+    finally:
+        backend.load_kernel_specs = original
+
+
+def test_backend_kernel_name_ignores_a_config_naming_the_wrapper():
+    # The wrapper cannot be its own backend. A hand-edited config can still
+    # name it, and matching rules against it would reinstate the original bug.
+    from notebook_intelligence import chatbook_generate
+    from notebook_intelligence.chatbook_kernel import backend
+
+    specs = {
+        'chatbook': {'spec': {'language': 'python', 'display_name': 'Chatbook'}},
+        'python3': {'spec': {'language': 'python', 'display_name': 'Python 3'}},
+    }
+
+    class Host:
+        nbi_config = type('Cfg', (), {'chatbook_backend_kernel': 'chatbook'})()
+
+    original = backend.load_kernel_specs
+    backend.load_kernel_specs = lambda: specs
+    try:
+        assert chatbook_generate.chatbook_backend_kernel_name(Host()) == 'python3'
+    finally:
+        backend.load_kernel_specs = original
