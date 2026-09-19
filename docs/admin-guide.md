@@ -278,7 +278,8 @@ Steps for deploying to a network with no general internet egress:
 2. **Manifest hosting.** Set `NBI_SKILLS_MANIFEST` to either a `file://` path (a manifest baked into the image) or an internal `https://` URL on a network the pod can reach.
 3. **Skill bundles.** Either bake the skills into the image under `~/.claude/skills/` (managed status will reset since they aren't from the manifest), or host the GitHub-style tarballs at an internal mirror and write the manifest URLs to point at it.
 4. **Disable user-initiated GitHub imports** at the network layer — block `github.com`, `codeload.github.com`, and `raw.githubusercontent.com`. Users can still install skills from the local filesystem by dropping bundles into `~/.claude/skills/`.
-5. **MCP `npx -y` is incompatible with air-gap.** Pre-install the server binary and reference it directly:
+5. **ACP mode is `npx`-only by default.** The adapter is fetched with `npx` on every agent start, so an air-gapped deployment must either leave ACP off (it is `force-off` by default) or pre-install the adapter and point `NBI_ACP_AGENT_COMMAND` at it. A replacement command must still accept the `-c` overrides NBI passes, or the approval posture those pin is lost.
+6. **MCP `npx -y` is incompatible with air-gap.** Pre-install the server binary and reference it directly:
 
    ```json
    {
@@ -291,7 +292,7 @@ Steps for deploying to a network with no general internet egress:
    }
    ```
 
-6. **LLM endpoint.** Air-gap requires a self-hosted endpoint (vLLM, TGI, or a LiteLLM proxy in front of a VPC-endpoint Bedrock, etc.). See [Self-hosted LLM endpoints](#self-hosted-llm-endpoints).
+7. **LLM endpoint.** Air-gap requires a self-hosted endpoint (vLLM, TGI, or a LiteLLM proxy in front of a VPC-endpoint Bedrock, etc.). See [Self-hosted LLM endpoints](#self-hosted-llm-endpoints).
 
 ---
 
@@ -309,7 +310,16 @@ c.NotebookIntelligence.disabled_providers = [
 c.NotebookIntelligence.allow_enabling_providers_with_env = False  # users cannot override
 c.NotebookIntelligence.disabled_tools = ["nbi-command-execute", "nbi-file-edit"]
 c.NotebookIntelligence.allow_enabling_tools_with_env = False
+
+# Both agent modes reach a cloud provider without going through the provider
+# list above, so disabling providers alone does not make a deployment
+# local-only. acp_mode is already force-off by default; it is pinned here so
+# the preset keeps working if that default is ever relaxed.
+c.NotebookIntelligence.claude_mode_policy = "force-off"
+c.NotebookIntelligence.acp_mode_policy = "force-off"
 ```
+
+> **`disabled_providers` does not gate Claude mode or ACP mode.** Whether an agent mode handles a turn is read from its own settings (`claude_settings.enabled` / `acp_settings.enabled`), not from the provider list, and `claude_mode_policy` otherwise defaults to `user-choice`. Without the two policy lines above, a user can enable Claude mode and send data to Anthropic through the Claude Code CLI, which can hold a subscription login the deployment never issued a key for.
 
 Pair with `<env-prefix>/share/jupyter/nbi/config.json` selecting the Ollama provider and your local models:
 
@@ -912,6 +922,7 @@ NBI is tested against the JupyterLab and `jupyter_server` versions declared in [
 
 | NBI version | JupyterLab | jupyter_server | Python    |
 | ----------- | ---------- | -------------- | --------- |
+| 6.0.x       | 4.x        | 2.x            | 3.10+     |
 | 5.4.x       | 4.x        | 2.x            | 3.10+     |
 | 5.3.x       | 4.x        | 2.x            | 3.10+     |
 | 5.2.x       | 4.x        | 2.x            | 3.10+     |

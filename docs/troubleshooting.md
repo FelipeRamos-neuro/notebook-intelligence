@@ -136,6 +136,18 @@ Pruning only happens when NBI knows the window. GitHub Copilot models report the
 
 Agent-mode tool loops are not budgeted; this applies to ask mode and the built-in generation commands.
 
+## Tab indents instead of accepting a suggestion
+
+Tab accepts an inline suggestion only while one is actually on screen; otherwise it indents, which is what Tab does everywhere else in a notebook. Earlier releases bound accept whenever the completer was active, so Tab could be swallowed in a cell with nothing to accept. If suggestions never appear at all, that is a different problem: see the two entries below.
+
+## Settings says "Ready" but every chat turn fails
+
+An OpenAI-compatible or LiteLLM-compatible provider needs an explicit **Model**. A blank field used to persist as an empty string, and the readiness card answered "Ready. Nothing needs configuring" while every turn went out with no model name and failed at the provider. Readiness now reports a blank required field as a blocking row naming the field. On an older release, check Settings for an empty Model box.
+
+## A file changed on disk but the open tab did not reload
+
+Two deliberate limits. A revert is skipped while that document's kernel is busy, so an agent edit made during a long-running cell appears when the cell finishes rather than mid-execution. And the reload notice is only shown for the document you are looking at, so files reverted in background tabs change without a message. Neither is an error; nothing is logged.
+
 ## Inline completion is too aggressive or too quiet
 
 Tune the debounce delay in NBI Settings → Inline completion. Lower delays mean more requests, which means higher cost on paid providers. The default balances responsiveness against cost.
