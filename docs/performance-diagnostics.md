@@ -328,7 +328,9 @@ the label the Recent turns table shows and hashing it would leave the column
 unreadable. Its values are `claude`, `acp`, the id of the configured chat
 provider (`github-copilot`, `openai-compatible`, `litellm-compatible`,
 `ollama`, or the id a plugin registered), or `chat` when no provider is
-configured. A site that registers a provider under an internal name should
+configured. A Chatbook turn carries the surface as well, as
+`chatbook:<provider>`, so it can be told apart from a chat turn on the same
+provider. A site that registers a provider under an internal name should
 know that name reaches the report.
 
 The probe output is separately scrubbed: home directory paths and the resolved

@@ -4,12 +4,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import time
 import uuid
 from typing import Any, Optional
 
+from notebook_intelligence import perf
 from notebook_intelligence.api import (
     ChatbookContextRequest,
     ChatResponse,
@@ -452,6 +455,57 @@ def generate_prompt_with_chat_model(
     return value
 
 
+CHATBOOK_PERF_MODE_PREFIX = "chatbook"
+
+
+def _chatbook_perf_provider(manager: Any) -> str:
+    """Which backend serves this generation, named the way chat names it."""
+    label = getattr(manager, "perf_backend_label", None)
+    return str(label) if isinstance(label, str) and label else "chat"
+
+
+def _begin_chatbook_turn(manager: Any, cell_id: str):
+    """Record Chatbook generation as a turn, so it shows up in the report.
+
+    Chatbook runs the same providers as chat but reaches them through the
+    generate route rather than the chat socket, so without this a report is
+    silent about the surface that fires a model call per cell run. The mode
+    carries the surface as well as the provider, because a Chatbook turn and a
+    chat turn on the same provider have different shapes and a reader
+    comparing them needs to tell them apart.
+    """
+    if not perf.enabled():
+        return None
+    mode = f"{CHATBOOK_PERF_MODE_PREFIX}:{_chatbook_perf_provider(manager)}"
+    return perf.begin_turn(
+        cell_id or f"chatbook-{uuid.uuid4().hex}",
+        mode,
+        time.time(),
+        time.monotonic(),
+    )
+
+
+@contextlib.contextmanager
+def _chatbook_span(turn, name: str, **attrs):
+    if turn is None:
+        # A null span rather than None: instrumentation inside the block calls
+        # set_attr unconditionally, and None would fail only on the disabled
+        # path, which is every user by default.
+        yield perf._NullSpan()
+        return
+    with turn.span(name, **attrs) as span:
+        yield span
+
+
+def _close_chatbook_turn(turn, status: str) -> None:
+    if turn is None:
+        return
+    try:
+        turn.close(status)
+    except Exception:
+        log.debug("Could not close Chatbook perf turn", exc_info=True)
+
+
 def generate_chatbook_code(
     manager: Any,
     prompt: str,
@@ -481,8 +535,49 @@ def generate_chatbook_code(
         context_hash=context_hash,
         working_directory=_jupyter_root(),
     )
-    dynamic_context = _collect_dynamic_context(manager, context_request)
-    system_prompt = chatbook_system_prompt(manager, notebook_path, language)
+    turn = _begin_chatbook_turn(manager, cell_id)
+    provider = _chatbook_perf_provider(manager) if turn is not None else ""
+    try:
+        with _chatbook_span(turn, "context_prep") as context_span:
+            dynamic_context = _collect_dynamic_context(manager, context_request)
+            system_prompt = chatbook_system_prompt(manager, notebook_path, language)
+            context_span.set_attr("file_count", len(dynamic_context))
+        with _chatbook_span(turn, "dispatch", provider=provider):
+            code = _generate_chatbook_code_inner(
+                manager,
+                prompt,
+                notebook_context,
+                notebook_path,
+                cell_id,
+                prompt_hash,
+                context_hash,
+                language,
+                skipped,
+                mention_providers,
+                dynamic_context,
+                system_prompt,
+            )
+    except BaseException:
+        _close_chatbook_turn(turn, "error")
+        raise
+    _close_chatbook_turn(turn, "ok")
+    return code
+
+
+def _generate_chatbook_code_inner(
+    manager: Any,
+    prompt: str,
+    notebook_context: Optional[dict],
+    notebook_path: str,
+    cell_id: str,
+    prompt_hash: str,
+    context_hash: str,
+    language: str,
+    skipped: list,
+    mention_providers: list,
+    dynamic_context: Any,
+    system_prompt: str,
+) -> str:
     if getattr(manager, "is_acp_mode", False):
         text = _generate_text_with_acp_agent(
             manager,
