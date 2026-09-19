@@ -11,18 +11,19 @@ no shape translation is needed at the consumer.
 
 Why this exists rather than just using ``fastmcp``: every ``fastmcp``
 release that NBI's pinned floor (``>=2.11.2``) admits requires
-``python-dotenv>=1.1.0``, while every ``litellm`` release that picks
-up the recent CVE fixes (1.83.1+) hard-pins ``python-dotenv==1.0.1``.
-The two are mutually unsatisfiable; ``pip install -e .`` on a fresh
-Python 3.14 against ``main`` reports ``ResolutionImpossible``. The
-official ``mcp`` SDK is already in NBI's dep tree (via
-``claude-agent-sdk``) and lists ``python-dotenv`` only as an optional
-``cli`` extra, so swapping ``fastmcp`` → ``mcp`` here unblocks the
-install without losing any CVE fix.
+``python-dotenv>=1.1.0``, while ``litellm`` 1.83.1 through 1.83.x
+hard-pinned ``python-dotenv==1.0.1``. The two were mutually
+unsatisfiable; ``pip install -e .`` on a fresh Python 3.14 reported
+``ResolutionImpossible``. The official ``mcp`` SDK is already in NBI's
+dep tree (via ``claude-agent-sdk``) and lists ``python-dotenv`` only as
+an optional ``cli`` extra, so swapping ``fastmcp`` → ``mcp`` here
+unblocked the install without losing any CVE fix.
 
-Tracked upstream at BerriAI/litellm#25231 (relax the python-dotenv
-pin). Once that lands and propagates through ``fastmcp``-shaped
-clients, this shim can be reverted to a direct ``fastmcp`` import.
+That upstream conflict is now resolved: litellm 1.84.0 replaced the
+hard pin with ``python-dotenv>=1.0.0,<2.0`` (BerriAI/litellm#25231), and
+NBI's floor is at or above that release. Reverting to a direct
+``fastmcp`` import would therefore resolve again, but nothing requires
+it, so the shim stays until there is a reason to move.
 """
 
 import sys
