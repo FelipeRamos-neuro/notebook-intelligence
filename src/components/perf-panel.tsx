@@ -382,7 +382,11 @@ interface IColumn {
 
 const TURN_COLUMNS: IColumn[] = [
   { key: 'time', label: 'Time', tip: 'When the turn started, in local time.' },
-  { key: 'mode', label: 'Mode', tip: 'Which backend served the turn.' },
+  {
+    key: 'mode',
+    label: 'Mode',
+    tip: 'Which backend served the turn, and the surface it came from.'
+  },
   {
     key: 'model',
     label: 'Model',
