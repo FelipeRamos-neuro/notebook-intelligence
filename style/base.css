@@ -364,11 +364,23 @@
 
 .chat-mode-select {
   height: 24px;
-  background-color: initial;
+  background-color: var(--jp-input-background, var(--jp-layout-color1));
   color: var(--jp-ui-font-color1);
   padding: 0 5px;
   border-color: var(--jp-border-color0);
   outline: none;
+}
+
+/* The native option list is drawn from the option's own colors, not the
+   select's, in some browsers (Firefox) and falls back to the light UI palette
+   otherwise. Without these, light theme text lands on a light popup in a dark
+   theme and the choices are unreadable. */
+.chat-mode-select option,
+.nbi-form-field select option,
+.config-dialog-body select option,
+.nbi-perf-control select option {
+  background-color: var(--jp-layout-color2);
+  color: var(--jp-ui-font-color0);
 }
 
 .permission-mode-container {
