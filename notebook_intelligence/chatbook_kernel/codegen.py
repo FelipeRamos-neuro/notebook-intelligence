@@ -53,11 +53,12 @@ def cell_codegen_instructions(language: str = "python") -> str:
         "  expression of this cell."
         if pythonish
         else (
-            "- Never reference the kernel's implicit last-result history (for example\n"
-            "  R's `.Last.value`). It shifts or breaks whenever cells are added,\n"
-            "  reordered, skipped, or a cell is regenerated, and the user never sees\n"
-            "  this failure by reading the code. Bind any value you (or a later cell)\n"
-            "  will need to an explicit, descriptively named variable instead."
+            "- Never reference the kernel's implicit last-result history (an automatic\n"
+            "  variable holding the previous expression's value). It shifts or breaks\n"
+            "  whenever cells are added, reordered, skipped, or a cell is regenerated,\n"
+            "  and the user never sees this failure by reading the code. Bind any value\n"
+            "  you (or a later cell) will need to an explicit, descriptively named\n"
+            "  variable instead."
         )
     )
     fence = "python" if pythonish else lang
@@ -77,10 +78,12 @@ Reuse that state. Do not copy PREFIX logic into the CURSOR cell.
 - If the prompt is a variation of an earlier cell (same task, new input), only pass the new input and call the existing helper. Do not reimplement the algorithm.
 - When introducing a new reusable operation, define a clear function or name so later cells can call it.
 - Bind this cell's meaningful result to a clearly named variable by default, even
-  if the prompt only asks to "show" or "print" it. A later cell's prompt may want
-  to reference this cell's output; it should be able to do so by name without
-  editing this cell. Skip this only for genuinely disposable output (for example
-  a one-off print or plot with nothing worth reusing).
+  if the prompt only asks to "show" or "print" it, then still show it: leave that
+  name (or `display(name)`) as the cell's final expression so the notebook renders
+  output. A later cell's prompt may want to reference this cell's output; it
+  should be able to do so by name without editing this cell. Skip the binding
+  only for genuinely disposable output (for example a one-off print or plot with
+  nothing worth reusing).
 - Do not re-import modules already imported in PREFIX unless required.
 {implicit_history}
 {install}
@@ -89,8 +92,8 @@ Reuse that state. Do not copy PREFIX logic into the CURSOR cell.
 - Do not restart, replace, or clear the kernel.
 - If Additional Guidelines are present, follow them for {extra}.
 
-The CURSOR block's "previously generated code" and "output" are the OLD version
-of this same cell and are being replaced right now. Only PREFIX is guaranteed to
+The CURSOR block's "Previous generated code" and "Previous output" are the OLD
+version of this same cell and are being replaced right now. Only PREFIX is guaranteed to
 have run before your new code. If that old CURSOR code defined a name your new
 code still needs (including one carried over from the current prompt's intent),
 redefine it yourself — do not assume it survives from the discarded version, even
