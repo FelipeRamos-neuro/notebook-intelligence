@@ -364,7 +364,11 @@
 
 .chat-mode-select {
   height: 24px;
-  background-color: var(--jp-input-background, var(--jp-layout-color1));
+
+  /* The footer's own background, so the select blends in as it did when this
+     was transparent; an explicit color (rather than transparent) is what
+     keeps the native popup from falling back to the light palette. */
+  background-color: var(--jp-cell-editor-background, var(--jp-layout-color1));
   color: var(--jp-ui-font-color1);
   padding: 0 5px;
   border-color: var(--jp-border-color0);
@@ -374,13 +378,24 @@
 /* The native option list is drawn from the option's own colors, not the
    select's, in some browsers (Firefox) and falls back to the light UI palette
    otherwise. Without these, light theme text lands on a light popup in a dark
-   theme and the choices are unreadable. */
-.chat-mode-select option,
+   theme and the choices are unreadable. The fallbacks keep a theme that leaves
+   a variable out from bringing that back. */
+
+/* The chat mode popup matches the select it belongs to, so the closed and open
+   states are the same tone. */
+.chat-mode-select option {
+  background-color: var(
+    --jp-cell-editor-background,
+    var(--jp-layout-color1, Canvas)
+  );
+  color: var(--jp-ui-font-color0, CanvasText);
+}
+
 .nbi-form-field select option,
 .config-dialog-body select option,
 .nbi-perf-control select option {
-  background-color: var(--jp-layout-color2);
-  color: var(--jp-ui-font-color0);
+  background-color: var(--jp-layout-color2, var(--jp-layout-color1, Canvas));
+  color: var(--jp-ui-font-color0, CanvasText);
 }
 
 .permission-mode-container {

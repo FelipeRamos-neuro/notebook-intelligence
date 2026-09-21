@@ -26,21 +26,41 @@ function declarations(selector: string): string {
   return rules.map(([, body]) => body).join('\n');
 }
 
+// What the chat mode select sits on, so it looks as it did when transparent.
+const FOOTER_BACKGROUND = /var\(\s*--jp-cell-editor-background/;
+
 describe('select colors follow the JupyterLab theme', () => {
-  it('gives the chat mode select a themed background', () => {
+  it('gives the chat mode select the footer background, not transparent', () => {
     const body = declarations('.chat-mode-select');
-    expect(body).toMatch(/background-color:\s*var\(--jp-/);
+    expect(body).toMatch(
+      new RegExp(`background-color:\\s*${FOOTER_BACKGROUND.source}`)
+    );
     expect(body).not.toMatch(/background-color:\s*initial/);
   });
 
+  it('matches the chat mode popup to the select it belongs to, with fallbacks', () => {
+    const body = declarations('.chat-mode-select option');
+    expect(body).toMatch(
+      /background-color:\s*var\(\s*--jp-cell-editor-background,\s*var\(\s*--jp-layout-color1,\s*Canvas\s*\)\s*\)/
+    );
+    expect(body).toMatch(
+      /\bcolor:\s*var\(\s*--jp-ui-font-color0,\s*CanvasText\s*\)/
+    );
+  });
+
   it.each([
-    '.chat-mode-select option',
     '.nbi-form-field select option',
     '.config-dialog-body select option',
     '.nbi-perf-control select option'
-  ])('themes the option list for %s', selector => {
+  ])('themes the option list for %s, with fallbacks', selector => {
     const body = declarations(selector);
-    expect(body).toMatch(/background-color:\s*var\(--jp-/);
-    expect(body).toMatch(/\bcolor:\s*var\(--jp-/);
+    // A theme that omits --jp-layout-color2 must not leave the option
+    // transparent, which is the original bug.
+    expect(body).toMatch(
+      /background-color:\s*var\(\s*--jp-layout-color2,\s*var\(\s*--jp-layout-color1,\s*Canvas\s*\)\s*\)/
+    );
+    expect(body).toMatch(
+      /\bcolor:\s*var\(\s*--jp-ui-font-color0,\s*CanvasText\s*\)/
+    );
   });
 });
