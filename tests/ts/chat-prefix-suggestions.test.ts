@@ -5,7 +5,8 @@
 // match, so such a message could not be sent from the keyboard at all.
 import {
   isPrefixPopoverUsable,
-  prefixesMatching
+  prefixesMatching,
+  scrollSelectedSuggestionIntoView
 } from '../../src/chat-prefix-suggestions';
 
 const PREFIXES = ['@mcp', '/clear', '/newNotebook', '/newPythonFile'];
@@ -51,5 +52,46 @@ describe('isPrefixPopoverUsable', () => {
 
   it('is false when closed', () => {
     expect(isPrefixPopoverUsable(false, ['/clear'])).toBe(false);
+  });
+});
+
+describe('scrollSelectedSuggestionIntoView', () => {
+  // jsdom does not implement scrollIntoView, so each row gets a spy.
+  function popoverWithRows(count: number) {
+    const popover = document.createElement('div');
+    const spies: jest.Mock[] = [];
+    for (let i = 0; i < count; i++) {
+      const row = document.createElement('div');
+      const spy = jest.fn();
+      row.scrollIntoView = spy;
+      spies.push(spy);
+      popover.appendChild(row);
+    }
+    return { popover, spies };
+  }
+
+  it('scrolls only the selected row, by the smallest amount', () => {
+    const { popover, spies } = popoverWithRows(30);
+    scrollSelectedSuggestionIntoView(popover, 17);
+    expect(spies[17]).toHaveBeenCalledWith({ block: 'nearest' });
+    spies.forEach((spy, i) => {
+      if (i !== 17) {
+        expect(spy).not.toHaveBeenCalled();
+      }
+    });
+  });
+
+  it('follows the selection when it wraps from the first row to the last', () => {
+    const { popover, spies } = popoverWithRows(30);
+    scrollSelectedSuggestionIntoView(popover, 29);
+    expect(spies[29]).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a missing popover, an out-of-range index, or no scrollIntoView', () => {
+    const { popover } = popoverWithRows(2);
+    expect(() => scrollSelectedSuggestionIntoView(null, 0)).not.toThrow();
+    expect(() => scrollSelectedSuggestionIntoView(popover, 5)).not.toThrow();
+    (popover.children[0] as any).scrollIntoView = undefined;
+    expect(() => scrollSelectedSuggestionIntoView(popover, 0)).not.toThrow();
   });
 });

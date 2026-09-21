@@ -28,3 +28,19 @@ export function isPrefixPopoverUsable(
 ): boolean {
   return showPopover && suggestions.length > 0;
 }
+
+/**
+ * Keep the keyboard-selected suggestion visible.
+ *
+ * The popover scrolls when it has more suggestions than fit, but arrow keys
+ * only move the selection, so it would walk out of view. `block: 'nearest'`
+ * scrolls the list by the smallest amount and leaves it alone when the row is
+ * already visible.
+ */
+export function scrollSelectedSuggestionIntoView(
+  popover: HTMLElement | null,
+  index: number
+): void {
+  const item = popover?.children[index] as HTMLElement | undefined;
+  item?.scrollIntoView?.({ block: 'nearest' });
+}

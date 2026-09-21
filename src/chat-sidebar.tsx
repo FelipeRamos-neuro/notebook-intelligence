@@ -104,7 +104,8 @@ import { upsertMessageById } from './chat-transcript';
 import { IClaudeSessionInfo } from './api';
 import {
   isPrefixPopoverUsable,
-  prefixesMatching
+  prefixesMatching,
+  scrollSelectedSuggestionIntoView
 } from './chat-prefix-suggestions';
 import {
   NOTEBOOK_GENERATION_PROGRESS_EVENT,
@@ -2910,6 +2911,14 @@ function SidebarComponent(props: any) {
   };
 
   const popoverUsable = isPrefixPopoverUsable(showPopover, prefixSuggestions);
+  useEffect(() => {
+    if (popoverUsable) {
+      scrollSelectedSuggestionIntoView(
+        autocompleteRef.current,
+        selectedPrefixSuggestionIndex
+      );
+    }
+  }, [popoverUsable, selectedPrefixSuggestionIndex]);
 
   const applyPrefixSuggestion = async (prefix: string) => {
     let mcpArguments = '';
