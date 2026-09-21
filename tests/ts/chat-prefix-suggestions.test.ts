@@ -4,6 +4,7 @@
 // popover used to keep claiming Enter after the prompt was typed past every
 // match, so such a message could not be sent from the keyboard at all.
 import {
+  activeSuggestionIndex,
   isPrefixPopoverUsable,
   prefixesMatching,
   scrollSelectedSuggestionIntoView
@@ -93,5 +94,47 @@ describe('scrollSelectedSuggestionIntoView', () => {
     expect(() => scrollSelectedSuggestionIntoView(popover, 5)).not.toThrow();
     (popover.children[0] as any).scrollIntoView = undefined;
     expect(() => scrollSelectedSuggestionIntoView(popover, 0)).not.toThrow();
+  });
+});
+
+describe('activeSuggestionIndex', () => {
+  const COMMANDS = Array.from({ length: 30 }, (_, i) => `/command${i}`);
+
+  it('keeps an index that still points at a row', () => {
+    expect(activeSuggestionIndex(0, 30)).toBe(0);
+    expect(activeSuggestionIndex(12, 30)).toBe(12);
+    expect(activeSuggestionIndex(29, 30)).toBe(29);
+  });
+
+  it('falls back to the first row when typing narrowed the list past the index', () => {
+    // Arrow down to row 12 of 30, then type a character that leaves 3 matches.
+    const narrowed = prefixesMatching(COMMANDS, '/command1');
+    expect(narrowed.length).toBeLessThan(13);
+    // Read as-is the stale index selects nothing, and Enter would then apply
+    // `undefined`.
+    expect(narrowed[12]).toBeUndefined();
+    const index = activeSuggestionIndex(12, narrowed.length);
+    expect(narrowed[index]).toBeDefined();
+    expect(index).toBe(0);
+  });
+
+  it('treats a negative or out-of-range index as the first row', () => {
+    expect(activeSuggestionIndex(-1, 5)).toBe(0);
+    expect(activeSuggestionIndex(5, 5)).toBe(0);
+  });
+
+  it('returns 0 for an empty list, where the popover claims no keys anyway', () => {
+    expect(activeSuggestionIndex(3, 0)).toBe(0);
+    expect(isPrefixPopoverUsable(true, [])).toBe(false);
+  });
+
+  it('lets ArrowDown/ArrowUp wrap from a valid row after the list shrinks', () => {
+    const narrowed = ['/command1', '/command10', '/command11'];
+    const active = activeSuggestionIndex(12, narrowed.length);
+    // Same arithmetic as the key handlers in chat-sidebar.tsx.
+    const down = (active + 1 + narrowed.length) % narrowed.length;
+    const up = (active - 1 + narrowed.length) % narrowed.length;
+    expect(narrowed[down]).toBeDefined();
+    expect(narrowed[up]).toBe('/command11');
   });
 });

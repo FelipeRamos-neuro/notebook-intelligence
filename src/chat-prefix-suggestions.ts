@@ -44,3 +44,21 @@ export function scrollSelectedSuggestionIntoView(
   const item = popover?.children[index] as HTMLElement | undefined;
   item?.scrollIntoView?.({ block: 'nearest' });
 }
+
+/**
+ * The suggestion the keyboard currently points at.
+ *
+ * The selected index is kept in state and outlives the list it was chosen
+ * from: typing narrows the suggestions, so an index picked on row 12 of 30 can
+ * point past the end of a list of 3. Read as-is it selects nothing, and Enter
+ * then tries to apply a suggestion that does not exist. Fall back to the first
+ * row instead, so the selection is always a real row while the list has any.
+ */
+export function activeSuggestionIndex(
+  selectedIndex: number,
+  suggestionCount: number
+): number {
+  return selectedIndex >= 0 && selectedIndex < suggestionCount
+    ? selectedIndex
+    : 0;
+}

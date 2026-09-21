@@ -103,6 +103,7 @@ import { recordStoppedTurn } from './chat-stopped-turn';
 import { upsertMessageById } from './chat-transcript';
 import { IClaudeSessionInfo } from './api';
 import {
+  activeSuggestionIndex,
   isPrefixPopoverUsable,
   prefixesMatching,
   scrollSelectedSuggestionIntoView
@@ -2911,14 +2912,18 @@ function SidebarComponent(props: any) {
   };
 
   const popoverUsable = isPrefixPopoverUsable(showPopover, prefixSuggestions);
+  const activePrefixSuggestionIndex = activeSuggestionIndex(
+    selectedPrefixSuggestionIndex,
+    prefixSuggestions.length
+  );
   useEffect(() => {
     if (popoverUsable) {
       scrollSelectedSuggestionIntoView(
         autocompleteRef.current,
-        selectedPrefixSuggestionIndex
+        activePrefixSuggestionIndex
       );
     }
-  }, [popoverUsable, selectedPrefixSuggestionIndex]);
+  }, [popoverUsable, activePrefixSuggestionIndex]);
 
   const applyPrefixSuggestion = async (prefix: string) => {
     let mcpArguments = '';
@@ -3406,6 +3411,9 @@ function SidebarComponent(props: any) {
 
   const filterPrefixSuggestions = (prmpt: string) => {
     setPrefixSuggestions(prefixesMatching(originalPrefixes, prmpt));
+    // The narrowed list is a different list, so start from its first row
+    // rather than keep an index chosen from the previous one.
+    setSelectedPrefixSuggestionIndex(0);
   };
 
   const resetPrefixSuggestions = () => {
@@ -3473,7 +3481,7 @@ function SidebarComponent(props: any) {
       event.stopPropagation();
       event.preventDefault();
       if (popoverUsable) {
-        applyPrefixSuggestion(prefixSuggestions[selectedPrefixSuggestionIndex]);
+        applyPrefixSuggestion(prefixSuggestions[activePrefixSuggestionIndex]);
         return;
       }
 
@@ -3484,7 +3492,7 @@ function SidebarComponent(props: any) {
       if (popoverUsable) {
         event.stopPropagation();
         event.preventDefault();
-        applyPrefixSuggestion(prefixSuggestions[selectedPrefixSuggestionIndex]);
+        applyPrefixSuggestion(prefixSuggestions[activePrefixSuggestionIndex]);
         return;
       }
     } else if (event.key === 'Escape') {
@@ -3500,7 +3508,7 @@ function SidebarComponent(props: any) {
 
       if (popoverUsable) {
         setSelectedPrefixSuggestionIndex(
-          (selectedPrefixSuggestionIndex - 1 + prefixSuggestions.length) %
+          (activePrefixSuggestionIndex - 1 + prefixSuggestions.length) %
             prefixSuggestions.length
         );
         return;
@@ -3531,7 +3539,7 @@ function SidebarComponent(props: any) {
 
       if (popoverUsable) {
         setSelectedPrefixSuggestionIndex(
-          (selectedPrefixSuggestionIndex + 1 + prefixSuggestions.length) %
+          (activePrefixSuggestionIndex + 1 + prefixSuggestions.length) %
             prefixSuggestions.length
         );
         return;
@@ -4628,7 +4636,7 @@ function SidebarComponent(props: any) {
               {prefixSuggestions.map((prefix, index) => (
                 <div
                   key={`key-${index}`}
-                  className={`user-input-autocomplete-item ${index === selectedPrefixSuggestionIndex ? 'selected' : ''}`}
+                  className={`user-input-autocomplete-item ${index === activePrefixSuggestionIndex ? 'selected' : ''}`}
                   data-value={prefix}
                   onClick={event => prefixSuggestionSelected(event)}
                 >
