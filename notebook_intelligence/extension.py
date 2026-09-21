@@ -453,6 +453,20 @@ def _resolve_bool_with_env(env_var_name: str, fallback: bool | None) -> bool:
     )
 
 
+def _resolve_tour_disabled(traitlet_value: bool | None) -> bool:
+    """Resolve NBI_TOUR_DISABLED, falling back to the traitlet.
+
+    Unlike the security gates this is a cosmetic switch, so an unrecognized
+    value warns and falls back instead of raising: a typo must not stop the
+    whole extension from loading.
+    """
+    try:
+        return _resolve_bool_with_env("NBI_TOUR_DISABLED", traitlet_value)
+    except ValueError as exc:
+        log.warning("%s; falling back to the tour_disabled setting", exc)
+        return bool(traitlet_value)
+
+
 def _resolve_positive_int_with_env(env_var_name: str, traitlet_value: int) -> int:
     """Resolve a non-negative int tunable, falling back to the traitlet.
 
@@ -4749,8 +4763,8 @@ class NotebookIntelligence(ExtensionApp):
             os.environ.get("NBI_TOUR_CONFIG_PATH", "").strip()
             or (self.tour_config_path or "").strip()
         )
-        GetCapabilitiesHandler.tour_disabled = _resolve_bool_with_env(
-            "NBI_TOUR_DISABLED", self.tour_disabled
+        GetCapabilitiesHandler.tour_disabled = _resolve_tour_disabled(
+            self.tour_disabled
         )
         SkillsBaseHandler.allow_github_skill_import = _resolve_bool_with_env(
             "NBI_ALLOW_GITHUB_SKILL_IMPORT", self.allow_github_skill_import

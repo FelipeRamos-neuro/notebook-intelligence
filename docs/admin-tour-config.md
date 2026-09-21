@@ -14,6 +14,12 @@ takes precedence over the traitlet. Users can still replay the tour from
 the command palette ("Show NBI tour"). Unlike disabling every step in an
 override file, this switch does not need updating when steps are added.
 
+The switch only stops the tour from opening on its own; it does not mark
+the tour as completed. If you remove it later, users who never finished
+the tour see it again on their next load. An unrecognized value (for
+example `NBI_TOUR_DISABLED=ture`) logs a warning and falls back to the
+traitlet instead of stopping the extension from loading.
+
 ## Where to put the file
 
 Anywhere readable by the Jupyter server process. A common pattern on
