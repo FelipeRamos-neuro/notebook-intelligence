@@ -5,7 +5,8 @@ import {
   TOUR_VERSION,
   hasCompletedTour,
   markTourCompleted,
-  resetTour
+  resetTour,
+  shouldAutoShowTour
 } from '../../src/tour/tour-state';
 
 describe('tour-state', () => {
@@ -51,5 +52,26 @@ describe('tour-state', () => {
     expect(raw).not.toBeNull();
     const parsed = JSON.parse(raw as string);
     expect(parsed.version).toBe(TOUR_VERSION);
+  });
+
+  describe('shouldAutoShowTour', () => {
+    it('shows on first run', () => {
+      expect(shouldAutoShowTour(false)).toBe(true);
+    });
+
+    it('does not show once completed', () => {
+      markTourCompleted();
+      expect(shouldAutoShowTour(false)).toBe(false);
+    });
+
+    it('does not show when an admin disabled it, even on first run', () => {
+      expect(shouldAutoShowTour(true)).toBe(false);
+    });
+
+    it('leaves replay unaffected: resetTour still clears completion', () => {
+      markTourCompleted();
+      resetTour();
+      expect(hasCompletedTour()).toBe(false);
+    });
   });
 });

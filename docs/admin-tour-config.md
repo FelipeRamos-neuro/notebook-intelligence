@@ -6,6 +6,14 @@ Point the `NBI_TOUR_CONFIG_PATH` environment variable (or the
 `NotebookIntelligence.tour_config_path` traitlet) at a YAML or JSON file
 and Notebook Intelligence will overlay your copy on the built-in steps.
 
+## Turning the tour off
+
+Set `NBI_TOUR_DISABLED=1` (or `NotebookIntelligence.tour_disabled = True`)
+to stop the tour from opening on first run. The environment variable
+takes precedence over the traitlet. Users can still replay the tour from
+the command palette ("Show NBI tour"). Unlike disabling every step in an
+override file, this switch does not need updating when steps are added.
+
 ## Where to put the file
 
 Anywhere readable by the Jupyter server process. A common pattern on

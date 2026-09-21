@@ -536,6 +536,13 @@ export class NBIConfig {
     return v && typeof v === 'object' ? v : EMPTY_TOUR_OVERRIDES;
   }
 
+  // True when an admin has suppressed the first-run auto-show
+  // (NBI_TOUR_DISABLED). Replaying the tour from the command palette
+  // still works.
+  get tourDisabled(): boolean {
+    return this.capabilities.tour_disabled === true;
+  }
+
   get allowGithubSkillImport(): boolean {
     return this.capabilities.allow_github_skill_import !== false;
   }

@@ -97,7 +97,7 @@ import { upsertToolCallContent } from './tool-call-stream';
 import { TourOverlay } from './tour/tour-overlay';
 import { TOUR_ANCHOR } from './tour/tour-anchors';
 import { TOUR_START_EVENT, TOUR_STOP_EVENT } from './tour/tour-events';
-import { hasCompletedTour } from './tour/tour-state';
+import { hasCompletedTour, shouldAutoShowTour } from './tour/tour-state';
 import { cancelInFlightTurns, registerInFlightTurn } from './chat-cancel';
 import { recordStoppedTurn } from './chat-stopped-turn';
 import { upsertMessageById } from './chat-transcript';
@@ -1303,7 +1303,7 @@ function SidebarComponent(props: any) {
   const [tourVisible, setTourVisible] = useState<boolean>(false);
   const sidebarRootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (hasCompletedTour()) {
+    if (!shouldAutoShowTour(NBIAPI.config.tourDisabled)) {
       return;
     }
     // The sidebar React tree mounts even when the Lumino panel is
