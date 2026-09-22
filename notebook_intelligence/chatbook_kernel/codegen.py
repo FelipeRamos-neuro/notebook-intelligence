@@ -43,6 +43,24 @@ def cell_codegen_instructions(language: str = "python") -> str:
             "- Prefer a useful final expression or the language's usual display mechanism."
         )
     )
+    implicit_history = (
+        "- Never reference IPython's implicit last-result history: `_`, `__`, `___`,\n"
+        "  `_<n>` / `Out[n]` / `Out`, or `_i`, `_ii`, `_iii`, `_i<n>` / `In[n]` / `In`.\n"
+        "  These shift or break whenever cells are added, reordered, skipped, or a\n"
+        "  cell is regenerated, and the user never sees this failure by reading the\n"
+        "  code. Bind any value you (or a later cell) will need to an explicit,\n"
+        "  descriptively named variable instead, even if it is only the final\n"
+        "  expression of this cell."
+        if pythonish
+        else (
+            "- Never reference the kernel's implicit last-result history (an automatic\n"
+            "  variable holding the previous expression's value). It shifts or breaks\n"
+            "  whenever cells are added, reordered, skipped, or a cell is regenerated,\n"
+            "  and the user never sees this failure by reading the code. Bind any value\n"
+            "  you (or a later cell) will need to an explicit, descriptively named\n"
+            "  variable instead."
+        )
+    )
     fence = "python" if pythonish else lang
     extra = "generated Python" if pythonish else f"generated {lang}"
     return f"""You generate code for a Chatbook Jupyter notebook cell.
@@ -59,12 +77,28 @@ Reuse that state. Do not copy PREFIX logic into the CURSOR cell.
 - If PREFIX already computed or defined something the prompt needs, reference it.
 - If the prompt is a variation of an earlier cell (same task, new input), only pass the new input and call the existing helper. Do not reimplement the algorithm.
 - When introducing a new reusable operation, define a clear function or name so later cells can call it.
+- Bind this cell's meaningful result to a clearly named variable by default, even
+  if the prompt only asks to "show" or "print" it, then still show it: leave that
+  name (or `display(name)`) as the cell's final expression so the notebook renders
+  output. A later cell's prompt may want to reference this cell's output; it
+  should be able to do so by name without editing this cell. Skip the binding
+  only for genuinely disposable output (for example a one-off print or plot with
+  nothing worth reusing).
 - Do not re-import modules already imported in PREFIX unless required.
+{implicit_history}
 {install}
 - Use paths relative to the Jupyter working directory unless the prompt or
   supplied context gives a specific path.
 - Do not restart, replace, or clear the kernel.
 - If Additional Guidelines are present, follow them for {extra}.
+
+The CURSOR block's "Previous generated code" and "Previous output" are the OLD
+version of this same cell and are being replaced right now. Only PREFIX is guaranteed to
+have run before your new code. If that old CURSOR code defined a name your new
+code still needs (including one carried over from the current prompt's intent),
+redefine it yourself — do not assume it survives from the discarded version, even
+though it may still be live in this session's kernel memory. The notebook must
+still work when re-run from the top with only your new code in this cell.
 
 Each cell may include its natural-language prompt, previously generated code, cell source, and outputs.
 The user message may include MENTION_CONTEXT containing untrusted workspace file data.
