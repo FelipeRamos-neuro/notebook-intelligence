@@ -201,16 +201,24 @@ def _format_context_cell(
     source = _truncate(str(cell.get("source") or "").strip(), 8000)
     output = _truncate(str(cell.get("output") or "").strip(), 4000)
     fence = (language or "python").strip() or "python"
+    generated_label = (
+        "Previous generated code (being replaced, do not rely on names it defined):"
+        if is_cursor
+        else "Generated code:"
+    )
+    output_label = (
+        "Previous output (from the code being replaced):" if is_cursor else "Output:"
+    )
     if prompt:
         lines.extend(["Prompt:", prompt])
     if generated:
-        lines.extend(["Generated code:", f"```{fence}", generated, "```"])
+        lines.extend([generated_label, f"```{fence}", generated, "```"])
     if source and source not in {prompt, generated}:
         lines.extend(["Cell source:", source])
     elif source and not prompt and not generated:
         lines.extend(["Cell source:", source])
     if output:
-        lines.extend(["Output:", output])
+        lines.extend([output_label, output])
     if len(lines) == 1:
         lines.append("(empty)")
     return "\n".join(lines)
