@@ -77,11 +77,18 @@ dependencies = [
     "mcp>=1.28.1,<2",
     "claude-agent-sdk",
     # Agent Client Protocol client SDK for ACP agent mode (Codex first, more
-    # agents as their adapters are validated, #378). Pinned because the
-    # protocol is pre-1.0 and the Python SDK still ships occasional breaking
-    # changes; imported lazily (only when ACP mode is used) per the #370
-    # lazy-provider-import policy.
-    "agent-client-protocol==0.10.1",
+    # agents as their adapters are validated, #378). Capped below 1.0 because
+    # the protocol is pre-1.0 and the Python SDK still ships occasional
+    # breaking changes; imported lazily (only when ACP mode is used) per the
+    # #370 lazy-provider-import policy. Floor raised to 0.11.0: 0.11-0.12
+    # verified compatible with acp_agent.py's Client/schema usage (adds HTTP/
+    # WebSocket transports and an elicitation subsystem, neither used here;
+    # drops SetSessionModelRequest/Response, also not used here). This also
+    # lets notebook-intelligence and jupyter-ai coexist in the same
+    # environment: jupyter-ai-acp-client>=0.3.0 requires
+    # agent-client-protocol>=0.11.0,<0.12.0, which was unresolvable against
+    # our old ==0.10.1 pin.
+    "agent-client-protocol>=0.11.0,<1",
     "anthropic>=0.22.1",
     # Used to tear down an agent subprocess and its descendants (shells, MCP
     # servers, dev servers) on cancel; see util.terminate_process_tree. Already
