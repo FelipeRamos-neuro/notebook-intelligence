@@ -453,6 +453,20 @@ def _resolve_bool_with_env(env_var_name: str, fallback: bool | None) -> bool:
     )
 
 
+def _resolve_tour_disabled(traitlet_value: bool | None) -> bool:
+    """Resolve NBI_TOUR_DISABLED, falling back to the traitlet.
+
+    Unlike the security gates this is a cosmetic switch, so an unrecognized
+    value warns and falls back instead of raising: a typo must not stop the
+    whole extension from loading.
+    """
+    try:
+        return _resolve_bool_with_env("NBI_TOUR_DISABLED", traitlet_value)
+    except ValueError as exc:
+        log.warning("%s; falling back to the tour_disabled setting", exc)
+        return bool(traitlet_value)
+
+
 def _resolve_positive_int_with_env(env_var_name: str, traitlet_value: int) -> int:
     """Resolve a non-negative int tunable, falling back to the traitlet.
 
@@ -769,6 +783,9 @@ class GetCapabilitiesHandler(APIHandler):
     # Resolved at extension init from NBI_TOUR_CONFIG_PATH (or the
     # tour_config_path traitlet). Empty string disables the override.
     tour_config_path = ""
+    # Resolved at extension init from NBI_TOUR_DISABLED (or the
+    # tour_disabled traitlet). Suppresses only the first-run auto-show.
+    tour_disabled = False
 
     @tornado.web.authenticated
     def get(self):
@@ -966,6 +983,7 @@ class GetCapabilitiesHandler(APIHandler):
         # unset, so the cost is at most one stat call per request. The
         # path itself is pre-resolved at initialize_handlers time.
         response["tour_overrides"] = load_tour_config(self.tour_config_path)
+        response["tour_disabled"] = self.tour_disabled
 
         self.finish(json.dumps(response))
 
@@ -4530,6 +4548,17 @@ class NotebookIntelligence(ExtensionApp):
         config=True,
     )
 
+    tour_disabled = Bool(
+        default_value=False,
+        help="""
+        Suppress the in-app first-run tour. The tour no longer opens on its
+        own; the "Show NBI tour" command still replays it on demand.
+        Overridden by the NBI_TOUR_DISABLED environment variable.
+        """,
+        allow_none=True,
+        config=True,
+    )
+
     def initialize_settings(self):
         warm_tokenizer_encoding()
 
@@ -4733,6 +4762,9 @@ class NotebookIntelligence(ExtensionApp):
         GetCapabilitiesHandler.tour_config_path = (
             os.environ.get("NBI_TOUR_CONFIG_PATH", "").strip()
             or (self.tour_config_path or "").strip()
+        )
+        GetCapabilitiesHandler.tour_disabled = _resolve_tour_disabled(
+            self.tour_disabled
         )
         SkillsBaseHandler.allow_github_skill_import = _resolve_bool_with_env(
             "NBI_ALLOW_GITHUB_SKILL_IMPORT", self.allow_github_skill_import

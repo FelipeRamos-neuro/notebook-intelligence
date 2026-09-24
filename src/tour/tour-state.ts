@@ -85,3 +85,12 @@ export function resetTour(): void {
     // See markTourCompleted.
   }
 }
+
+/**
+ * Whether the sidebar should open the tour on its own. An admin switch
+ * (`NBI_TOUR_DISABLED`) suppresses only this auto-show; the replay command
+ * starts the tour directly and is unaffected.
+ */
+export function shouldAutoShowTour(disabledByAdmin: boolean): boolean {
+  return !disabledByAdmin && !hasCompletedTour();
+}
