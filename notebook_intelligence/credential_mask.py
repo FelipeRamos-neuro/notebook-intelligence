@@ -87,6 +87,25 @@ def mask_model_properties(models: list[dict]) -> list[dict]:
     return masked
 
 
+def mask_model_config(model_config: Any) -> Any:
+    """A copy of a stored ``chat_model`` / ``inline_completion_model`` entry
+    (``{provider, model, properties: [{id, value}]}``) with secret property
+    values masked. The capabilities response carries this entry as well as the
+    model list, and both must mask."""
+    properties = model_config.get("properties") if isinstance(model_config, dict) else None
+    if not isinstance(properties, list):
+        return model_config
+    return {
+        **model_config,
+        "properties": [
+            {**prop, "value": mask_secret(prop.get("value"))}
+            if isinstance(prop, dict) and _is_secret_property(prop)
+            else prop
+            for prop in properties
+        ],
+    }
+
+
 def restore_masked_model_properties(posted: Any, stored: Any) -> Any:
     """Swap posted property masks for the values stored for the same model.
 
@@ -179,12 +198,24 @@ def has_masked_mcp_values(config: Any) -> bool:
     )
 
 
+class UnresolvedMaskError(ValueError):
+    """A posted mask has no stored value behind it. ``names`` lists each as
+    ``server.field.key`` so the handler can word the message in the user's
+    language."""
+
+    def __init__(self, names: list):
+        super().__init__(
+            "Masked MCP values with no saved value: " + ", ".join(names)
+        )
+        self.names = list(names)
+
+
 def restore_masked_mcp_config(posted: Any, stored: Any) -> Any:
     """Swap masks in a posted ``mcp.json`` for the stored values.
 
-    Raises ``ValueError`` naming each mask with no stored value behind it (a
-    renamed server, or a key added as the mask), so the save is refused
-    instead of persisting ``********`` as a credential.
+    Raises ``UnresolvedMaskError`` naming each mask with no stored value
+    behind it (a renamed server, or a key added as the mask), so the save is
+    refused instead of persisting ``********`` as a credential.
     """
     result = copy.deepcopy(posted)
     stored_servers = _mcp_servers(stored)
@@ -207,11 +238,7 @@ def restore_masked_mcp_config(posted: Any, stored: Any) -> Any:
                 else:
                     unresolved.append(f"{name}.{field}.{key}")
     if unresolved:
-        raise ValueError(
-            "These MCP values are masked and have no saved value to keep: "
-            + ", ".join(unresolved)
-            + ". Enter the real value."
-        )
+        raise UnresolvedMaskError(unresolved)
     return result
 
 
@@ -264,9 +291,10 @@ def collect_stored_secrets(configs: Iterable[Any], mcp: Any) -> list:
 
     def add(value: Any) -> None:
         if isinstance(value, str) and value and value != SECRET_MASK:
-            found.extend(
-                part for part in credential_parts(value) if not is_placeholder_api_key(part)
-            )
+            parts = credential_parts(value)
+            # `Bearer not-needed` is as much a placeholder as `not-needed`.
+            if not any(is_placeholder_api_key(part) for part in parts):
+                found.extend(parts)
 
     for config in configs:
         if not isinstance(config, dict):

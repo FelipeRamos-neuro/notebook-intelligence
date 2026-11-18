@@ -2913,11 +2913,11 @@ class ClaudeCodeChatParticipant(BaseChatParticipant):
             # worker thread died. Surface it so the user sees why instead of a
             # silent spinner stop.
             if isinstance(result, str) and result:
-                response.stream(MarkdownData(trans.__("**Claude agent error:** %1", result)))
+                response.stream(MarkdownData(trans.__("**Claude agent error:** %1", redact_env_secrets(result))))
         except Exception as e:
-            log.error(f"Error while handling Claude chat request: {e}", exc_info=True)
+            log.error(f"Error while handling Claude chat request: {redact_env_secrets(str(e))}", exc_info=True)
             try:
-                response.stream(MarkdownData(trans.__("**Error:** %1", e)))
+                response.stream(MarkdownData(trans.__("**Error:** %1", redact_env_secrets(str(e)))))
             except Exception as stream_err:
                 log.debug(f"Could not stream error to client (likely closed websocket): {stream_err}")
         finally:

@@ -16,6 +16,7 @@ from notebook_intelligence import util as util_mod
 from notebook_intelligence.claude_mcp_manager import ClaudeMCPServer
 from notebook_intelligence.credential_mask import (
     SECRET_MASK,
+    UnresolvedMaskError,
     collect_stored_secrets,
     mask_mcp_config,
     restore_masked_mcp_config,
@@ -87,8 +88,9 @@ class TestMcpEditorMask:
     def test_a_mask_with_nothing_stored_is_refused(self):
         posted = mask_mcp_config(MCP)
         posted["mcpServers"]["renamed"] = posted["mcpServers"].pop("remote")
-        with pytest.raises(ValueError, match=r"renamed\.headers\.Authorization"):
+        with pytest.raises(UnresolvedMaskError, match=r"renamed\.headers\.Authorization") as caught:
             restore_masked_mcp_config(posted, MCP)
+        assert caught.value.names == ["renamed.headers.Authorization"]
 
     def test_non_server_documents_pass_through(self):
         assert mask_mcp_config({}) == {}
@@ -148,7 +150,9 @@ class TestMcpConfigHandler:
         handler.request.body = json.dumps(posted).encode()
         ext_module.MCPConfigFileHandler.post.__wrapped__(handler)
         handler.set_status.assert_called_with(400)
-        assert "renamed.headers.Authorization" in handler.finish.call_args[0][0]
+        message = json.loads(handler.finish.call_args[0][0])["message"]
+        assert "renamed.headers.Authorization" in message
+        assert "Enter the real value" in message
         assert not config.saved
 
 
@@ -500,3 +504,108 @@ class TestRedactionCaches:
         (nbi / "config.json").unlink()
         (nbi / "config.json").symlink_to(shared_b)
         assert is_protected_nbi_path(shared_b)
+
+
+class TestReviewFixes:
+    @pytest.fixture(autouse=True)
+    def _clear(self):
+        yield
+        set_stored_secret_provider(None)
+
+    def test_bearer_placeholder_is_not_collected(self):
+        values = collect_stored_secrets(
+            [], {"mcpServers": {"s": {"headers": {"Authorization": "Bearer not-needed"}}}}
+        )
+        assert values == []
+
+    def test_a_save_during_collection_is_not_cached(self):
+        calls = []
+
+        def provider():
+            calls.append(1)
+            if len(calls) == 1:
+                # A config save lands while this walk is in progress.
+                util_mod.invalidate_stored_secret_cache()
+            return ["litellm-master-key-9f8e7d6c"]
+
+        set_stored_secret_provider(provider)
+        redact_env_secrets("x")
+        redact_env_secrets("x")
+        assert len(calls) == 2  # the first result predated the save
+        redact_env_secrets("x")
+        assert len(calls) == 2  # the second was cached normally
+
+    def test_a_hard_link_to_the_config_is_protected(self, home_root):
+        link = home_root / "innocent-name.json"
+        import os
+
+        os.link(home_root / ".jupyter/nbi/config.json", link)
+        assert is_protected_nbi_path(link)
+        assert _run(toolsets.read_file, file_path="innocent-name.json") == (
+            toolsets.PROTECTED_NBI_FILE_MESSAGE
+        )
+
+    def test_config_save_drops_the_protected_cache(self, tmp_path):
+        from notebook_intelligence.config import NBIConfig
+
+        config = NBIConfig.__new__(NBIConfig)
+        config.nbi_user_dir = str(tmp_path / "nbi")
+        config.user_config_file = str(tmp_path / "nbi" / "config.json")
+        config.user_mcp_file = str(tmp_path / "nbi" / "mcp.json")
+        config.user_config, config.user_mcp = {}, {}
+        is_protected_nbi_path(tmp_path / "x.json")
+        assert util_mod._protected_paths_cache is not None
+        config.save()
+        assert util_mod._protected_paths_cache is None
+
+    def test_a_mention_cannot_reach_the_config_through_a_symlink(self, home_root):
+        from notebook_intelligence.chatbook_mentions import _safe_relative_path
+
+        (home_root / "docs").mkdir()
+        (home_root / "docs" / "notes.json").symlink_to(
+            home_root / ".jupyter/nbi/config.json"
+        )
+        with pytest.raises(ValueError, match="unsafe mention path"):
+            _safe_relative_path("docs/notes.json")
+        assert _safe_relative_path("notes.txt").name == "notes.txt"
+
+
+class TestClaudeChatErrorScrubbing:
+    def _stream(self, participant):
+        from notebook_intelligence.api import ChatResponse, MarkdownData
+        from notebook_intelligence import i18n
+        from tests.test_claude_client import _make_chat_request
+
+        response = MagicMock(spec=ChatResponse, trans=i18n.english())
+        asyncio.run(participant.handle_chat_request(_make_chat_request(), response))
+        return [
+            call.args[0].content
+            for call in response.stream.call_args_list
+            if isinstance(call.args[0], MarkdownData)
+        ]
+
+    @pytest.fixture(autouse=True)
+    def _provider(self):
+        set_stored_secret_provider(lambda: ["proxy-master-key-0042"])
+        yield
+        set_stored_secret_provider(None)
+
+    def test_the_bail_out_string_is_scrubbed(self):
+        from tests.test_claude_client import _make_participant
+
+        participant = _make_participant()
+        participant._client.query.return_value = "401 Received API Key = proxy-master-key-0042"
+        messages = self._stream(participant)
+        assert any("Claude agent error" in m for m in messages)
+        assert "proxy-master-key-0042" not in " ".join(messages)
+
+    def test_an_exception_is_scrubbed(self):
+        from tests.test_claude_client import _make_participant
+
+        participant = _make_participant()
+        participant._client.query.side_effect = RuntimeError(
+            "401 Received API Key = proxy-master-key-0042"
+        )
+        messages = self._stream(participant)
+        assert any("Error" in m for m in messages)
+        assert "proxy-master-key-0042" not in " ".join(messages)

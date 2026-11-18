@@ -19,7 +19,11 @@ import logging
 import os
 from typing import Iterable, Optional
 
-from notebook_intelligence.util import resolve_claude_cli_path
+from notebook_intelligence.util import (
+    _replace_values,
+    redact_env_secrets,
+    resolve_claude_cli_path,
+)
 
 log = logging.getLogger(__name__)
 
@@ -166,8 +170,6 @@ def _scrub_error_text(
     """Scrub CLI error text of every credential this module knows about:
     injected env values, secret argv values, then the shared redactor (process
     env, stored credentials, known token prefixes)."""
-    from notebook_intelligence.util import _replace_values, redact_env_secrets
-
     out = _scrub_env_overrides(text, env_overrides)
     if secret_args:
         out = _replace_values(out, secret_args)

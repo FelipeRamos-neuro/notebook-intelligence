@@ -10,6 +10,7 @@ from typing import Optional
 
 from notebook_intelligence.util import (
     get_claude_config_dir,
+    invalidate_protected_paths_cache,
     invalidate_stored_secret_cache,
     register_protected_paths,
 )
@@ -130,6 +131,8 @@ class NBIConfig:
         _atomic_write_json(self.user_config_file, self.user_config)
         _atomic_write_json(self.user_mcp_file, self.user_mcp)
         invalidate_stored_secret_cache()
+        # The atomic write replaced the files, and with them their inodes.
+        invalidate_protected_paths_cache()
 
     def stored_secret_values(self) -> list:
         """Credential values kept in config.json and mcp.json, for redacting

@@ -99,8 +99,10 @@ from notebook_intelligence.built_in_toolsets import built_in_toolsets, toolset_d
 from notebook_intelligence.base_chat_participant import BaseChatParticipant
 from notebook_intelligence.llm_providers.property_labels import translate_model_properties
 from notebook_intelligence.credential_mask import (
+    UnresolvedMaskError,
     has_masked_mcp_values,
     mask_mcp_config,
+    mask_model_config,
     mask_model_properties,
     mask_settings_api_key,
     restore_masked_mcp_config,
@@ -902,11 +904,11 @@ class GetCapabilitiesHandler(APIHandler):
             "embedding_models": filter_models_by_enabled_providers(
                 ai_service_manager.embedding_model_ids, is_provider_enabled
             ),
-            "chat_model": nbi_config.chat_model,
+            "chat_model": mask_model_config(nbi_config.chat_model),
             "chat_model_supports_vision": _resolve_supports_vision(
                 ai_service_manager
             ),
-            "inline_completion_model": nbi_config.inline_completion_model,
+            "inline_completion_model": mask_model_config(nbi_config.inline_completion_model),
             "embedding_model": nbi_config.embedding_model,
             "chat_participants": [],
             "store_github_access_token": nbi_config.store_github_access_token,
@@ -1518,6 +1520,18 @@ class MCPConfigFileHandler(APIHandler):
             ai_service_manager.nbi_config.load()
             ai_service_manager.update_mcp_servers()
             self.finish(json.dumps({"status": "ok"}))
+        except UnresolvedMaskError as exc:
+            # A masked value with nothing saved behind it: refused, not saved.
+            trans = i18n.request_bundle(self)
+            self.set_status(400)
+            self.finish(json.dumps({
+                "status": "error",
+                "message": trans.__(
+                    "These MCP values are masked and have no saved value to keep: %1. Enter the real value.",
+                    ", ".join(exc.names),
+                ),
+            }))
+            return
         except ValueError as exc:
             # Policy rejection: surface as HTTP 400 so the Settings UI
             # shows the operator's policy message instead of a generic

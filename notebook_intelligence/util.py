@@ -62,7 +62,8 @@ _protected_paths_version = 0
 # prefix or registrations change, and after a few seconds so a symlink that
 # was repointed is noticed.
 _PROTECTED_PATHS_CACHE_SECONDS = 5.0
-_protected_paths_cache = None  # (key, expires_at, frozenset of resolved paths)
+# (key, expires_at, resolved paths, (st_dev, st_ino) of the ones that exist)
+_protected_paths_cache = None
 
 
 def register_protected_paths(paths) -> None:
@@ -100,25 +101,48 @@ def is_protected_nbi_path(path) -> bool:
         return False
     if resolved.name == NBI_MCP_TEMP_FILENAME:
         return True
-    return resolved in _resolved_protected_paths()
+    paths, file_ids = _resolved_protected_paths()
+    if resolved in paths:
+        return True
+    # Same file under another name: a different-case spelling on a
+    # case-insensitive filesystem, or a hard link. The path match above
+    # cannot see either, the device and inode can.
+    try:
+        info = os.stat(resolved)
+    except (OSError, ValueError):
+        return False
+    return (info.st_dev, info.st_ino) in file_ids
 
 
-def _resolved_protected_paths() -> frozenset:
+def invalidate_protected_paths_cache() -> None:
+    """Drop the cached protected set; the next check rebuilds it. NBIConfig
+    calls this after a save, which replaces the files and so their inodes."""
+    global _protected_paths_cache
+    _protected_paths_cache = None
+
+
+def _resolved_protected_paths() -> tuple:
     global _protected_paths_cache
     key = (os.path.expanduser("~"), sys.prefix, _protected_paths_version)
     now = time.monotonic()
     cached = _protected_paths_cache
     if cached is not None and cached[0] == key and now < cached[1]:
-        return cached[2]
+        return cached[2], cached[3]
     resolved = set()
+    file_ids = set()
     for candidate in [*_default_protected_paths(), *_registered_protected_paths]:
         try:
-            resolved.add(Path(candidate).expanduser().resolve())
+            path = Path(candidate).expanduser().resolve()
+            resolved.add(path)
+            info = os.stat(path)
+        except FileNotFoundError:
+            continue
         except (OSError, RuntimeError, ValueError):
             continue
-    resolved = frozenset(resolved)
-    _protected_paths_cache = (key, now + _PROTECTED_PATHS_CACHE_SECONDS, resolved)
-    return resolved
+        file_ids.add((info.st_dev, info.st_ino))
+    resolved, file_ids = frozenset(resolved), frozenset(file_ids)
+    _protected_paths_cache = (key, now + _PROTECTED_PATHS_CACHE_SECONDS, resolved, file_ids)
+    return resolved, file_ids
 
 
 def safe_jupyter_path(path: str) -> Path:
@@ -731,6 +755,7 @@ _stored_secret_provider = None
 # nothing has reloaded yet.
 _STORED_SECRET_CACHE_SECONDS = 5.0
 _stored_secret_cache = None  # (provider, expires_at, values)
+_stored_secret_generation = 0
 
 
 def set_stored_secret_provider(provider) -> None:
@@ -743,7 +768,8 @@ def set_stored_secret_provider(provider) -> None:
 
 def invalidate_stored_secret_cache() -> None:
     """Drop the cached credential values; the next redaction asks again."""
-    global _stored_secret_cache
+    global _stored_secret_cache, _stored_secret_generation
+    _stored_secret_generation += 1
     _stored_secret_cache = None
 
 
@@ -758,6 +784,7 @@ def _stored_secret_values() -> list:
     # module attribute, never serves another provider's values.
     if cached is not None and cached[0] is provider and now < cached[1]:
         return cached[2]
+    generation = _stored_secret_generation
     try:
         values = [v for v in provider() if isinstance(v, str)]
     except Exception:
@@ -765,7 +792,11 @@ def _stored_secret_values() -> list:
         # shell tool result into an error. Not cached, so it is retried.
         log.debug("Stored-secret provider failed", exc_info=True)
         return []
-    _stored_secret_cache = (provider, now + _STORED_SECRET_CACHE_SECONDS, values)
+    # A load or save that ran while the provider was walking the config bumped
+    # the generation; what was collected may predate it, so use it once and
+    # let the next call collect again.
+    if generation == _stored_secret_generation:
+        _stored_secret_cache = (provider, now + _STORED_SECRET_CACHE_SECONDS, values)
     return values
 
 

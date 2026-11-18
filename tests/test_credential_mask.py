@@ -2,9 +2,12 @@
 
 """A stored API key reaches the browser masked and survives a round trip."""
 
+import json
+
 from notebook_intelligence.api import LLMProviderProperty
 from notebook_intelligence.credential_mask import (
     SECRET_MASK,
+    mask_model_config,
     mask_model_properties,
     mask_secret,
     mask_settings_api_key,
@@ -80,6 +83,48 @@ class TestMasking:
         ] is True
 
 
+class TestMaskModelConfig:
+    def test_masks_secret_properties_of_a_stored_entry(self):
+        stored = {
+            "provider": "litellm-compatible",
+            "model": "m",
+            "properties": [
+                {"id": "api_key", "value": "sk-real"},
+                {"id": "base_url", "value": "https://x"},
+            ],
+        }
+        assert mask_model_config(stored) == {
+            "provider": "litellm-compatible",
+            "model": "m",
+            "properties": [
+                {"id": "api_key", "value": SECRET_MASK},
+                {"id": "base_url", "value": "https://x"},
+            ],
+        }
+        assert stored["properties"][0]["value"] == "sk-real"
+
+    def test_entries_without_properties_pass_through(self):
+        copilot = {"provider": "github-copilot", "model": "gpt-4.1"}
+        assert mask_model_config(copilot) is copilot
+        assert mask_model_config(None) is None
+
+    def test_a_real_nbi_config_entry_is_masked(self, tmp_path):
+        from notebook_intelligence.config import NBIConfig
+
+        config = NBIConfig.__new__(NBIConfig)
+        config._feature_policies, config._string_overrides = {}, {}
+        config.env_config = {}
+        config.user_config = {
+            "chat_model": {
+                "provider": "openai-compatible",
+                "model": "openai-compatible-chat-model",
+                "properties": [{"id": "api_key", "value": "sk-LEAK"}],
+            }
+        }
+        assert "sk-LEAK" in json.dumps(config.chat_model)
+        assert "sk-LEAK" not in json.dumps(mask_model_config(config.chat_model))
+
+
 class TestRestore:
     def test_posted_mask_becomes_the_stored_key(self):
         assert restore_masked_api_key(
@@ -153,6 +198,18 @@ class TestCapabilitiesResponse:
         manager.inline_completion_model_ids = [_model(key="sk-inline")]
         manager.nbi_config.claude_settings = {"api_key": "sk-claude", "enabled": False}
         manager.nbi_config.acp_settings = {"api_key": "sk-acp", "enabled": False}
+        # The stored model entries travel in the response too, apart from the
+        # model lists; a mock here would hide a leak through them.
+        manager.nbi_config.chat_model = {
+            "provider": "openai-compatible",
+            "model": "m",
+            "properties": [{"id": "api_key", "value": "sk-stored-chat"}],
+        }
+        manager.nbi_config.inline_completion_model = {
+            "provider": "openai-compatible",
+            "model": "m",
+            "properties": [{"id": "api_key", "value": "sk-stored-inline"}],
+        }
         monkeypatch.setattr(ext_module, "ai_service_manager", manager)
         # Capture the dict before it is serialized; most fields are mocks.
         monkeypatch.setattr(ext_module.json, "dumps", lambda obj, *a, **k: obj)
@@ -175,5 +232,15 @@ class TestCapabilitiesResponse:
             assert key["value"] == SECRET_MASK
         assert response["claude_settings"]["api_key"] == SECRET_MASK
         assert response["acp_settings"]["api_key"] == SECRET_MASK
-        for secret in ("sk-chat", "sk-inline", "sk-claude", "sk-acp"):
+        for stored in (response["chat_model"], response["inline_completion_model"]):
+            assert stored["properties"] == [{"id": "api_key", "value": SECRET_MASK}]
+            assert stored["provider"] == "openai-compatible"
+        for secret in (
+            "sk-chat",
+            "sk-inline",
+            "sk-claude",
+            "sk-acp",
+            "sk-stored-chat",
+            "sk-stored-inline",
+        ):
             assert secret not in repr(response)
