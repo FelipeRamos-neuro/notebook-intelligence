@@ -7,6 +7,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional, Set
@@ -46,6 +47,56 @@ def set_jupyter_root_dir(root_dir: str):
 
 def get_jupyter_root_dir() -> str:
     return _jupyter_root_dir
+
+
+# The agent's file tools stay inside the workspace, but a workspace that
+# contains the user's home directory also contains NBI's own config. Those
+# files hold API keys and MCP commands, and a write bypasses the checks the
+# config API applies, so the file tools refuse them.
+NBI_MCP_TEMP_FILENAME = "nbi.mcp.temp.json"
+_registered_protected_paths: set = set()
+
+
+def register_protected_paths(paths) -> None:
+    """Add files the agent's file tools must not touch (NBIConfig registers
+    the ones it reads and writes)."""
+    for path in paths:
+        if path:
+            _registered_protected_paths.add(str(path))
+
+
+def _default_protected_paths() -> list:
+    home = os.path.expanduser("~")
+    env_dir = os.path.join(sys.prefix, "share", "jupyter", "nbi")
+    user_dir = os.path.join(home, ".jupyter", "nbi")
+    return [
+        os.path.join(env_dir, "config.json"),
+        os.path.join(env_dir, "mcp.json"),
+        os.path.join(user_dir, "config.json"),
+        os.path.join(user_dir, "mcp.json"),
+        os.path.join(user_dir, "user-data.json"),
+        os.path.join(sys.prefix, "share", "jupyter", "nbi-config.json"),
+        os.path.join(home, ".jupyter", "nbi-config.json"),
+        os.path.join(home, ".jupyter", "nbi-data.json"),
+    ]
+
+
+def is_protected_nbi_path(path) -> bool:
+    """True for NBI's config and credential files, and the MCP editor's
+    temp copy of them. Compares resolved paths, so a symlink to one counts."""
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if resolved.name == NBI_MCP_TEMP_FILENAME:
+        return True
+    for candidate in [*_default_protected_paths(), *_registered_protected_paths]:
+        try:
+            if resolved == Path(candidate).expanduser().resolve():
+                return True
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return False
 
 
 def safe_jupyter_path(path: str) -> Path:
@@ -647,6 +698,32 @@ _TOKEN_PREFIX_RE = re.compile(
 )
 
 
+# Where `redact_env_secrets` asks for the credentials NBI keeps in its own
+# config files. One slot, owned by the running extension: the latest
+# registration wins, so a test or a second manager cannot pile up providers.
+_stored_secret_provider = None
+
+
+def set_stored_secret_provider(provider) -> None:
+    """Register a zero-argument callable returning the stored credential
+    values to redact, or ``None`` to clear it."""
+    global _stored_secret_provider
+    _stored_secret_provider = provider
+
+
+def _stored_secret_values() -> list:
+    provider = _stored_secret_provider
+    if provider is None:
+        return []
+    try:
+        return [v for v in provider() if isinstance(v, str)]
+    except Exception:
+        # Redaction is defense in depth; a broken provider must not turn a
+        # shell tool result into an error.
+        log.debug("Stored-secret provider failed", exc_info=True)
+        return []
+
+
 def redact_env_secrets(text: str) -> str:
     """Replace any process-env values that look like secrets with
     ``<redacted>``. Defense in depth for the shell-execute tools, which
@@ -690,6 +767,9 @@ def redact_env_secrets(text: str) -> str:
         for name, value in os.environ.items()
         if value and _looks_like_secret_env_name(name)
     ]
+    # Credentials NBI itself stores (API keys, MCP headers) rarely carry a
+    # known prefix, so a `cat config.json` would otherwise show them.
+    sensitive_values.extend(_stored_secret_values())
     out = _replace_values(text, sensitive_values)
     # Pass 2: redact known-prefix forms. Catches base64/derived shapes
     # plus tokens an upstream tool might emit that aren't in this

@@ -8,7 +8,8 @@ import sys
 import tempfile
 from typing import Optional
 
-from notebook_intelligence.util import get_claude_config_dir
+from notebook_intelligence.util import get_claude_config_dir, register_protected_paths
+from notebook_intelligence.credential_mask import collect_stored_secrets
 from notebook_intelligence.feature_flags import (
     ACP_SETTINGS_OVERRIDES,
     CHAT_MODEL_OVERRIDES,
@@ -50,6 +51,14 @@ class NBIConfig:
         self.user_config_file = os.path.join(self.nbi_user_dir, "config.json")
         self.env_mcp_file = os.path.join(self.nbi_env_dir, "mcp.json")
         self.user_mcp_file = os.path.join(self.nbi_user_dir, "mcp.json")
+        register_protected_paths([
+            self.env_config_file,
+            self.user_config_file,
+            self.env_mcp_file,
+            self.user_mcp_file,
+            self.deprecated_env_config_file,
+            self.deprecated_user_config_file,
+        ])
         self.env_config = {}
         self.user_config = {}
         self.env_mcp = {}
@@ -109,6 +118,11 @@ class NBIConfig:
 
         _atomic_write_json(self.user_config_file, self.user_config)
         _atomic_write_json(self.user_mcp_file, self.user_mcp)
+
+    def stored_secret_values(self) -> list:
+        """Credential values kept in config.json and mcp.json, for redacting
+        shell output (see ``util.set_stored_secret_provider``)."""
+        return collect_stored_secrets([self.user_config, self.env_config], self.mcp)
 
     def get(self, key, default=None):
         return self.user_config.get(key, self.env_config.get(key, default))
