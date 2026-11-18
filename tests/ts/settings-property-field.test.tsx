@@ -112,3 +112,40 @@ describe('ModelPropertyField', () => {
     ).toBeNull();
   });
 });
+
+describe('ModelPropertyField secret', () => {
+  it('renders a secret property as a password field', () => {
+    const { container } = render(
+      <ModelPropertyField
+        property={{
+          id: 'api_key',
+          name: 'API key',
+          description: 'API key',
+          value: '********',
+          optional: true,
+          secret: true
+        }}
+        inputName="chat-model-id-input"
+        onChange={() => undefined}
+      />
+    );
+
+    const input = container.querySelector('input') as HTMLInputElement;
+    expect(input.type).toBe('password');
+    expect(input.autocomplete).toBe('new-password');
+  });
+
+  it('keeps a plain property as text', () => {
+    const { container } = render(
+      <ModelPropertyField
+        property={{ ...MODEL, optional: true }}
+        inputName="chat-model-id-input"
+        onChange={() => undefined}
+      />
+    );
+
+    expect((container.querySelector('input') as HTMLInputElement).type).toBe(
+      'text'
+    );
+  });
+});

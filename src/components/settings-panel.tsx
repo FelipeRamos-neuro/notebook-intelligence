@@ -149,6 +149,7 @@ export function ModelPropertyList(props: {
     description: string;
     value: string;
     optional?: boolean;
+    secret?: boolean;
   }[];
   providerId: string;
   modelId: string;
@@ -187,6 +188,7 @@ export function ModelPropertyField(props: {
     description: string;
     value: string;
     optional?: boolean;
+    secret?: boolean;
   };
   inputName: string;
   onChange: (value: string) => void;
@@ -204,6 +206,8 @@ export function ModelPropertyField(props: {
       </div>
       <input
         name={inputName}
+        type={property.secret ? 'password' : 'text'}
+        autoComplete={property.secret ? 'new-password' : undefined}
         placeholder={property.description}
         className="jp-mod-styled"
         spellCheck={false}
@@ -2243,6 +2247,8 @@ function SettingsPanelComponentClaude(props: any) {
                   </div>
                   <input
                     name="chat-model-id-input"
+                    type="password"
+                    autoComplete="new-password"
                     placeholder={
                       settingLocks.claude_api_key.locked
                         ? lockedByEnvironmentTip(trans, 'ANTHROPIC_API_KEY')
@@ -2478,6 +2484,8 @@ function SettingsPanelComponentAcp(props: any) {
                   </div>
                   <input
                     name="acp-api-key-input"
+                    type="password"
+                    autoComplete="new-password"
                     placeholder={
                       settingLocks.acp_api_key.locked
                         ? lockedByEnvironmentTip(trans, 'OPENAI_API_KEY')
