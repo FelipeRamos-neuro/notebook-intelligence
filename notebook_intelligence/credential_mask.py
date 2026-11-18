@@ -215,7 +215,7 @@ def restore_masked_mcp_config(posted: Any, stored: Any) -> Any:
     return result
 
 
-def _credential_parts(value: str) -> list:
+def credential_parts(value: str) -> list:
     """The value, plus the token of a ``Bearer abc`` style header value."""
     parts = [value]
     scheme, _, token = value.partition(" ")
@@ -233,7 +233,7 @@ def collect_stored_secrets(configs: Iterable[Any], mcp: Any) -> list:
 
     def add(value: Any) -> None:
         if isinstance(value, str) and value and value != SECRET_MASK:
-            found.extend(_credential_parts(value))
+            found.extend(credential_parts(value))
 
     for config in configs:
         if not isinstance(config, dict):

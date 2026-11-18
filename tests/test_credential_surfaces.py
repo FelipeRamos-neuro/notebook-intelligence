@@ -253,3 +253,104 @@ class TestStoredSecretRedaction:
 
         set_stored_secret_provider(boom)
         assert redact_env_secrets("hello") == "hello"
+
+
+class TestCliErrorScrubbing:
+    """`claude mcp add` takes env and header values as flags, and the
+    handlers forward the CLI's error text to the browser."""
+
+    def _manager(self, tmp_path, monkeypatch, stderr):
+        from pathlib import Path
+
+        from notebook_intelligence.claude_mcp_manager import ClaudeMCPManager
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        monkeypatch.setattr(
+            "notebook_intelligence._claude_cli.resolve_claude_cli_path",
+            lambda: "/usr/local/bin/claude",
+        )
+
+        async def fake_subprocess(*argv, **kwargs):
+            proc = MagicMock()
+
+            async def communicate():
+                return (b"", stderr)
+
+            proc.communicate = communicate
+            proc.returncode = 1
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+        project = tmp_path / "project"
+        project.mkdir()
+        return ClaudeMCPManager(working_dir=str(project))
+
+    def test_header_and_env_values_are_scrubbed_from_the_error(
+        self, tmp_path, monkeypatch
+    ):
+        stderr = (
+            b"error: invalid header 'Authorization: Bearer tok-abcdef123456'; "
+            b"env GITHUB_TOKEN=ghp-local-secret-1 rejected"
+        )
+        manager = self._manager(tmp_path, monkeypatch, stderr)
+        with pytest.raises(ValueError) as caught:
+            asyncio.run(
+                manager.add_server(
+                    name="srv",
+                    scope="user",
+                    transport="http",
+                    command_or_url="https://mcp.example",
+                    headers={"Authorization": "Bearer tok-abcdef123456"},
+                    env={"GITHUB_TOKEN": "ghp-local-secret-1"},
+                )
+            )
+        message = str(caught.value)
+        assert "tok-abcdef123456" not in message
+        assert "ghp-local-secret-1" not in message
+        assert "invalid header" in message
+
+    def test_stored_credentials_are_scrubbed_even_when_not_in_the_call(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "notebook_intelligence.util._stored_secret_provider",
+            lambda: ["proxy-master-key-0042"],
+        )
+        manager = self._manager(
+            tmp_path, monkeypatch, b"401 Received API Key = proxy-master-key-0042"
+        )
+        with pytest.raises(ValueError) as caught:
+            asyncio.run(manager.remove_server("srv", "user"))
+        assert "proxy-master-key-0042" not in str(caught.value)
+
+
+class TestClaudeStreamErrorScrubbing:
+    def test_inline_stream_error_marker_is_scrubbed(self, monkeypatch):
+        from notebook_intelligence.claude import ClaudeChatModel
+
+        monkeypatch.setattr(
+            "notebook_intelligence.util._stored_secret_provider",
+            lambda: ["proxy-master-key-0042"],
+        )
+        model = ClaudeChatModel.__new__(ClaudeChatModel)
+        model._model_id = "claude-sonnet-test"
+        model._model_name = "Claude Sonnet (test)"
+        model._context_window = 200000
+        model._supports_tools = True
+        model._client = MagicMock()
+        boom = RuntimeError("401 Received API Key = proxy-master-key-0042")
+        model._client.messages.stream = MagicMock(side_effect=boom)
+        response = MagicMock()
+
+        with pytest.raises(RuntimeError):
+            model.completions(
+                messages=[{"role": "user", "content": "x"}], response=response
+            )
+
+        payload = response.stream.call_args_list[-1].args[0]
+        assert "proxy-master-key-0042" not in repr(payload)
+        assert "Stream interrupted" in payload["choices"][0]["delta"]["content"]
+        assert "proxy-master-key-0042" not in payload["nbi_stream_error"]
