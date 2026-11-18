@@ -55,14 +55,24 @@ def get_jupyter_root_dir() -> str:
 # config API applies, so the file tools refuse them.
 NBI_MCP_TEMP_FILENAME = "nbi.mcp.temp.json"
 _registered_protected_paths: set = set()
+_protected_paths_version = 0
+
+# Resolving every candidate costs about 200 us, and search_files asks once
+# per matched file. The resolved set is rebuilt when the home directory,
+# prefix or registrations change, and after a few seconds so a symlink that
+# was repointed is noticed.
+_PROTECTED_PATHS_CACHE_SECONDS = 5.0
+_protected_paths_cache = None  # (key, expires_at, frozenset of resolved paths)
 
 
 def register_protected_paths(paths) -> None:
     """Add files the agent's file tools must not touch (NBIConfig registers
     the ones it reads and writes)."""
+    global _protected_paths_version
     for path in paths:
         if path:
             _registered_protected_paths.add(str(path))
+    _protected_paths_version += 1
 
 
 def _default_protected_paths() -> list:
@@ -90,13 +100,25 @@ def is_protected_nbi_path(path) -> bool:
         return False
     if resolved.name == NBI_MCP_TEMP_FILENAME:
         return True
+    return resolved in _resolved_protected_paths()
+
+
+def _resolved_protected_paths() -> frozenset:
+    global _protected_paths_cache
+    key = (os.path.expanduser("~"), sys.prefix, _protected_paths_version)
+    now = time.monotonic()
+    cached = _protected_paths_cache
+    if cached is not None and cached[0] == key and now < cached[1]:
+        return cached[2]
+    resolved = set()
     for candidate in [*_default_protected_paths(), *_registered_protected_paths]:
         try:
-            if resolved == Path(candidate).expanduser().resolve():
-                return True
+            resolved.add(Path(candidate).expanduser().resolve())
         except (OSError, RuntimeError, ValueError):
             continue
-    return False
+    resolved = frozenset(resolved)
+    _protected_paths_cache = (key, now + _PROTECTED_PATHS_CACHE_SECONDS, resolved)
+    return resolved
 
 
 def safe_jupyter_path(path: str) -> Path:
@@ -703,25 +725,48 @@ _TOKEN_PREFIX_RE = re.compile(
 # registration wins, so a test or a second manager cannot pile up providers.
 _stored_secret_provider = None
 
+# The shell tools redact line by line, and the provider walks the whole
+# config each time. The result is reused for a few seconds; NBIConfig also
+# clears it on every load and save, so the TTL only covers a hand edit that
+# nothing has reloaded yet.
+_STORED_SECRET_CACHE_SECONDS = 5.0
+_stored_secret_cache = None  # (provider, expires_at, values)
+
 
 def set_stored_secret_provider(provider) -> None:
     """Register a zero-argument callable returning the stored credential
     values to redact, or ``None`` to clear it."""
     global _stored_secret_provider
     _stored_secret_provider = provider
+    invalidate_stored_secret_cache()
+
+
+def invalidate_stored_secret_cache() -> None:
+    """Drop the cached credential values; the next redaction asks again."""
+    global _stored_secret_cache
+    _stored_secret_cache = None
 
 
 def _stored_secret_values() -> list:
+    global _stored_secret_cache
     provider = _stored_secret_provider
     if provider is None:
         return []
+    cached = _stored_secret_cache
+    now = time.monotonic()
+    # Keyed on the provider object too, so swapping it, even by patching the
+    # module attribute, never serves another provider's values.
+    if cached is not None and cached[0] is provider and now < cached[1]:
+        return cached[2]
     try:
-        return [v for v in provider() if isinstance(v, str)]
+        values = [v for v in provider() if isinstance(v, str)]
     except Exception:
         # Redaction is defense in depth; a broken provider must not turn a
-        # shell tool result into an error.
+        # shell tool result into an error. Not cached, so it is retried.
         log.debug("Stored-secret provider failed", exc_info=True)
         return []
+    _stored_secret_cache = (provider, now + _STORED_SECRET_CACHE_SECONDS, values)
+    return values
 
 
 def redact_env_secrets(text: str) -> str:

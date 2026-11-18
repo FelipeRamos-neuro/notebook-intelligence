@@ -8,7 +8,11 @@ import sys
 import tempfile
 from typing import Optional
 
-from notebook_intelligence.util import get_claude_config_dir, register_protected_paths
+from notebook_intelligence.util import (
+    get_claude_config_dir,
+    invalidate_stored_secret_cache,
+    register_protected_paths,
+)
 from notebook_intelligence.credential_mask import collect_stored_secrets
 from notebook_intelligence.feature_flags import (
     ACP_SETTINGS_OVERRIDES,
@@ -78,6 +82,13 @@ class NBIConfig:
         return self.options.get('server_root_dir', '')
 
     def load(self):
+        try:
+            self._read_files()
+        finally:
+            # Redaction caches the credentials found here; see util.py.
+            invalidate_stored_secret_cache()
+
+    def _read_files(self):
         if os.path.exists(self.env_config_file):
             with open(self.env_config_file, 'r') as file:
                 self.env_config = json.load(file)
@@ -118,6 +129,7 @@ class NBIConfig:
 
         _atomic_write_json(self.user_config_file, self.user_config)
         _atomic_write_json(self.user_mcp_file, self.user_mcp)
+        invalidate_stored_secret_cache()
 
     def stored_secret_values(self) -> list:
         """Credential values kept in config.json and mcp.json, for redacting

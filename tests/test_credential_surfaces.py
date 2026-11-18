@@ -354,3 +354,111 @@ class TestClaudeStreamErrorScrubbing:
         assert "proxy-master-key-0042" not in repr(payload)
         assert "Stream interrupted" in payload["choices"][0]["delta"]["content"]
         assert "proxy-master-key-0042" not in payload["nbi_stream_error"]
+
+
+class TestRedactionCaches:
+    """The path check and the credential list are reused between calls; the
+    reuse must not outlive a change that matters."""
+
+    @pytest.fixture(autouse=True)
+    def _clear(self):
+        yield
+        set_stored_secret_provider(None)
+
+    def _counting_provider(self, values):
+        calls = []
+
+        def provider():
+            calls.append(1)
+            return list(values)
+
+        return provider, calls
+
+    def test_credentials_are_collected_once_across_many_lines(self):
+        provider, calls = self._counting_provider(["litellm-master-key-9f8e7d6c"])
+        set_stored_secret_provider(provider)
+        for _ in range(50):
+            assert "<redacted>" in redact_env_secrets("key litellm-master-key-9f8e7d6c")
+        assert len(calls) == 1
+
+    def test_invalidating_picks_up_a_changed_credential(self):
+        values = ["first-secret-value-1"]
+        set_stored_secret_provider(lambda: list(values))
+        assert "first-secret-value-1" not in redact_env_secrets("first-secret-value-1")
+        values[:] = ["second-secret-value-2"]
+        util_mod.invalidate_stored_secret_cache()
+        assert "second-secret-value-2" not in redact_env_secrets("second-secret-value-2")
+
+    def test_config_save_and_load_invalidate(self, tmp_path):
+        from notebook_intelligence.config import NBIConfig
+
+        config = NBIConfig.__new__(NBIConfig)
+        config.nbi_user_dir = str(tmp_path / "nbi")
+        config.user_config_file = str(tmp_path / "nbi" / "config.json")
+        config.user_mcp_file = str(tmp_path / "nbi" / "mcp.json")
+        config.env_config_file = str(tmp_path / "env-config.json")
+        config.env_mcp_file = str(tmp_path / "env-mcp.json")
+        config.deprecated_env_config_file = str(tmp_path / "dep-env.json")
+        config.deprecated_user_config_file = str(tmp_path / "dep-user.json")
+        config.user_config, config.env_config = {}, {}
+        config.user_mcp, config.env_mcp = {}, {}
+        provider, calls = self._counting_provider(["litellm-master-key-9f8e7d6c"])
+        set_stored_secret_provider(provider)
+
+        redact_env_secrets("x")
+        redact_env_secrets("x")
+        assert len(calls) == 1
+        config.save()
+        redact_env_secrets("x")
+        assert len(calls) == 2
+        config.load()
+        redact_env_secrets("x")
+        assert len(calls) == 3
+
+    def test_a_swapped_provider_is_never_served_stale_values(self, monkeypatch):
+        set_stored_secret_provider(lambda: ["old-provider-secret-1"])
+        redact_env_secrets("x")
+        monkeypatch.setattr(
+            util_mod, "_stored_secret_provider", lambda: ["new-provider-secret-2"]
+        )
+        assert "new-provider-secret-2" not in redact_env_secrets("new-provider-secret-2")
+
+    def test_a_failing_provider_is_retried_not_cached(self):
+        state = {"fail": True}
+
+        def provider():
+            if state["fail"]:
+                raise RuntimeError("config unreadable")
+            return ["recovered-secret-value"]
+
+        set_stored_secret_provider(provider)
+        assert redact_env_secrets("recovered-secret-value") == "recovered-secret-value"
+        state["fail"] = False
+        assert "recovered-secret-value" not in redact_env_secrets("recovered-secret-value")
+
+    def test_a_newly_registered_protected_path_is_noticed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        extra = tmp_path / "elsewhere" / "extra-config.json"
+        extra.parent.mkdir()
+        extra.write_text("{}")
+        assert not is_protected_nbi_path(extra)
+        monkeypatch.setattr(
+            util_mod, "_registered_protected_paths", set(util_mod._registered_protected_paths)
+        )
+        util_mod.register_protected_paths([extra])
+        assert is_protected_nbi_path(extra)
+
+    def test_a_repointed_symlink_is_noticed_after_the_ttl(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        nbi = tmp_path / ".jupyter" / "nbi"
+        nbi.mkdir(parents=True)
+        shared_a = tmp_path / "shared-a.json"
+        shared_b = tmp_path / "shared-b.json"
+        shared_a.write_text("{}")
+        shared_b.write_text("{}")
+        (nbi / "config.json").symlink_to(shared_a)
+        monkeypatch.setattr(util_mod, "_PROTECTED_PATHS_CACHE_SECONDS", 0.0)
+        assert is_protected_nbi_path(shared_a) and not is_protected_nbi_path(shared_b)
+        (nbi / "config.json").unlink()
+        (nbi / "config.json").symlink_to(shared_b)
+        assert is_protected_nbi_path(shared_b)
