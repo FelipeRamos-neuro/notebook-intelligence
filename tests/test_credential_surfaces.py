@@ -241,6 +241,44 @@ class TestStoredSecretRedaction:
         assert "https://proxy.example" not in values
         assert "acme" not in values and "verbose-debug" not in values
 
+    @pytest.mark.parametrize(
+        "placeholder", ["not-needed", "lm-studio", "Dummy-API-Key", "sk_no_key_required", "ollama"]
+    )
+    def test_placeholder_keys_are_not_collected(self, placeholder):
+        values = collect_stored_secrets(
+            [
+                {
+                    "claude_settings": {"api_key": placeholder},
+                    "chat_model": {
+                        "properties": [{"id": "api_key", "value": placeholder}]
+                    },
+                }
+            ],
+            {"mcpServers": {"s": {"headers": {"Authorization": f"Bearer {placeholder}"}}}},
+        )
+        assert placeholder not in values
+
+    def test_placeholder_is_left_alone_in_shell_output(self):
+        set_stored_secret_provider(
+            lambda: collect_stored_secrets(
+                [{"claude_settings": {"api_key": "not-needed"}}], None
+            )
+        )
+        text = "the value is not-needed here"
+        assert redact_env_secrets(text) == text
+
+    def test_a_real_key_next_to_a_placeholder_is_still_collected(self):
+        values = collect_stored_secrets(
+            [
+                {
+                    "claude_settings": {"api_key": "not-needed"},
+                    "acp_settings": {"api_key": "acp-key-12345"},
+                }
+            ],
+            None,
+        )
+        assert values == ["acp-key-12345"]
+
     def test_shell_output_loses_a_key_without_a_known_prefix(self):
         text = '{"api_key": "litellm-master-key-9f8e7d6c"}'
         assert "litellm-master-key" in redact_env_secrets(text)

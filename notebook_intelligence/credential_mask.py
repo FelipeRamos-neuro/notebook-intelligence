@@ -224,6 +224,37 @@ def credential_parts(value: str) -> list:
     return parts
 
 
+# What the OpenAI-compatible clients document as the "key" for a server that
+# checks none (Ollama, LM Studio, vLLM, llama.cpp). They are not secrets, and
+# redacting them would blank ordinary words wherever shell output mentions
+# them. Compared lower-cased, with ``_`` read as ``-``.
+PLACEHOLDER_API_KEYS = frozenset(
+    {
+        "dummy",
+        "dummy-api-key",
+        "dummy-key",
+        "empty",
+        "fake-key",
+        "lm-studio",
+        "lmstudio",
+        "no-key",
+        "no-key-required",
+        "no-api-key",
+        "none",
+        "not-needed",
+        "not-required",
+        "null",
+        "ollama",
+        "placeholder",
+        "sk-no-key-required",
+    }
+)
+
+
+def is_placeholder_api_key(value: str) -> bool:
+    return value.strip().lower().replace("_", "-") in PLACEHOLDER_API_KEYS
+
+
 def collect_stored_secrets(configs: Iterable[Any], mcp: Any) -> list:
     """Every credential value NBI keeps in its config, for output redaction.
 
@@ -233,7 +264,9 @@ def collect_stored_secrets(configs: Iterable[Any], mcp: Any) -> list:
 
     def add(value: Any) -> None:
         if isinstance(value, str) and value and value != SECRET_MASK:
-            found.extend(credential_parts(value))
+            found.extend(
+                part for part in credential_parts(value) if not is_placeholder_api_key(part)
+            )
 
     for config in configs:
         if not isinstance(config, dict):
