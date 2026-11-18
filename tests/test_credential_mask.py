@@ -51,6 +51,19 @@ class TestMasking:
         assert values == {"api_key": SECRET_MASK, "base_url": "https://x"}
         assert original["properties"][0]["value"] == "sk-real"
 
+    def test_unflagged_api_key_property_is_masked_and_flagged(self):
+        model = {
+            "provider": "ext",
+            "id": "m",
+            "properties": [
+                {"id": "api_key", "value": "sk-real"},
+                {"id": "base_url", "value": "https://x"},
+            ],
+        }
+        masked = mask_model_properties([model])[0]["properties"]
+        assert masked[0] == {"id": "api_key", "value": SECRET_MASK, "secret": True}
+        assert masked[1] == {"id": "base_url", "value": "https://x"}
+
     def test_blank_secret_property_stays_blank(self):
         masked = mask_model_properties([_model(key="")])[0]
         assert masked["properties"][0]["value"] == ""
@@ -125,3 +138,42 @@ class TestRestore:
     def test_model_without_properties_passes_through(self):
         posted = {"provider": "github-copilot", "model": "gpt-4.1"}
         assert restore_masked_model_properties(posted, None) is posted
+
+
+class TestCapabilitiesResponse:
+    """GetCapabilitiesHandler.get is where the masks are applied."""
+
+    def test_no_stored_key_reaches_the_response(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from notebook_intelligence import extension as ext_module
+
+        manager = MagicMock()
+        manager.chat_model_ids = [_model(key="sk-chat")]
+        manager.inline_completion_model_ids = [_model(key="sk-inline")]
+        manager.nbi_config.claude_settings = {"api_key": "sk-claude", "enabled": False}
+        manager.nbi_config.acp_settings = {"api_key": "sk-acp", "enabled": False}
+        monkeypatch.setattr(ext_module, "ai_service_manager", manager)
+        # Capture the dict before it is serialized; most fields are mocks.
+        monkeypatch.setattr(ext_module.json, "dumps", lambda obj, *a, **k: obj)
+        handler = MagicMock()
+        handler.tour_config_path = ""
+        handler.string_overrides = {}
+        for name in (
+            "disabled_tools",
+            "disabled_providers",
+            "disabled_coding_agent_launchers",
+            "additional_skipped_workspace_directories",
+        ):
+            setattr(handler, name, [])
+
+        ext_module.GetCapabilitiesHandler.get(handler)
+        response = handler.finish.call_args[0][0]
+
+        for models in (response["chat_models"], response["inline_completion_models"]):
+            key = next(p for p in models[0]["properties"] if p["id"] == "api_key")
+            assert key["value"] == SECRET_MASK
+        assert response["claude_settings"]["api_key"] == SECRET_MASK
+        assert response["acp_settings"]["api_key"] == SECRET_MASK
+        for secret in ("sk-chat", "sk-inline", "sk-claude", "sk-acp"):
+            assert secret not in repr(response)

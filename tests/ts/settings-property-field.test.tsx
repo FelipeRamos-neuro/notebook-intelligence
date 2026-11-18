@@ -148,4 +148,50 @@ describe('ModelPropertyField secret', () => {
       'text'
     );
   });
+
+  it('selects the mask on focus so typing replaces it', () => {
+    const { container } = render(
+      <ModelPropertyField
+        property={{
+          id: 'api_key',
+          name: 'API key',
+          description: 'API key',
+          value: '********',
+          optional: true,
+          secret: true
+        }}
+        inputName="chat-model-id-input"
+        onChange={() => undefined}
+      />
+    );
+    const input = container.querySelector('input') as HTMLInputElement;
+    const select = jest.spyOn(input, 'select');
+
+    fireEvent.focus(input);
+
+    expect(select).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a typed key alone on focus', () => {
+    const { container } = render(
+      <ModelPropertyField
+        property={{
+          id: 'api_key',
+          name: 'API key',
+          description: 'API key',
+          value: 'sk-typed',
+          optional: true,
+          secret: true
+        }}
+        inputName="chat-model-id-input"
+        onChange={() => undefined}
+      />
+    );
+    const input = container.querySelector('input') as HTMLInputElement;
+    const select = jest.spyOn(input, 'select');
+
+    fireEvent.focus(input);
+
+    expect(select).not.toHaveBeenCalled();
+  });
 });

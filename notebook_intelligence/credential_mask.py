@@ -15,6 +15,15 @@ from typing import Any, Optional
 
 SECRET_MASK = "********"
 
+# Property ids treated as credentials even when a provider did not set
+# ``secret``, so an extension that names its key ``api_key`` cannot leak it by
+# omission.
+SECRET_PROPERTY_IDS = frozenset({"api_key"})
+
+
+def _is_secret_property(prop: dict) -> bool:
+    return bool(prop.get("secret")) or prop.get("id") in SECRET_PROPERTY_IDS
+
 
 def mask_secret(value: Any) -> Any:
     """The mask for a non-empty string; anything else unchanged.
@@ -50,7 +59,11 @@ def restore_masked_api_key(posted: Any, stored: Any) -> Any:
 
 
 def mask_model_properties(models: list[dict]) -> list[dict]:
-    """Copies of the model dicts with each secret property's value masked."""
+    """Copies of the model dicts with each secret property's value masked.
+
+    The ``secret`` flag is set on what is sent, so the panel renders a
+    password field for a property a provider left unflagged.
+    """
     masked = []
     for model in models:
         properties = model.get("properties")
@@ -61,8 +74,8 @@ def mask_model_properties(models: list[dict]) -> list[dict]:
             {
                 **model,
                 "properties": [
-                    {**prop, "value": mask_secret(prop.get("value"))}
-                    if prop.get("secret")
+                    {**prop, "value": mask_secret(prop.get("value")), "secret": True}
+                    if _is_secret_property(prop)
                     else prop
                     for prop in properties
                 ],
